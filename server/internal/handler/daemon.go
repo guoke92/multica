@@ -1386,6 +1386,74 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Room (ChatCollab) task: load room context and recent messages for the prompt.
+	if task.RoomID.Valid && task.RoomMessageID.Valid {
+		if room, err := h.Queries.GetRoom(r.Context(), task.RoomID); err == nil {
+			resp.WorkspaceID = uuidToString(room.WorkspaceID)
+			resp.RoomID = uuidToString(room.ID)
+			if msg, err := h.Queries.GetRoomMessage(r.Context(), task.RoomMessageID); err == nil {
+				resp.ChatMessage = msg.Content
+				resp.RoomSenderType = msg.SenderType
+				if msg.SenderID.Valid {
+					resp.RoomSenderID = uuidToString(msg.SenderID)
+				}
+				if msg.QuoteMessageID.Valid {
+					resp.RoomQuoteMessageID = uuidToString(msg.QuoteMessageID)
+				}
+				if msg.TopicID.Valid {
+					resp.RoomTopicID = uuidToString(msg.TopicID)
+				}
+			}
+			if msgs, err := h.Queries.ListRoomMessages(r.Context(), db.ListRoomMessagesParams{
+				RoomID: room.ID,
+				Limit:  30,
+			}); err == nil && len(msgs) > 0 {
+				var parts []string
+				for i := len(msgs) - 1; i >= 0; i-- {
+					parts = append(parts, msgs[i].Content)
+				}
+				resp.RoomContext = strings.Join(parts, "\n---\n")
+			}
+			if len(room.Policy) > 0 {
+				resp.RoomWorkflowPolicy = json.RawMessage(room.Policy)
+			}
+			// Load room member agents so the manager prompt can list them by name + ID.
+			if members, err := h.Queries.ListRoomMembers(r.Context(), room.ID); err == nil {
+				for _, m := range members {
+					if m.PrincipalType != "agent" {
+						continue
+					}
+					if agent, agErr := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+						ID: m.PrincipalID, WorkspaceID: room.WorkspaceID,
+					}); agErr == nil {
+						resp.RoomAgents = append(resp.RoomAgents, RoomAgentInfo{
+							ID:   uuidToString(agent.ID),
+							Name: agent.Name,
+							Role: m.Role,
+						})
+					}
+				}
+			}
+			if len(task.Context) > 0 {
+				var wf struct {
+					Type       string `json:"type"`
+					Intent     string `json:"intent"`
+					DeliveryID string `json:"delivery_id"`
+					TopicID    string `json:"topic_id"`
+					RoleKey    string `json:"role_key"`
+					PhaseKey   string `json:"phase_key"`
+				}
+				if json.Unmarshal(task.Context, &wf) == nil && wf.Type == service.RoomWorkflowContextType {
+					resp.RoomWorkflowIntent = wf.Intent
+					resp.RoomDeliveryID = wf.DeliveryID
+					resp.RoomTopicID = wf.TopicID
+					resp.RoomRoleKey = wf.RoleKey
+					resp.RoomPhaseKey = wf.PhaseKey
+				}
+			}
+		}
+	}
+
 	// Autopilot run_only task: resolve workspace from autopilot_run →
 	// autopilot, and include the autopilot instructions because there is no
 	// issue for the agent to fetch.
@@ -1420,7 +1488,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	// prompt come from the task's context JSONB. Resolve workspace from
 	// there so the isolation check below has something to compare.
 	hasQuickCreate := false
-	if task.Context != nil && !task.IssueID.Valid && !task.ChatSessionID.Valid && !task.AutopilotRunID.Valid {
+	if task.Context != nil && !task.IssueID.Valid && !task.ChatSessionID.Valid && !task.AutopilotRunID.Valid && !task.RoomID.Valid {
 		var qc service.QuickCreateContext
 		if json.Unmarshal(task.Context, &qc) == nil && qc.Type == service.QuickCreateContextType {
 			hasQuickCreate = true

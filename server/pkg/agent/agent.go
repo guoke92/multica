@@ -107,7 +107,7 @@ type Config struct {
 }
 
 // New creates a Backend for the given agent type.
-// Supported types: "claude", "codex", "copilot", "opencode", "openclaw", "hermes", "gemini", "pi", "cursor", "kimi", "kiro", "antigravity".
+// Supported types: "claude", "codex", "copilot", "opencode", "openclaw", "hermes", "gemini", "pi", "cursor", "kimi", "kiro", "qoder", "antigravity".
 func New(agentType string, cfg Config) (Backend, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -136,10 +136,12 @@ func New(agentType string, cfg Config) (Backend, error) {
 		return &kimiBackend{cfg: cfg}, nil
 	case "kiro":
 		return &kiroBackend{cfg: cfg}, nil
+	case "qoder":
+		return &qoderBackend{cfg: cfg}, nil
 	case "antigravity":
 		return &antigravityBackend{cfg: cfg}, nil
 	default:
-		return nil, fmt.Errorf("unknown agent type: %q (supported: claude, codex, copilot, opencode, openclaw, hermes, gemini, pi, cursor, kimi, kiro, antigravity)", agentType)
+		return nil, fmt.Errorf("unknown agent type: %q (supported: claude, codex, copilot, opencode, openclaw, hermes, gemini, pi, cursor, kimi, kiro, qoder, antigravity)", agentType)
 	}
 }
 
@@ -164,6 +166,7 @@ var launchHeaders = map[string]string{
 	"hermes":      "hermes acp",
 	"kimi":        "kimi acp",
 	"kiro":        "kiro-cli acp",
+	"qoder":       "qoderclicn --acp",
 	"openclaw":    "openclaw agent (json)",
 	"opencode":    "opencode run (json)",
 	"pi":          "pi (json mode)",

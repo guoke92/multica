@@ -4,6 +4,7 @@ import {
   Navigate,
   Outlet,
   useMatches,
+  useParams,
 } from "react-router-dom";
 import type { RouteObject } from "react-router-dom";
 import { IssueDetailPage } from "./pages/issue-detail-page";
@@ -24,6 +25,7 @@ import { DesktopRuntimesPage } from "./components/desktop-runtimes-page";
 import { AgentsPage } from "@multica/views/agents";
 import { SquadsPage, SquadDetailPage as SquadDetailPageView } from "@multica/views/squads/components";
 import { InboxPage } from "@multica/views/inbox";
+import { RoomsPage } from "@multica/views/room";
 import { SettingsPage } from "@multica/views/settings";
 import { useT } from "@multica/views/i18n";
 import { ErrorBoundary } from "@multica/ui/components/common/error-boundary";
@@ -37,6 +39,11 @@ import { WorkspaceRouteLayout } from "./components/workspace-route-layout";
  * from i18n. The route element has to be a component (not a literal JSX
  * value) for `useT` to run.
  */
+function DesktopRoomDetailRoute() {
+  const { roomId } = useParams();
+  return <RoomsPage roomId={typeof roomId === "string" ? roomId : undefined} />;
+}
+
 function DesktopSettingsRoute() {
   const { t } = useT("settings");
   return (
@@ -154,6 +161,24 @@ export const appRoutes: RouteObject[] = [
             path: "my-issues",
             element: <MyIssuesPage />,
             handle: { title: "My Issues" },
+          },
+          {
+            path: "rooms",
+            element: (
+              <ErrorBoundary>
+                <RoomsPage />
+              </ErrorBoundary>
+            ),
+            handle: { title: "Rooms" },
+          },
+          {
+            path: "rooms/:roomId",
+            element: (
+              <ErrorBoundary>
+                <DesktopRoomDetailRoute />
+              </ErrorBoundary>
+            ),
+            handle: { title: "Room" },
           },
           {
             path: "runtimes",

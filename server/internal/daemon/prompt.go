@@ -18,6 +18,12 @@ func BuildPrompt(task Task, provider string) string {
 	if task.ChatSessionID != "" {
 		return buildChatPrompt(task)
 	}
+	if task.RoomID != "" {
+		if task.RoomWorkflowIntent == "orchestrate" || task.RoomWorkflowIntent == "route" || task.RoomWorkflowIntent == "review" || task.RoomWorkflowIntent == "confirm" || task.RoomWorkflowIntent == "escalate" {
+			return buildRoomManagerPrompt(task)
+		}
+		return buildRoomPrompt(task)
+	}
 	if task.TriggerCommentID != "" {
 		return buildCommentPrompt(task, provider)
 	}
@@ -175,10 +181,96 @@ func buildCommentPrompt(task Task, provider string) string {
 
 // buildChatPrompt constructs a prompt for interactive chat tasks.
 func buildChatPrompt(task Task) string {
+	return buildConversationalPrompt(task, "A user is chatting with you directly. Respond to their message.")
+}
+
+// buildRoomPrompt constructs a prompt for room (ChatCollab) @mention tasks.
+// Ordinary asks are conversational — no assigned issue. Issue APIs are only
+// relevant when the user explicitly asks to look up or create an issue.
+func buildRoomPrompt(task Task) string {
+	intro := "A user @mentioned you in a collaboration room. Respond to their message."
+	if task.RoomWorkflowIntent == "execute" {
+		intro = "You are a role worker in a collaboration room workflow. Complete the assigned phase work."
+	}
+	return buildConversationalPrompt(task, intro)
+}
+
+// buildRoomManagerPrompt constructs a prompt for the room manager agent.
+func buildRoomManagerPrompt(task Task) string {
+	var b strings.Builder
+	b.WriteString("You are the **room router & supervisor** for a Multica collaboration room.\n")
+	b.WriteString("Your job: route user requests to the right agent, evaluate agent output, relay to the next agent when needed, and escalate when stuck.\n")
+	b.WriteString("You MUST NOT create or update Issues yourself — the platform rejects manager agents on `multica issue create` / `multica issue update`. @ role agents (e.g. requirements analyst) to create and maintain Issues.\n\n")
+
+	// Inject room agent roster so the manager knows who to route to.
+	if len(task.RoomAgents) > 0 {
+		b.WriteString("## Room agents (route to these by ID)\n\n")
+		b.WriteString("| Name | ID | Role |\n|------|----|------|\n")
+		for _, ag := range task.RoomAgents {
+			if ag.Role == "manager" {
+				continue // skip self
+			}
+			fmt.Fprintf(&b, "| %s | `%s` | %s |\n", ag.Name, ag.ID, ag.Role)
+		}
+		b.WriteString("\nUse the exact **ID** value (backtick-wrapped) in `route_to` / `relay_to`.\n\n")
+	}
+
+	switch task.RoomWorkflowIntent {
+	case "review":
+		b.WriteString("**Mode: review** — An agent just finished. Evaluate their output against the original request. Decide: done, relay to next agent, or escalate.\n\n")
+	case "confirm":
+		b.WriteString("**Mode: confirm** — Ask the user a clarifying question. They can reply without @mentioning you.\n\n")
+	case "escalate":
+		b.WriteString("**Mode: escalate** — Agents are stuck or need expert help. Introduce a senior agent with context.\n\n")
+	default:
+		b.WriteString("**Mode: route** — Analyze the user message, pick the best agent from the roster above, and emit a route_to action.\n\n")
+	}
+	b.WriteString("There is NO assigned issue. Do NOT run `multica issue get` unless explicitly needed.\n\n")
+	fmt.Fprintf(&b, "User message:\n%s\n", task.ChatMessage)
+	if task.RoomContext != "" {
+		b.WriteString("\nRecent room discussion:\n")
+		b.WriteString(task.RoomContext)
+		b.WriteString("\n")
+	}
+
+	// Hard rule: JSON footer is MANDATORY.
+	b.WriteString("\n## ⚠️ MANDATORY: workflow_action footer\n\n")
+	b.WriteString("You **MUST** end every response with a fenced JSON block. ")
+	b.WriteString("Without this footer the system will NOT dispatch any agent and the workflow will stall.\n")
+	b.WriteString("Write a brief explanation first, then append the JSON block.\n\n")
+	b.WriteString("**Route work:**\n")
+	b.WriteString("```json\n{\"workflow_action\":{\"action\":\"route_to\",\"route_to\":\"<agent_id>\",\"title\":\"<brief reason>\"}}\n```\n\n")
+	b.WriteString("**Relay to next agent (after review):**\n")
+	b.WriteString("```json\n{\"workflow_action\":{\"action\":\"relay_to\",\"relay_to\":\"<agent_id>\",\"relay_reason\":\"<why>\"}}\n```\n\n")
+	b.WriteString("**Escalate (stuck / expert help needed):**\n")
+	b.WriteString("```json\n{\"workflow_action\":{\"action\":\"escalate\",\"escalate_to\":\"<agent_id>\",\"escalate_reason\":\"<why>\"}}\n```\n\n")
+	b.WriteString("**User-facing status (only when no dispatch needed):**\n")
+	b.WriteString("```json\n{\"workflow_action\":{\"action\":\"notify_user\",\"message\":\"<status line>\"}}\n```\n\n")
+	b.WriteString("Legacy actions also supported: `create_delivery`, `dispatch_agent`, `advance_phase`, `update_progress`, `complete_delivery`.\n")
+	b.WriteString("Never skip the footer. If you are unsure which agent to route to, pick the most relevant one — do not omit the footer.\n")
+	b.WriteString("\n**CRITICAL EXAMPLE — your response MUST end with exactly this format:**\n")
+	b.WriteString("```\n")
+	b.WriteString("... your analysis text ...\n\n")
+	b.WriteString("```json\n")
+	b.WriteString(`{"workflow_action":{"action":"route_to","route_to":"<agent_id_from_table>","title":"<reason>"}}` + "\n")
+	b.WriteString("```\n")
+	b.WriteString("```\n")
+	b.WriteString("If the user's request is simple and can be answered directly, use `notify_user` action instead of routing.\n")
+	return b.String()
+}
+
+func buildConversationalPrompt(task Task, intro string) string {
 	var b strings.Builder
 	b.WriteString("You are running as a chat assistant for a Multica workspace.\n")
-	b.WriteString("A user is chatting with you directly. Respond to their message.\n\n")
+	b.WriteString(intro)
+	b.WriteString("\n")
+	b.WriteString("There is NO assigned issue for this run. Do NOT run `multica issue get` unless the user explicitly asks you to look up or work on a specific issue.\n\n")
 	fmt.Fprintf(&b, "User message:\n%s\n", task.ChatMessage)
+	if task.RoomContext != "" {
+		b.WriteString("\nRecent room discussion (for context):\n")
+		b.WriteString(task.RoomContext)
+		b.WriteString("\n")
+	}
 	// List attachments by id + filename so the agent can fetch them via
 	// the CLI. We deliberately do NOT inline the URL: chat attachments
 	// live behind a signed CDN with a short TTL, so by the time the agent

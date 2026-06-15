@@ -1958,6 +1958,8 @@ type CreateIssueRequest struct {
 	// origin_id=agent_task_queue.id).
 	OriginType *string `json:"origin_type,omitempty"`
 	OriginID   *string `json:"origin_id,omitempty"`
+	SourceRoomID    *string `json:"source_room_id,omitempty"`
+	SourceMessageID *string `json:"source_message_id,omitempty"`
 
 	AllowDuplicate bool `json:"allow_duplicate,omitempty"`
 }
@@ -2107,6 +2109,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 
 	// Determine creator identity: agent (via X-Agent-ID header) or member.
 	creatorType, actualCreatorID := h.resolveActor(r, creatorID, workspaceID)
+	if h.rejectIfRoomManagerAgentMutatesIssue(w, r, creatorType, actualCreatorID) {
+		return
+	}
 
 	// Optional origin stamping (quick-create / autopilot). Only the
 	// allowed origin types are accepted; anything else is rejected so a
@@ -2132,6 +2137,11 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		originType = pgtype.Text{String: *req.OriginType, Valid: true}
 		originID = oid
+	}
+
+	if (req.SourceRoomID != nil && *req.SourceRoomID != "") || (req.SourceMessageID != nil && *req.SourceMessageID != "") {
+		writeError(w, http.StatusBadRequest, "source_room_id and source_message_id are no longer supported")
+		return
 	}
 
 	newPosition, err := issueposition.NextTopPosition(r.Context(), tx, wsUUID, status)
@@ -2297,6 +2307,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	userID := requestUserID(r)
 	workspaceID := uuidToString(prevIssue.WorkspaceID)
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	if h.rejectIfRoomManagerAgentMutatesIssue(w, r, actorType, actorID) {
+		return
+	}
 
 	// Read body as raw bytes so we can detect which fields were explicitly sent.
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -2480,9 +2494,6 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	prevDueDate := timestampToPtr(prevIssue.DueDate)
 	dueDateChanged := prevDueDate != resp.DueDate && (prevDueDate == nil) != (resp.DueDate == nil) ||
 		(prevDueDate != nil && resp.DueDate != nil && *prevDueDate != *resp.DueDate)
-
-	// Determine actor identity: agent (via X-Agent-ID header) or member.
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, map[string]any{
 		"issue":               resp,
@@ -2673,6 +2684,22 @@ func (h *Handler) shouldEnqueueOnComment(ctx context.Context, issue db.Issue, ac
 		return false
 	}
 	return true
+}
+
+func (h *Handler) resolveRoomIDFromTask(r *http.Request) (pgtype.UUID, bool) {
+	taskIDStr := r.Header.Get("X-Task-ID")
+	if taskIDStr == "" {
+		return pgtype.UUID{}, false
+	}
+	taskUUID, err := util.ParseUUID(taskIDStr)
+	if err != nil {
+		return pgtype.UUID{}, false
+	}
+	task, err := h.Queries.GetAgentTask(r.Context(), taskUUID)
+	if err != nil || !task.RoomID.Valid {
+		return pgtype.UUID{}, false
+	}
+	return task.RoomID, true
 }
 
 // isAgentRunningOnIssue reports whether the calling agent's current task

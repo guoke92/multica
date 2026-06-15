@@ -34,6 +34,7 @@ import {
   X,
   Zap,
   Users,
+  MessageSquare,
 } from "lucide-react";
 import { WorkspaceAvatar } from "../workspace/workspace-avatar";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
@@ -107,6 +108,7 @@ const EMPTY_INBOX: Awaited<ReturnType<typeof api.listInbox>> = [];
 type NavKey =
   | "inbox"
   | "myIssues"
+  | "rooms"
   | "issues"
   | "projects"
   | "autopilots"
@@ -121,6 +123,7 @@ type NavKey =
 type NavLabelKey =
   | "inbox"
   | "my_issues"
+  | "rooms"
   | "issues"
   | "projects"
   | "autopilots"
@@ -137,6 +140,7 @@ const personalNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] 
 ];
 
 const workspaceNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] = [
+  { key: "rooms", labelKey: "rooms", icon: MessageSquare },
   { key: "issues", labelKey: "issues", icon: ListTodo },
   { key: "projects", labelKey: "projects", icon: FolderKanban },
   { key: "autopilots", labelKey: "autopilots", icon: Zap },

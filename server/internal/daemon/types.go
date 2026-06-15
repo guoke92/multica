@@ -58,7 +58,19 @@ type Task struct {
 	NewCommentCount         int                   `json:"new_comment_count,omitempty"`         // comments on the issue created since this agent's last run (excludes its own); 0/omitted for old daemons or cold start
 	NewCommentsSince        string                `json:"new_comments_since,omitempty"`        // RFC3339 anchor (last run's started_at) the count is measured from; empty on cold start
 	ChatSessionID           string                `json:"chat_session_id,omitempty"`           // non-empty for chat tasks
-	ChatMessage             string                `json:"chat_message,omitempty"`              // user message content for chat tasks
+	RoomID                  string                `json:"room_id,omitempty"`                   // non-empty for room (ChatCollab) tasks
+	RoomContext             string                `json:"room_context,omitempty"`              // recent room messages for context
+	RoomWorkflowIntent      string                `json:"room_workflow_intent,omitempty"`      // orchestrate | route | execute | review | confirm | escalate
+	RoomWorkflowPolicy      json.RawMessage       `json:"room_workflow_policy,omitempty"`      // room.policy JSON for manager runs
+	RoomAgents              []RoomAgentInfo       `json:"room_agents,omitempty"`               // room member agents for manager routing
+	RoomDeliveryID          string                `json:"room_delivery_id,omitempty"`
+	RoomTopicID             string                `json:"room_topic_id,omitempty"`
+	RoomSenderType          string                `json:"room_sender_type,omitempty"`
+	RoomSenderID            string                `json:"room_sender_id,omitempty"`
+	RoomQuoteMessageID      string                `json:"room_quote_message_id,omitempty"`
+	RoomRoleKey             string                `json:"room_role_key,omitempty"`
+	RoomPhaseKey            string                `json:"room_phase_key,omitempty"`
+	ChatMessage             string                `json:"chat_message,omitempty"`              // user message content for chat / room tasks
 	ChatMessageAttachments  []ChatAttachmentMeta  `json:"chat_message_attachments,omitempty"`  // attachments linked to the chat message; agent uses these to `multica attachment download <id>`
 	AutopilotRunID          string                `json:"autopilot_run_id,omitempty"`          // non-empty for autopilot run_only tasks
 	AutopilotID             string                `json:"autopilot_id,omitempty"`              // autopilot that spawned this run
@@ -96,6 +108,13 @@ type ChatAttachmentMeta struct {
 	ID          string `json:"id"`
 	Filename    string `json:"filename"`
 	ContentType string `json:"content_type,omitempty"`
+}
+
+// RoomAgentInfo describes a room member agent for the manager prompt.
+type RoomAgentInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Role string `json:"role"`
 }
 
 // AgentData holds agent details returned by the claim endpoint.

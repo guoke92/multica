@@ -52,6 +52,17 @@ export type WSEventType =
   | "reaction:removed"
   | "issue_reaction:added"
   | "issue_reaction:removed"
+  | "room:message"
+  | "room:message_created"
+  | "room:message_updated"
+  | "room:flow_event_created"
+  | "room:human_action_updated"
+  | "room:invocation_updated"
+  | "room:snapshot_updated"
+  | "room:approval_requested"
+  | "room:archived"
+  | "room:updated"
+  | "room:members_updated"
   | "chat:message"
   | "chat:done"
   | "chat:session_read"
@@ -284,6 +295,8 @@ export interface TaskCancelledPayload {
   agent_id: string;
   issue_id: string;
   chat_session_id?: string;
+  room_id?: string;
+  invocation_id?: string;
   status: string;
 }
 

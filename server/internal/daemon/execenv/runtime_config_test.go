@@ -373,6 +373,10 @@ func TestSubIssueCreationSectionSkippedForNonIssueModes(t *testing.T) {
 			ctx:  TaskContextForEnv{ChatSessionID: "chat-1"},
 		},
 		{
+			name: "room",
+			ctx:  TaskContextForEnv{RoomID: "room-1"},
+		},
+		{
 			name: "quick-create",
 			ctx:  TaskContextForEnv{QuickCreatePrompt: "create me an issue"},
 		},
@@ -556,6 +560,7 @@ func TestInjectRuntimeConfigPreservesUserContent(t *testing.T) {
 		{"cursor", "AGENTS.md"},
 		{"kimi", "AGENTS.md"},
 		{"kiro", "AGENTS.md"},
+		{"qoder", "AGENTS.md"},
 		{"antigravity", "AGENTS.md"},
 		{"gemini", "GEMINI.md"},
 	}
@@ -905,6 +910,7 @@ func TestCleanupRuntimeConfigByProvider(t *testing.T) {
 		{"cursor", "AGENTS.md"},
 		{"kimi", "AGENTS.md"},
 		{"kiro", "AGENTS.md"},
+		{"qoder", "AGENTS.md"},
 		{"antigravity", "AGENTS.md"},
 		{"gemini", "GEMINI.md"},
 	}

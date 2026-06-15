@@ -4,8 +4,14 @@ import {
   DashboardUsageByAgentListSchema,
   DashboardUsageDailyListSchema,
   DuplicateIssueErrorBodySchema,
+  EMPTY_ROOM_FLOW_EVENTS_RESPONSE,
+  EMPTY_ROOM_MESSAGE_LIST,
+  EMPTY_ROOM_WORKBOARD,
   EMPTY_USER,
   ListIssuesResponseSchema,
+  RoomFlowEventsResponseSchema,
+  RoomMessageListSchema,
+  RoomWorkboardSchema,
   RuntimeHourlyActivityListSchema,
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
@@ -268,5 +274,31 @@ describe("dashboard + runtime usage schema drift", () => {
       { date: "2026-05-19", region: "us-east" },
     ]);
     expect((parsed[0] as Record<string, unknown>).region).toBe("us-east");
+  });
+});
+
+describe("Room API schemas", () => {
+  const opts = { endpoint: "test" };
+
+  it("RoomWorkboardSchema tolerates missing fields", () => {
+    const parsed = parseWithFallback({}, RoomWorkboardSchema, EMPTY_ROOM_WORKBOARD, opts);
+    expect(parsed.pending_count).toBe(0);
+    expect(parsed.running_count).toBe(0);
+    expect((parsed as Record<string, unknown>).active_delivery).toBeUndefined();
+  });
+
+  it("RoomFlowEventsResponseSchema returns fallback on null body", () => {
+    const parsed = parseWithFallback(
+      null,
+      RoomFlowEventsResponseSchema,
+      EMPTY_ROOM_FLOW_EVENTS_RESPONSE,
+      opts,
+    );
+    expect(parsed.events).toEqual([]);
+  });
+
+  it("RoomMessageListSchema returns empty list on null body", () => {
+    const parsed = parseWithFallback(null, RoomMessageListSchema, EMPTY_ROOM_MESSAGE_LIST, opts);
+    expect(parsed).toEqual([]);
   });
 });

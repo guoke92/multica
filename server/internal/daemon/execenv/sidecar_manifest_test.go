@@ -153,6 +153,7 @@ var allFileBasedProviders = []string{
 	"cursor",
 	"kimi",
 	"kiro",
+	"qoder",
 	"antigravity",
 	"gemini",
 }
@@ -231,6 +232,7 @@ func TestPrepareThenCleanupSidecarsPreservesUserSkillSibling(t *testing.T) {
 		{"cursor", filepath.Join(".cursor", "skills", "my-own"), "SKILL.md"},
 		{"kimi", filepath.Join(".kimi", "skills", "my-own"), "SKILL.md"},
 		{"kiro", filepath.Join(".kiro", "skills", "my-own"), "SKILL.md"},
+		{"qoder", filepath.Join(".qoder", "skills", "my-own"), "SKILL.md"},
 		{"antigravity", filepath.Join(".agents", "skills", "my-own"), "SKILL.md"},
 		{"hermes", filepath.Join(".agent_context", "skills", "my-own"), "SKILL.md"},
 		{"gemini", filepath.Join(".agent_context", "skills", "my-own"), "SKILL.md"},
@@ -622,6 +624,7 @@ var sameSlugSkillProviderCases = []struct {
 	{"cursor", filepath.Join(".cursor", "skills", "issue-review")},
 	{"kimi", filepath.Join(".kimi", "skills", "issue-review")},
 	{"kiro", filepath.Join(".kiro", "skills", "issue-review")},
+	{"qoder", filepath.Join(".qoder", "skills", "issue-review")},
 	{"antigravity", filepath.Join(".agents", "skills", "issue-review")},
 	{"hermes", filepath.Join(".agent_context", "skills", "issue-review")},
 	{"gemini", filepath.Join(".agent_context", "skills", "issue-review")},

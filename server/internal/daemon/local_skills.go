@@ -80,6 +80,8 @@ func localSkillRootForProvider(provider string) (string, bool, error) {
 		return filepath.Join(home, ".cursor", "skills"), true, nil
 	case "kiro":
 		return filepath.Join(home, ".kiro", "skills"), true, nil
+	case "qoder":
+		return filepath.Join(home, ".qoder", "skills"), true, nil
 	case "antigravity":
 		// agy inherits Gemini CLI's global skill root; see
 		// https://antigravity.google/docs/gcli-migration ("Global skills").

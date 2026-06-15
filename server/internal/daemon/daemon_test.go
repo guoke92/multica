@@ -191,6 +191,7 @@ func TestProviderNeedsInlineSystemPrompt(t *testing.T) {
 		{provider: "hermes", want: false},
 		{provider: "kiro", want: true},
 		{provider: "kimi", want: true},
+		{provider: "qoder", want: true},
 		{provider: "codex", want: false},
 		{provider: "claude", want: false},
 	}
@@ -353,6 +354,38 @@ func TestBuildPromptAutopilotRunOnly(t *testing.T) {
 
 	if strings.Contains(prompt, "Your assigned issue ID is:") {
 		t.Fatalf("autopilot prompt should not use issue assignment template\n---\n%s", prompt)
+	}
+}
+
+func TestBuildPromptRoomConversation(t *testing.T) {
+	t.Parallel()
+
+	prompt := BuildPrompt(Task{
+		RoomID:      "room-1",
+		ChatMessage: "帮我看看这个方案是否合理",
+		RoomContext: "user: 我们在讨论登录重构\n---\nagent: 可以先做 OAuth2",
+	}, "claude")
+
+	for _, want := range []string{
+		"collaboration room",
+		"NO assigned issue",
+		"Do NOT run `multica issue get`",
+		"帮我看看这个方案是否合理",
+		"Recent room discussion",
+		"OAuth2",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("room prompt missing %q\n---\n%s", want, prompt)
+		}
+	}
+
+	for _, absent := range []string{
+		"Your assigned issue ID is:",
+		"issue comment list",
+	} {
+		if strings.Contains(prompt, absent) {
+			t.Fatalf("room prompt should NOT contain %q\n---\n%s", absent, prompt)
+		}
 	}
 }
 

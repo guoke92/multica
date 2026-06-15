@@ -1,0 +1,32 @@
+{
+  "sqa_three_phase": {
+    "title": "SQA 三阶段交付",
+    "description": "需求分析 → 设计（可并行）→ 前端开发，每阶段由群管理验收后推进。",
+    "phases": [
+      {
+        "key": "requirement",
+        "title": "需求分析",
+        "role_key": "requirement_analyst",
+        "parallel": false
+      },
+      {
+        "key": "design",
+        "title": "设计",
+        "role_keys": ["architect", "ui_designer"],
+        "parallel": true
+      },
+      {
+        "key": "development",
+        "title": "开发",
+        "role_key": "frontend",
+        "parallel": false
+      }
+    ],
+    "role_keys": [
+      "requirement_analyst",
+      "architect",
+      "ui_designer",
+      "frontend"
+    ]
+  }
+}

@@ -15,6 +15,10 @@ export interface CreateIssueRequest {
   start_date?: string;
   due_date?: string;
   attachment_ids?: string[];
+  origin_type?: string;
+  origin_id?: string;
+  source_room_id?: string;
+  source_message_id?: string;
 }
 
 export interface UpdateIssueRequest {

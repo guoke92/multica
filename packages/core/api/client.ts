@@ -180,6 +180,20 @@ import {
   EMPTY_CREATE_BILLING_CHECKOUT_SESSION_RESPONSE,
   EMPTY_BILLING_CHECKOUT_SESSION_STATUS,
   EMPTY_CREATE_BILLING_PORTAL_SESSION_RESPONSE,
+  EMPTY_ROOM_FLOW_EVENTS_RESPONSE,
+  EMPTY_ROOM_LIST,
+  EMPTY_ROOM_MESSAGE_LIST,
+  EMPTY_ROOM_TOPICS_RESPONSE,
+  EMPTY_ROOM_WORKBOARD,
+  EMPTY_MENTION_INVOCATION_LIST,
+  EMPTY_ROOM,
+  MentionInvocationListSchema,
+  RoomFlowEventsResponseSchema,
+  RoomListSchema,
+  RoomMessageListSchema,
+  RoomSchema,
+  RoomTopicsResponseSchema,
+  RoomWorkboardSchema,
 } from "./schemas";
 
 /** Identifies the calling client to the server.
@@ -1618,6 +1632,257 @@ export class ApiClient {
 
   async markChatSessionRead(sessionId: string): Promise<void> {
     await this.fetch(`/api/chat/sessions/${sessionId}/read`, { method: "POST" });
+  }
+
+  // Rooms (ChatCollab)
+  async listRooms(): Promise<import("../types/room").Room[]> {
+    const raw = await this.fetch("/api/rooms");
+    return parseWithFallback(raw, RoomListSchema, EMPTY_ROOM_LIST, {
+      endpoint: "GET /api/rooms",
+    });
+  }
+
+  async getRoom(roomId: string): Promise<import("../types/room").Room> {
+    const raw = await this.fetch(`/api/rooms/${roomId}`);
+    return parseWithFallback(raw, RoomSchema, EMPTY_ROOM, {
+      endpoint: "GET /api/rooms/:id",
+    });
+  }
+
+  async createRoom(data: {
+    name: string;
+    description?: string;
+    type?: string;
+    manager_agent_id?: string;
+    manager_agent?: {
+      name: string;
+      runtime_id: string;
+      model?: string;
+      instructions?: string;
+    };
+    policy?: import("../types/room").RoomPolicy;
+    agent_member_ids?: string[];
+    member_user_ids?: string[];
+  }): Promise<import("../types/room").Room> {
+    return this.fetch("/api/rooms", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async listRoomMessages(
+    roomId: string,
+    params?: { limit?: number; before?: string },
+  ): Promise<import("../types/room").RoomMessage[]> {
+    const q = new URLSearchParams();
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.before) q.set("before", params.before);
+    const suffix = q.toString() ? `?${q}` : "";
+    const raw = await this.fetch(`/api/rooms/${roomId}/messages${suffix}`);
+    return parseWithFallback(raw, RoomMessageListSchema, EMPTY_ROOM_MESSAGE_LIST, {
+      endpoint: "GET /api/rooms/:id/messages",
+    });
+  }
+
+  async sendRoomMessage(
+    roomId: string,
+    data: {
+      content: string;
+      quote_message_id?: string;
+    },
+  ): Promise<import("../types/room").SendRoomMessageResponse> {
+    return this.fetch(`/api/rooms/${roomId}/messages`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateRoomMessage(
+    roomId: string,
+    messageId: string,
+    data: { content: string },
+  ): Promise<{
+    message_id: string;
+    content: string;
+    edited_at: string;
+    invocations?: import("../types/room").MentionInvocation[];
+  }> {
+    return this.fetch(`/api/rooms/${roomId}/messages/${messageId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async regenerateRoomAgentMessage(
+    roomId: string,
+    messageId: string,
+  ): Promise<import("../types/room").MentionInvocation> {
+    return this.fetch(`/api/rooms/${roomId}/messages/${messageId}/regenerate`, {
+      method: "POST",
+    });
+  }
+
+  async listRoomInvocations(
+    roomId: string,
+  ): Promise<import("../types/room").MentionInvocation[]> {
+    const raw = await this.fetch(`/api/rooms/${roomId}/invocations`);
+    return parseWithFallback(raw, MentionInvocationListSchema, EMPTY_MENTION_INVOCATION_LIST, {
+      endpoint: "GET /api/rooms/:id/invocations",
+    });
+  }
+
+  async getRoomWorkboard(
+    roomId: string,
+  ): Promise<import("../types/room").RoomWorkboard> {
+    const raw = await this.fetch(`/api/rooms/${roomId}/workboard`);
+    return parseWithFallback(raw, RoomWorkboardSchema, EMPTY_ROOM_WORKBOARD, {
+      endpoint: "GET /api/rooms/:id/workboard",
+    });
+  }
+
+  async listRoomTopics(
+    roomId: string,
+  ): Promise<{ topics: import("../types/room").RoomTopic[] }> {
+    const raw = await this.fetch(`/api/rooms/${roomId}/topics`);
+    return parseWithFallback(raw, RoomTopicsResponseSchema, EMPTY_ROOM_TOPICS_RESPONSE, {
+      endpoint: "GET /api/rooms/:id/topics",
+    });
+  }
+
+  async listRoomFlowEvents(
+    roomId: string,
+    topicId: string,
+    params?: { limit?: number; before?: string },
+  ): Promise<{ events: import("../types/room").RoomFlowEvent[] }> {
+    const q = new URLSearchParams();
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.before) q.set("before", params.before);
+    const suffix = q.toString() ? `?${q}` : "";
+    const raw = await this.fetch(
+      `/api/rooms/${roomId}/topics/${topicId}/flow-events${suffix}`,
+    );
+    return parseWithFallback(raw, RoomFlowEventsResponseSchema, EMPTY_ROOM_FLOW_EVENTS_RESPONSE, {
+      endpoint: "GET /api/rooms/:id/topics/:topicId/flow-events",
+    });
+  }
+
+  async decideRoomHumanAction(
+    roomId: string,
+    actionId: string,
+    data: { decision: "approved" | "rejected"; reject_reason?: string },
+  ): Promise<{ id: string; status: string }> {
+    return this.fetch(`/api/rooms/${roomId}/human-actions/${actionId}/decide`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async listRoomMembers(
+    roomId: string,
+  ): Promise<import("../types/room").RoomMember[]> {
+    return this.fetch(`/api/rooms/${roomId}/members`);
+  }
+
+  async updateRoom(
+    roomId: string,
+    data: {
+      name?: string;
+      description?: string;
+      manager_agent_id?: string;
+      manager_custom_prompt?: string;
+      manager_runtime_id?: string;
+      manager_model?: string;
+    },
+  ): Promise<import("../types/room").Room> {
+    return this.fetch(`/api/rooms/${roomId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async addRoomMember(
+    roomId: string,
+    data: {
+      principal_type: string;
+      principal_id: string;
+      role?: string;
+    },
+  ): Promise<import("../types/room").RoomMember> {
+    return this.fetch(`/api/rooms/${roomId}/members`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async removeRoomMember(
+    roomId: string,
+    data: { principal_type: string; principal_id: string },
+  ): Promise<void> {
+    await this.fetch(`/api/rooms/${roomId}/members`, {
+      method: "DELETE",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateRoomMemberRole(
+    roomId: string,
+    data: {
+      principal_type: string;
+      principal_id: string;
+      role?: string;
+      action?: string;
+    },
+  ): Promise<import("../types/room").RoomMember> {
+    return this.fetch(`/api/rooms/${roomId}/members/role`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async leaveRoom(roomId: string): Promise<void> {
+    await this.fetch(`/api/rooms/${roomId}/leave`, { method: "POST" });
+  }
+
+  async archiveRoom(roomId: string): Promise<void> {
+    await this.fetch(`/api/rooms/${roomId}`, { method: "DELETE" });
+  }
+
+  async retryInvocation(
+    invocationId: string,
+  ): Promise<import("../types/room").MentionInvocation> {
+    return this.fetch(`/api/invocations/${invocationId}/retry`, { method: "POST" });
+  }
+
+  async cancelRoomInvocation(
+    roomId: string,
+    invocationId: string,
+  ): Promise<import("../types/room").MentionInvocation> {
+    return this.fetch(`/api/rooms/${roomId}/invocations/${invocationId}/cancel`, {
+      method: "POST",
+    });
+  }
+
+  /** @deprecated Prefer cancelRoomInvocation for permission checks */
+  async cancelInvocation(
+    invocationId: string,
+  ): Promise<import("../types/room").MentionInvocation> {
+    return this.fetch(`/api/invocations/${invocationId}/cancel`, { method: "POST" });
+  }
+
+  async resumeInvocation(
+    invocationId: string,
+  ): Promise<import("../types/room").MentionInvocation> {
+    return this.fetch(`/api/invocations/${invocationId}/resume`, { method: "POST" });
+  }
+
+  async decideApproval(
+    approvalId: string,
+    data: { decision: "approved" | "rejected"; reject_reason?: string },
+  ): Promise<{ id: string; status: string }> {
+    return this.fetch(`/api/approvals/${approvalId}/decide`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
   }
 
   async cancelTaskById(taskId: string): Promise<void> {

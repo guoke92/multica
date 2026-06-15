@@ -68,6 +68,19 @@ const (
 	EventSkillUpdated = "skill:updated"
 	EventSkillDeleted = "skill:deleted"
 
+	// Room (ChatCollab) events
+	EventRoomMessage          = "room:message"
+	EventRoomMessageCreated   = "room:message_created"
+	EventRoomMessageUpdated   = "room:message_updated"
+	EventRoomInvocationUpdated = "room:invocation_updated"
+	EventRoomSnapshotUpdated  = "room:snapshot_updated"
+	EventRoomFlowEventCreated = "room:flow_event_created"
+	EventRoomHumanActionUpdated = "room:human_action_updated"
+	EventRoomApprovalRequested = "room:approval_requested"
+	EventRoomArchived          = "room:archived"
+	EventRoomUpdated           = "room:updated"
+	EventRoomMembersUpdated    = "room:members_updated"
+
 	// Chat events
 	EventChatMessage        = "chat:message"
 	EventChatDone           = "chat:done"

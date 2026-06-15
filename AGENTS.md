@@ -45,3 +45,70 @@ make check            # Full verification pipeline
 ```
 
 See CLAUDE.md for the complete command reference.
+
+### Testing Quick Reference
+
+```bash
+# Single TS test (any package)
+pnpm --filter @multica/views exec vitest run auth/login-page.test.tsx
+pnpm --filter @multica/core exec vitest run runtimes/version.test.ts
+
+# Single Go test
+cd server && go test ./internal/handler/ -run TestName
+
+# E2E test (requires backend + frontend running)
+pnpm exec playwright test e2e/tests/specific-test.spec.ts
+```
+
+### Non-Obvious Gotchas
+
+- **Reserved slugs:** New global routes MUST use single word (`/login`) or `/{noun}/{verb}` (`/workspaces/new`). Hyphenated root routes (`/new-workspace`) are forbidden. Edit `server/internal/handler/reserved_slugs.json`, run `pnpm generate:reserved-slugs`, commit both.
+- **API response parsing:** Never use bare `as` casts on API responses. Use `parseWithFallback` from `packages/core/api/schema.ts` with zod schemas. Desktop app may hit older servers.
+- **Desktop drag region:** Every full-window desktop view needs `<DragStrip />` as first flex child. Interactive UI in top 48px needs `WebkitAppRegion: "no-drag"`.
+- **pnpm catalog:** All shared deps use `catalog:` references in `pnpm-workspace.yaml`. Add new shared deps to catalog first.
+- **Dependency declaration:** Every workspace must explicitly declare all external packages in its own `package.json`. Phantom deps are prohibited.
+
+### Environment Setup
+
+```bash
+# Quick start (recommended)
+make dev
+
+# Explicit setup
+cp .env.example .env
+make setup
+make start
+
+# Worktree
+git worktree add ../multica-feature -b feat/my-change main
+cd ../multica-feature
+make worktree-env
+make dev
+```
+
+### Go Backend
+
+```bash
+make server           # Run Go server only
+make build            # Build binaries to server/bin/
+make sqlc             # Regenerate sqlc after editing SQL in server/pkg/db/queries/
+make migrate-up       # Run migrations
+```
+
+### Frontend
+
+```bash
+pnpm dev:web          # Next.js dev server (port 3000)
+pnpm dev:desktop      # Electron dev
+pnpm build            # Build all frontend apps
+```
+
+### Mobile (Expo)
+
+```bash
+pnpm dev:mobile                  # Metro, dev env
+pnpm dev:mobile:staging          # Metro, staging env
+pnpm ios:mobile                  # Native build + install to iOS Simulator
+```
+
+See `apps/mobile/CLAUDE.md` for mobile-specific rules.

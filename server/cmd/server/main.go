@@ -314,6 +314,7 @@ func main() {
 
 	// Start background sweeper to mark stale runtimes as offline.
 	go runRuntimeSweeper(sweepCtx, queries, liveness, taskSvc, bus)
+	go runRoomInvocationSweeper(sweepCtx, taskSvc)
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotScheduler(autopilotCtx, queries, autopilotSvc)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())

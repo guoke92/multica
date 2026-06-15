@@ -70,6 +70,19 @@ type TaskContextForEnv struct {
 	ProjectTitle            string                  // human-readable project title
 	ProjectResources        []ProjectResourceForEnv // resources attached to the project
 	ChatSessionID           string                  // non-empty for chat tasks
+	RoomID                  string                  // non-empty for room (ChatCollab) tasks
+	RoomContext             string                  // recent room messages for conversational context
+	RoomWorkflowIntent      string                  // orchestrate | route | execute | review | confirm | escalate
+	RoomWorkflowPolicy      string                  // serialized room.policy for manager brief
+	RoomAgents              string                  // JSON array of room member agents for manager routing
+	RoomDeliveryID          string
+	RoomTopicID             string
+	RoomSenderType          string
+	RoomSenderID            string
+	RoomQuoteMessageID      string
+	RoomRoleKey             string
+	RoomPhaseKey            string
+	ChatMessage             string                  // trigger message for chat / room tasks
 	AutopilotRunID          string                  // non-empty for autopilot run_only tasks
 	AutopilotID             string
 	AutopilotTitle          string

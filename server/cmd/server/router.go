@@ -711,6 +711,38 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			})
 			r.Get("/api/chat/pending-tasks", h.ListPendingChatTasks)
 
+			r.Route("/api/rooms", func(r chi.Router) {
+				r.Post("/", h.CreateRoom)
+				r.Get("/", h.ListRooms)
+				r.Route("/{roomId}", func(r chi.Router) {
+					r.Get("/", h.GetRoom)
+					r.Patch("/", h.UpdateRoom)
+					r.Delete("/", h.ArchiveRoom)
+					r.Get("/members", h.ListRoomMembers)
+					r.Post("/members", h.AddRoomMember)
+					r.Delete("/members", h.RemoveRoomMember)
+					r.Patch("/members/role", h.UpdateRoomMemberRole)
+					r.Post("/leave", h.LeaveRoom)
+					r.Post("/messages", h.SendRoomMessage)
+					r.Get("/messages", h.ListRoomMessages)
+					r.Patch("/messages/{messageId}", h.UpdateRoomMessage)
+					r.Post("/messages/{messageId}/regenerate", h.RegenerateRoomAgentMessage)
+					r.Get("/invocations", h.ListRoomInvocations)
+					r.Get("/workboard", h.GetRoomWorkboard)
+					r.Get("/topics", h.ListRoomTopics)
+					r.Get("/topics/{topicId}/flow-events", h.ListRoomFlowEvents)
+					r.Post("/human-actions/{actionId}/decide", h.DecideRoomHumanAction)
+					r.Post("/invocations/{invocationId}/cancel", h.CancelRoomInvocation)
+					r.Get("/deliveries", h.ListRoomDeliveries)
+					r.Get("/deliveries/{deliveryId}/topics", h.ListRoomDeliveryTopics)
+					r.Patch("/messages/{messageId}/card", h.PatchRoomMessageCard)
+				})
+			})
+			r.Post("/api/invocations/{invocationId}/retry", h.RetryInvocation)
+			r.Post("/api/invocations/{invocationId}/cancel", h.CancelInvocation)
+			r.Post("/api/invocations/{invocationId}/resume", h.ResumeInvocation)
+			r.Post("/api/approvals/{approvalId}/decide", h.DecideApproval)
+
 			// Inbox
 			r.Route("/api/inbox", func(r chi.Router) {
 				r.Get("/", h.ListInbox)

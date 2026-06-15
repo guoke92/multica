@@ -42,6 +42,7 @@
     "./auth": "./auth/index.ts",
     "./search": "./search/index.ts",
     "./chat": "./chat/index.ts",
+    "./room": "./room/index.ts",
     "./settings": "./settings/index.ts",
     "./invite": "./invite/index.ts",
     "./invitations": "./invitations/index.ts",

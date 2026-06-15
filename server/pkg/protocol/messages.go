@@ -64,6 +64,16 @@ type RuntimeInfo struct {
 	Status  string `json:"status"`
 }
 
+// RoomMessagePayload is broadcast when a new room message is created.
+type RoomMessagePayload struct {
+	RoomID    string `json:"room_id"`
+	MessageID string `json:"message_id"`
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	TaskID    string `json:"task_id,omitempty"`
+	CreatedAt string `json:"created_at"`
+}
+
 // ChatMessagePayload is broadcast when a new chat message is created.
 type ChatMessagePayload struct {
 	ChatSessionID string `json:"chat_session_id"`

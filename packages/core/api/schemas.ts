@@ -833,3 +833,159 @@ export const CreateBillingPortalSessionResponseSchema = z.object({
 export const EMPTY_CREATE_BILLING_PORTAL_SESSION_RESPONSE: CreateBillingPortalSessionResponse = {
   url: "",
 };
+
+// ---------------------------------------------------------------------------
+// Room (ChatCollab) v2.3 — lenient schemas for workboard, messages, flow events.
+// ---------------------------------------------------------------------------
+
+const RoomSnapshotSchema = z
+  .record(z.string(), z.unknown())
+  .catch({});
+
+export const RoomSchema = z
+  .object({
+    id: z.string(),
+    workspace_id: z.string().default(""),
+    name: z.string().default(""),
+    description: z.string().default(""),
+    type: z.string().default("project"),
+    manager_agent_id: z.string().optional(),
+    policy: z.record(z.string(), z.unknown()).optional(),
+    snapshot: RoomSnapshotSchema,
+    created_at: z.string().default(""),
+    updated_at: z.string().default(""),
+  })
+  .loose();
+
+export const RoomListSchema = z.array(RoomSchema);
+
+export const EMPTY_ROOM: import("../types/room").Room = {
+  id: "",
+  workspace_id: "",
+  name: "",
+  description: "",
+  type: "project",
+  snapshot: {},
+  created_at: "",
+  updated_at: "",
+};
+
+export const EMPTY_ROOM_LIST: import("../types/room").Room[] = [];
+
+export const MentionInvocationSchema = z
+  .object({
+    id: z.string(),
+    message_id: z.string().optional(),
+    target_type: z.string().default("agent"),
+    target_id: z.string().default(""),
+    intent: z.string().optional(),
+    status: z.string().default("pending"),
+    task_id: z.string().optional(),
+    response_message_id: z.string().optional(),
+    retry_count: z.number().optional(),
+    max_retries: z.number().optional(),
+    failure_reason: z.string().optional(),
+    created_at: z.string().optional(),
+  })
+  .loose();
+
+export const MentionInvocationListSchema = z.array(MentionInvocationSchema);
+
+export const EMPTY_MENTION_INVOCATION_LIST: import("../types/room").MentionInvocation[] =
+  [];
+
+const TopicSummarySchema = z.object({
+  id: z.string(),
+  title: z.string().default(""),
+  status: z.string(),
+  root_message_id: z.string().optional(),
+  last_message_id: z.string().optional(),
+  event_count: z.number().default(0),
+  updated_at: z.string(),
+}).loose();
+
+export const RoomWorkboardSchema = z.object({
+  pending_count: z.number().default(0),
+  queued_count: z.number().optional(),
+  running_count: z.number().default(0),
+  failed_count: z.number().optional(),
+  timed_out_count: z.number().optional(),
+  active_topic_id: z.string().optional(),
+  topic_summaries: z.array(TopicSummarySchema).optional(),
+  latest_event_id: z.string().optional(),
+  progress_items: z
+    .array(
+      z.object({
+        title: z.string(),
+        status: z.string(),
+        detail: z.string().optional(),
+      }).loose(),
+    )
+    .optional(),
+}).loose();
+
+export const EMPTY_ROOM_WORKBOARD = {
+  pending_count: 0,
+  running_count: 0,
+};
+
+export const RoomMessageSchema = z.object({
+  id: z.string(),
+  sender_type: z.string(),
+  sender_id: z.string().optional(),
+  content: z.string().default(""),
+  quote_message_id: z.string().optional(),
+  delivery_id: z.string().optional(),
+  topic_id: z.string().optional(),
+  message_kind: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  relay_metadata: z.record(z.string(), z.unknown()).optional(),
+  created_at: z.string(),
+  edited_at: z.string().optional(),
+}).loose();
+
+export const RoomMessageListSchema = z.array(RoomMessageSchema);
+
+export const EMPTY_ROOM_MESSAGE_LIST: import("../types/room").RoomMessage[] = [];
+
+export const RoomFlowEventSchema = z.object({
+  id: z.string(),
+  room_id: z.string(),
+  topic_id: z.string(),
+  type: z.string(),
+  message_id: z.string().optional(),
+  invocation_id: z.string().optional(),
+  actor_type: z.string(),
+  actor_id: z.string().optional(),
+  payload: z.record(z.string(), z.unknown()).default({}),
+  created_at: z.string(),
+}).loose();
+
+export const RoomFlowEventsResponseSchema = z.object({
+  events: z.array(RoomFlowEventSchema).default([]),
+}).loose();
+
+export const EMPTY_ROOM_FLOW_EVENTS_RESPONSE = { events: [] as import("../types/room").RoomFlowEvent[] };
+
+export const RoomTopicSchema = z.object({
+  id: z.string(),
+  room_id: z.string(),
+  delivery_id: z.string().optional(),
+  parent_topic_id: z.string().optional(),
+  title: z.string().default(""),
+  status: z.string(),
+  phase_key: z.string().default(""),
+  assignee_agent_id: z.string().optional(),
+  root_message_id: z.string().optional(),
+  last_message_id: z.string().optional(),
+  event_count: z.number().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose();
+
+export const RoomTopicsResponseSchema = z.object({
+  topics: z.array(RoomTopicSchema).default([]),
+}).loose();
+
+export const EMPTY_ROOM_TOPICS_RESPONSE = { topics: [] as import("../types/room").RoomTopic[] };
+

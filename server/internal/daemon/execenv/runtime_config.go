@@ -138,6 +138,7 @@ func formatProjectResource(r ProjectResourceForEnv) string {
 // For Cursor:   writes {workDir}/AGENTS.md  (skills discovered natively from .cursor/skills/)
 // For Kimi:        writes {workDir}/AGENTS.md  (Kimi Code CLI reads AGENTS.md natively; skills auto-discovered from project skills dirs)
 // For Kiro:        writes {workDir}/AGENTS.md  (Kiro CLI reads AGENTS.md natively; skills auto-discovered from project skills dirs)
+// For Qoder:       writes {workDir}/AGENTS.md  (Qoder CLI reads AGENTS.md natively; skills auto-discovered from .qoder/skills/ — see https://docs.qoder.com/zh/cli/acp)
 // For Antigravity: writes {workDir}/AGENTS.md  (agy CLI reads AGENTS.md natively; skills discovered natively from .agents/skills/ — see https://antigravity.google/docs/gcli-migration)
 func InjectRuntimeConfig(workDir, provider string, ctx TaskContextForEnv) (string, error) {
 	content := buildMetaSkillContent(provider, ctx)
@@ -158,7 +159,7 @@ func runtimeConfigPath(workDir, provider string) string {
 	switch provider {
 	case "claude":
 		return filepath.Join(workDir, "CLAUDE.md")
-	case "codex", "copilot", "opencode", "openclaw", "hermes", "pi", "cursor", "kimi", "kiro", "antigravity":
+	case "codex", "copilot", "opencode", "openclaw", "hermes", "pi", "cursor", "kimi", "kiro", "qoder", "antigravity":
 		return filepath.Join(workDir, "AGENTS.md")
 	case "gemini":
 		return filepath.Join(workDir, "GEMINI.md")
@@ -505,7 +506,7 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 	// issue (comment-triggered or assignment-triggered). Chat / quick-create /
 	// run-only autopilot don't carry an issue id and would just generate a
 	// failed `metadata list` call on every entry.
-	hasIssueContext := ctx.ChatSessionID == "" && ctx.QuickCreatePrompt == "" && ctx.AutopilotRunID == ""
+	hasIssueContext := ctx.ChatSessionID == "" && ctx.RoomID == "" && ctx.QuickCreatePrompt == "" && ctx.AutopilotRunID == ""
 	if hasIssueContext {
 		b.WriteString("## Issue Metadata\n\n")
 		b.WriteString("Each issue carries a small KV `metadata` bag — a high-signal scratchpad where agents pin the handful of facts that future runs on this same issue will look up over and over (the PR URL, the deploy URL, what we're blocked on). It is NOT a place to record every fact you discover — that's what comments and the description are for. Most runs write **zero** new keys; that's the expected case, not a failure.\n\n")
@@ -518,16 +519,52 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 
 	b.WriteString("### Workflow\n\n")
 
-	if ctx.ChatSessionID != "" {
-		// Chat task: interactive assistant mode
-		b.WriteString("**You are in chat mode.** A user is messaging you directly in a chat window.\n\n")
+	if ctx.ChatSessionID != "" || ctx.RoomID != "" {
+		// Chat / room task: conversational assistant mode — no assigned issue.
+		if ctx.RoomID != "" {
+			if ctx.RoomWorkflowIntent == "orchestrate" || ctx.RoomWorkflowIntent == "route" || ctx.RoomWorkflowIntent == "review" || ctx.RoomWorkflowIntent == "confirm" || ctx.RoomWorkflowIntent == "escalate" {
+				b.WriteString("**You are the room router & supervisor.** Route user requests to the right agent, evaluate output, relay when needed, and escalate when stuck.\n")
+				b.WriteString("Do NOT run `multica issue create` or `multica issue update` — manager agents are forbidden from Issue mutations. @ role agents to create/update Issues.\n\n")
+				if strings.TrimSpace(ctx.RoomWorkflowPolicy) != "" {
+					b.WriteString("## Room policy\n\n```json\n")
+					b.WriteString(ctx.RoomWorkflowPolicy)
+					b.WriteString("\n```\n\n")
+				}
+				if strings.TrimSpace(ctx.RoomAgents) != "" {
+					b.WriteString("## Available room agents\n\n```json\n")
+					b.WriteString(ctx.RoomAgents)
+					b.WriteString("\n```\n\n")
+				}
+				b.WriteString("Emit a fenced JSON footer with `workflow_action` on every completion (see per-turn prompt).\n")
+				b.WriteString("This footer is **MANDATORY** — without it the system will NOT dispatch any agent.\n\n")
+			} else if ctx.RoomWorkflowIntent == "execute" {
+				b.WriteString("**You are a room workflow role worker.** Complete your assigned phase; the manager will review automatically.\n\n")
+				if ctx.RoomRoleKey != "" {
+					fmt.Fprintf(&b, "Assigned role: `%s`\n", ctx.RoomRoleKey)
+				}
+				if ctx.RoomPhaseKey != "" {
+					fmt.Fprintf(&b, "Phase: `%s`\n\n", ctx.RoomPhaseKey)
+				}
+			} else {
+				b.WriteString("**You are in room chat mode.** A user @mentioned you in a collaboration room.\n\n")
+			}
+		} else {
+			b.WriteString("**You are in chat mode.** A user is messaging you directly in a chat window.\n\n")
+		}
 		b.WriteString("- Respond conversationally and helpfully to the user's message\n")
+		b.WriteString("- There is NO assigned issue for this run — do NOT run `multica issue get` on entry\n")
 		b.WriteString("- You have full access to the `multica` CLI to look up issues, workspace info, members, agents, etc.\n")
 		b.WriteString("- If asked about issues, use `multica issue list --output json` or `multica issue get <id> --output json`\n")
 		b.WriteString("- If asked about the workspace, use `multica workspace get --output json`\n")
-		b.WriteString("- If asked to perform actions (create issues, update status, etc.), use the appropriate CLI commands\n")
+		b.WriteString("- If asked to perform actions (create issues, update status, etc.), use the appropriate CLI commands")
+		if ctx.RoomWorkflowIntent == "orchestrate" || ctx.RoomWorkflowIntent == "route" || ctx.RoomWorkflowIntent == "review" || ctx.RoomWorkflowIntent == "confirm" || ctx.RoomWorkflowIntent == "escalate" {
+			b.WriteString(" — except Issue create/update, which are forbidden for the room manager; delegate to @mentioned role agents\n")
+		} else {
+			b.WriteString("\n")
+		}
 		b.WriteString("- If the task requires code changes, use `multica repo checkout <url>` to get the code first. Use `--ref <branch-or-sha>` when you need an exact revision\n")
-		b.WriteString("- Keep responses concise and direct\n\n")
+		b.WriteString("- Keep responses concise and direct\n")
+		b.WriteString("- **Delegating to another agent:** only when the user explicitly asks you to loop someone in. Use a real mention link so the platform dispatches them: `[@Name](mention://agent/<agent-id>)` (run `multica agent list --output json` for ids). Plain `@Name` text also works in rooms, but the link form is preferred. Do not @mention as a thank-you or sign-off — that retriggers loops.\n\n")
 	} else if ctx.QuickCreatePrompt != "" {
 		// Quick-create task: detailed field / output rules live in the
 		// per-turn prompt (BuildPrompt → buildQuickCreatePrompt) so they
@@ -618,7 +655,7 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 	// `done`, and the agent has nothing to do or avoid on that path.
 	// Section is skipped for chat, quick-create, and run-only autopilot
 	// runs (no parent/child semantics there).
-	if ctx.IssueID != "" && ctx.ChatSessionID == "" && ctx.QuickCreatePrompt == "" && ctx.AutopilotRunID == "" {
+	if ctx.IssueID != "" && ctx.ChatSessionID == "" && ctx.RoomID == "" && ctx.QuickCreatePrompt == "" && ctx.AutopilotRunID == "" {
 		b.WriteString("## Sub-issue Creation\n\n")
 		b.WriteString("**Choosing `--status` when creating sub-issues.** `--status todo` = **start now** (the default — an agent assignee fires immediately). `--status backlog` = **wait** (assignee is set but no trigger fires; promote later with `multica issue status <child-id> todo`). Parallel children: all `--status todo`. Strict serial Step 1→2→3: only Step 1 is `todo`; Steps 2/3 are `--status backlog` from the start, promoted in turn.\n\n")
 	}
@@ -629,7 +666,7 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 		case "claude":
 			// Claude discovers skills natively from .claude/skills/ — just list names.
 			b.WriteString("You have the following skills installed (discovered automatically):\n\n")
-		case "codex", "copilot", "opencode", "openclaw", "pi", "cursor", "kimi", "kiro", "antigravity":
+		case "codex", "copilot", "opencode", "openclaw", "pi", "cursor", "kimi", "kiro", "qoder", "antigravity":
 			// Codex, Copilot, OpenCode, OpenClaw, Pi, Cursor, Kimi, Kiro, and
 			// Antigravity discover skills natively from their respective paths.
 			// For OpenClaw, the daemon also writes a per-task openclaw-config.json

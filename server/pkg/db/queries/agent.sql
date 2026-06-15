@@ -274,12 +274,18 @@ WHERE id = (
               (atq.issue_id IS NOT NULL AND active.issue_id = atq.issue_id)
               OR (atq.chat_session_id IS NOT NULL AND active.chat_session_id = atq.chat_session_id)
               OR (
+                atq.invocation_id IS NOT NULL
+                AND active.invocation_id = atq.invocation_id
+              )
+              OR (
                 atq.issue_id IS NULL
                 AND atq.chat_session_id IS NULL
                 AND atq.autopilot_run_id IS NULL
+                AND atq.room_id IS NULL
                 AND active.issue_id IS NULL
                 AND active.chat_session_id IS NULL
                 AND active.autopilot_run_id IS NULL
+                AND active.room_id IS NULL
               )
             )
       )

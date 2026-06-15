@@ -22,18 +22,19 @@ describe("resolveRemoteApiUrl", () => {
     ).toBe("http://localhost:19000");
   });
 
-  it("derives localhost backend URL from PORT when no API URL is set", () => {
-    expect(resolveRemoteApiUrl({ PORT: "19080" })).toBe("http://localhost:19080");
+  it("ignores PORT (Next.js dev sets it to the frontend listen port)", () => {
+    expect(resolveRemoteApiUrl({ PORT: "3000" })).toBe("http://localhost:8080");
+    expect(resolveRemoteApiUrl({ PORT: "19080" })).toBe("http://localhost:8080");
   });
 
-  it("supports explicit backend port aliases before PORT", () => {
-    expect(resolveRemoteApiUrl({ BACKEND_PORT: "28080", PORT: "19080" })).toBe(
+  it("derives localhost backend URL from backend port aliases", () => {
+    expect(resolveRemoteApiUrl({ BACKEND_PORT: "28080" })).toBe(
       "http://localhost:28080",
     );
-    expect(resolveRemoteApiUrl({ API_PORT: "38080", PORT: "19080" })).toBe(
+    expect(resolveRemoteApiUrl({ API_PORT: "38080" })).toBe(
       "http://localhost:38080",
     );
-    expect(resolveRemoteApiUrl({ SERVER_PORT: "48080", PORT: "19080" })).toBe(
+    expect(resolveRemoteApiUrl({ SERVER_PORT: "48080" })).toBe(
       "http://localhost:48080",
     );
   });
@@ -44,7 +45,7 @@ describe("resolveRemoteApiUrl", () => {
         BACKEND_PORT: "28080",
         API_PORT: "38080",
         SERVER_PORT: "48080",
-        PORT: "19080",
+        PORT: "3000",
       }),
     ).toBe("http://localhost:28080");
 
@@ -52,11 +53,11 @@ describe("resolveRemoteApiUrl", () => {
       resolveRemoteApiUrl({
         API_PORT: "38080",
         SERVER_PORT: "48080",
-        PORT: "19080",
+        PORT: "3000",
       }),
     ).toBe("http://localhost:38080");
 
-    expect(resolveRemoteApiUrl({ SERVER_PORT: "48080", PORT: "19080" })).toBe(
+    expect(resolveRemoteApiUrl({ SERVER_PORT: "48080", PORT: "3000" })).toBe(
       "http://localhost:48080",
     );
   });
@@ -69,9 +70,9 @@ describe("resolveRemoteApiUrl", () => {
         BACKEND_PORT: "  ",
         API_PORT: "  ",
         SERVER_PORT: "  ",
-        PORT: "19080",
+        PORT: "3000",
       }),
-    ).toBe("http://localhost:19080");
+    ).toBe("http://localhost:8080");
 
     expect(resolveRemoteApiUrl({ PORT: "  " })).toBe("http://localhost:8080");
   });

@@ -2441,7 +2441,7 @@ func gcMetaForTask(task Task) (execenv.GCMeta, bool) {
 
 func providerNeedsInlineSystemPrompt(provider string) bool {
 	switch provider {
-	case "openclaw", "kiro", "kimi":
+	case "openclaw", "kiro", "kimi", "qoder":
 		return true
 	default:
 		return false
@@ -2499,6 +2499,19 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		ProjectTitle:                     task.ProjectTitle,
 		ProjectResources:                 convertProjectResourcesForEnv(task.ProjectResources),
 		ChatSessionID:                    task.ChatSessionID,
+		RoomID:                           task.RoomID,
+		RoomContext:                      task.RoomContext,
+		RoomWorkflowIntent:               task.RoomWorkflowIntent,
+		RoomWorkflowPolicy:               string(task.RoomWorkflowPolicy),
+		RoomAgents:                       marshalRoomAgentsJSON(task.RoomAgents),
+		RoomDeliveryID:                   task.RoomDeliveryID,
+		RoomTopicID:                      task.RoomTopicID,
+		RoomSenderType:                   task.RoomSenderType,
+		RoomSenderID:                     task.RoomSenderID,
+		RoomQuoteMessageID:               task.RoomQuoteMessageID,
+		RoomRoleKey:                      task.RoomRoleKey,
+		RoomPhaseKey:                     task.RoomPhaseKey,
+		ChatMessage:                      task.ChatMessage,
 		AutopilotRunID:                   task.AutopilotRunID,
 		AutopilotID:                      task.AutopilotID,
 		AutopilotTitle:                   task.AutopilotTitle,
@@ -3549,4 +3562,17 @@ func defaultArgsForProvider(cfg Config, provider string) []string {
 		return nil
 	}
 	return append([]string(nil), args...)
+}
+
+// marshalRoomAgentsJSON serializes the room agent list to a compact JSON string
+// for injection into the execenv config. Returns "" when the list is empty.
+func marshalRoomAgentsJSON(agents []RoomAgentInfo) string {
+	if len(agents) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(agents)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }

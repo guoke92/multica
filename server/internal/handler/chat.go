@@ -725,6 +725,10 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "task not found")
 			return
 		}
+	} else if task.RoomID.Valid {
+		if _, _, ok := h.loadRoomMember(w, r, userID, workspaceID, uuidToString(task.RoomID)); !ok {
+			return
+		}
 	} else {
 		writeError(w, http.StatusNotFound, "task not found")
 		return

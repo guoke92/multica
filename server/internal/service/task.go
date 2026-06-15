@@ -753,6 +753,8 @@ func (s *TaskService) CancelTask(ctx context.Context, taskID pgtype.UUID) (*db.A
 	slog.Info("task cancelled", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 	s.captureTaskCancelled(ctx, task)
 
+	s.reconcileRoomInvocationCancelled(ctx, task)
+
 	// Reconcile agent status
 	s.ReconcileAgentStatus(ctx, task.AgentID)
 
@@ -974,6 +976,26 @@ func (s *TaskService) StartTask(ctx context.Context, taskID pgtype.UUID) (*db.Ag
 
 	slog.Info("task started", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 	s.captureTaskStarted(ctx, task)
+	if task.RoomID.Valid && task.InvocationID.Valid {
+		now := time.Now()
+		_, _ = s.Queries.UpdateMentionInvocationStatus(ctx, db.UpdateMentionInvocationStatusParams{
+			ID:        task.InvocationID,
+			Status:    "running",
+			StartedAt: pgtype.Timestamptz{Time: now, Valid: true},
+		})
+		// Clock for mention timeout starts when the daemon actually runs, not when queued.
+		_ = s.Queries.UpdateMentionInvocationTimeout(ctx, db.UpdateMentionInvocationTimeoutParams{
+			ID:        task.InvocationID,
+			TimeoutAt: pgtype.Timestamptz{Time: now.Add(30 * time.Minute), Valid: true},
+		})
+		if room, roomErr := s.Queries.GetRoom(ctx, task.RoomID); roomErr == nil {
+			if inv, invErr := s.Queries.GetMentionInvocation(ctx, task.InvocationID); invErr == nil {
+				s.MaybeRecordInvocationStatusFlowEvent(ctx, room, inv, "running")
+			}
+		}
+		s.RefreshRoomSnapshot(ctx, task.RoomID)
+		s.publishRoomInvocationUpdated(ctx, task.RoomID)
+	}
 	// Tell every connected workspace WS client that this task transitioned
 	// (dispatched | waiting_local_directory) → running. Without this, the
 	// workspace-wide `agentTaskSnapshot` query only refreshes on the 30s
@@ -1175,6 +1197,24 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 		s.broadcastChatDone(ctx, task, assistantMsg)
 	}
 
+	if task.RoomID.Valid && task.InvocationID.Valid {
+		if s.maybeRequestRoomApprovalFromResult(ctx, task, result) {
+			_, _ = s.Queries.UpdateMentionInvocationStatus(ctx, db.UpdateMentionInvocationStatusParams{
+				ID:     task.InvocationID,
+				Status: "pending",
+			})
+			s.RefreshRoomSnapshot(ctx, task.RoomID)
+		} else {
+			var output string
+			var payload protocol.TaskCompletedPayload
+			if err := json.Unmarshal(result, &payload); err == nil {
+				output = payload.Output
+			}
+			s.finalizeRoomInvocation(ctx, task, "succeeded", output, "")
+		}
+		s.DrainQueuedRoomInvocations(ctx, task.AgentID)
+	}
+
 	// Reconcile agent status
 	s.ReconcileAgentStatus(ctx, task.AgentID)
 
@@ -1308,6 +1348,19 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 			s.notifyQuickCreateFailed(ctx, task, qc, errMsg)
 		}
 	}
+
+	if task.RoomID.Valid && task.InvocationID.Valid && retried == nil {
+		if s.MaybeAutoRetryRoomInvocation(ctx, task) {
+			s.DrainQueuedRoomInvocations(ctx, task.AgentID)
+		} else {
+			reason := failureReason
+			if reason == "" {
+				reason = "agent_error"
+			}
+			s.finalizeRoomInvocation(ctx, task, "failed", "", reason)
+		}
+	}
+
 	// Reconcile agent status
 	s.ReconcileAgentStatus(ctx, task.AgentID)
 
@@ -1827,6 +1880,12 @@ func (s *TaskService) broadcastTaskEvent(ctx context.Context, eventType string, 
 	if task.ChatSessionID.Valid {
 		payload["chat_session_id"] = util.UUIDToString(task.ChatSessionID)
 	}
+	if task.RoomID.Valid {
+		payload["room_id"] = util.UUIDToString(task.RoomID)
+	}
+	if task.InvocationID.Valid {
+		payload["invocation_id"] = util.UUIDToString(task.InvocationID)
+	}
 	s.Bus.Publish(events.Event{
 		Type:        eventType,
 		WorkspaceID: workspaceID,
@@ -1856,6 +1915,11 @@ func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentT
 			if ap, err := s.Queries.GetAutopilot(ctx, run.AutopilotID); err == nil {
 				return util.UUIDToString(ap.WorkspaceID)
 			}
+		}
+	}
+	if task.RoomID.Valid {
+		if room, err := s.Queries.GetRoom(ctx, task.RoomID); err == nil {
+			return util.UUIDToString(room.WorkspaceID)
 		}
 	}
 	// Quick-create tasks have no issue / chat / autopilot link — workspace

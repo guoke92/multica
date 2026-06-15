@@ -30,6 +30,8 @@ import {
 } from "../issues/ws-updaters";
 import { onInboxNew, onInboxInvalidate, onInboxIssueStatusChanged, onInboxIssueDeleted } from "../inbox/ws-updaters";
 import { inboxKeys } from "../inbox/queries";
+import { roomKeys } from "../room/queries";
+import type { MentionInvocation } from "../types/room";
 import { notificationPreferenceOptions } from "../notification-preferences/queries";
 import { workspaceKeys, workspaceListOptions } from "../workspace/queries";
 import type { Workspace } from "../types/workspace";
@@ -712,6 +714,138 @@ export function useRealtimeSync(
       if (id) qc.invalidateQueries({ queryKey: chatKeys.sessions(id) });
     };
 
+    const invalidateRoom = (roomId: string) => {
+      const wsId = getCurrentWsId();
+      if (!wsId) return;
+      qc.invalidateQueries({ queryKey: roomKeys.messages(wsId, roomId) });
+      qc.invalidateQueries({ queryKey: roomKeys.invocations(wsId, roomId) });
+      qc.invalidateQueries({ queryKey: roomKeys.workboard(wsId, roomId) });
+      qc.invalidateQueries({ queryKey: roomKeys.topics(wsId, roomId) });
+      qc.invalidateQueries({ queryKey: roomKeys.detail(wsId, roomId) });
+    };
+
+    const unsubRoomMessage = ws.on("room:message", (p) => {
+      const payload = p as { room_id?: string };
+      if (payload.room_id) invalidateRoom(payload.room_id);
+    });
+
+    const unsubRoomMessageCreated = ws.on("room:message_created", (p) => {
+      const payload = p as { room_id?: string };
+      if (payload.room_id) {
+        const wsId = getCurrentWsId();
+        if (wsId) {
+          void qc.invalidateQueries({ queryKey: roomKeys.messages(wsId, payload.room_id) });
+        }
+      }
+    });
+
+    const unsubRoomMessageUpdated = ws.on("room:message_updated", (p) => {
+      const payload = p as { room_id?: string };
+      if (payload.room_id) {
+        const wsId = getCurrentWsId();
+        if (wsId) {
+          void qc.invalidateQueries({ queryKey: roomKeys.messages(wsId, payload.room_id) });
+        }
+      }
+    });
+
+    const unsubRoomSnapshotUpdated = ws.on("room:snapshot_updated", (p) => {
+      const wsId = getCurrentWsId();
+      const payload = p as { room_id?: string; snapshot?: Record<string, unknown> };
+      if (!wsId || !payload.room_id) return;
+      if (payload.snapshot) {
+        qc.setQueryData(
+          roomKeys.workboard(wsId, payload.room_id),
+          (old: import("../types/room").RoomWorkboard | undefined) => ({
+            pending_count: 0,
+            running_count: 0,
+            ...old,
+            ...payload.snapshot,
+          }),
+        );
+      } else {
+        void qc.invalidateQueries({ queryKey: roomKeys.workboard(wsId, payload.room_id) });
+      }
+    });
+
+    const unsubRoomFlowEventCreated = ws.on("room:flow_event_created", (p) => {
+      const wsId = getCurrentWsId();
+      const payload = p as {
+        room_id?: string;
+        topic_id?: string;
+        event_id?: string;
+        type?: string;
+        created_at?: string;
+        message_id?: string;
+        invocation_id?: string;
+      };
+      if (!wsId || !payload.room_id || !payload.topic_id || !payload.event_id) return;
+      qc.setQueryData<import("../types/room").RoomFlowEvent[] | undefined>(
+        roomKeys.flowEvents(wsId, payload.room_id, payload.topic_id),
+        (old) => {
+          const next: import("../types/room").RoomFlowEvent = {
+            id: payload.event_id!,
+            room_id: payload.room_id!,
+            topic_id: payload.topic_id!,
+            type: payload.type ?? "unknown",
+            message_id: payload.message_id,
+            invocation_id: payload.invocation_id,
+            actor_type: "system",
+            payload: {},
+            created_at: payload.created_at ?? new Date().toISOString(),
+          };
+          if (old?.some((e) => e.id === next.id)) return old;
+          return [next, ...(old ?? [])];
+        },
+      );
+      void qc.invalidateQueries({ queryKey: roomKeys.workboard(wsId, payload.room_id) });
+    });
+
+    const unsubRoomHumanActionUpdated = ws.on("room:human_action_updated", (p) => {
+      const payload = p as { room_id?: string };
+      if (payload.room_id) invalidateRoom(payload.room_id);
+    });
+
+    const unsubRoomApproval = ws.on("room:approval_requested", (p) => {
+      const payload = p as { room_id?: string };
+      if (payload.room_id) invalidateRoom(payload.room_id);
+    });
+
+    const unsubRoomInvocation = ws.on("room:invocation_updated", (p) => {
+      const payload = p as { room_id?: string };
+      if (payload.room_id) invalidateRoom(payload.room_id);
+    });
+
+    const unsubRoomUpdated = ws.on("room:updated", (p) => {
+      const wsId = getCurrentWsId();
+      const payload = p as { room_id?: string };
+      if (payload.room_id && wsId) {
+        void qc.invalidateQueries({ queryKey: roomKeys.detail(wsId, payload.room_id) });
+        void qc.invalidateQueries({ queryKey: roomKeys.list(wsId) });
+      }
+    });
+
+    const unsubRoomMembersUpdated = ws.on("room:members_updated", (p) => {
+      const wsId = getCurrentWsId();
+      const payload = p as { room_id?: string };
+      if (payload.room_id && wsId) {
+        void qc.invalidateQueries({ queryKey: roomKeys.members(wsId, payload.room_id) });
+        void qc.invalidateQueries({ queryKey: roomKeys.list(wsId) });
+        void qc.invalidateQueries({ queryKey: roomKeys.detail(wsId, payload.room_id) });
+      }
+    });
+
+    const unsubRoomArchived = ws.on("room:archived", (p) => {
+      const wsId = getCurrentWsId();
+      if (wsId) {
+        void qc.invalidateQueries({ queryKey: roomKeys.list(wsId) });
+      }
+      const payload = p as { room_id?: string };
+      if (payload.room_id && wsId) {
+        void qc.removeQueries({ queryKey: roomKeys.detail(wsId, payload.room_id) });
+      }
+    });
+
     const unsubChatMessage = ws.on("chat:message", (p) => {
       const payload = p as { chat_session_id: string };
       chatWsLogger.info("chat:message (global)", { chat_session_id: payload.chat_session_id });
@@ -831,6 +965,28 @@ export function useRealtimeSync(
     //      forever in the second-tab scenario.
     const unsubTaskCancelled = ws.on("task:cancelled", (p) => {
       const payload = p as TaskCancelledPayload;
+      if (payload.room_id) {
+        const wsId = getCurrentWsId();
+        if (!wsId) return;
+        qc.setQueryData<MentionInvocation[]>(
+          roomKeys.invocations(wsId, payload.room_id),
+          (old) =>
+            old?.map((inv) =>
+              inv.id === payload.invocation_id ||
+              inv.task_id === payload.task_id
+                ? { ...inv, status: "cancelled" }
+                : inv,
+            ),
+        );
+        void qc.invalidateQueries({
+          queryKey: roomKeys.invocations(wsId, payload.room_id),
+        });
+        void qc.invalidateQueries({ queryKey: roomKeys.list(wsId) });
+        void qc.invalidateQueries({
+          queryKey: roomKeys.detail(wsId, payload.room_id),
+        });
+        return;
+      }
       if (!payload.chat_session_id) return;
       chatWsLogger.info("task:cancelled (global, chat)", {
         task_id: payload.task_id,
@@ -961,6 +1117,17 @@ export function useRealtimeSync(
       unsubInvitationDeclined();
       unsubInvitationRevoked();
       unsubTaskMessage();
+      unsubRoomMessage();
+      unsubRoomMessageCreated();
+      unsubRoomMessageUpdated();
+      unsubRoomSnapshotUpdated();
+      unsubRoomFlowEventCreated();
+      unsubRoomHumanActionUpdated();
+      unsubRoomApproval();
+      unsubRoomInvocation();
+      unsubRoomUpdated();
+      unsubRoomMembersUpdated();
+      unsubRoomArchived();
       unsubChatMessage();
       unsubChatDone();
       unsubTaskQueued();

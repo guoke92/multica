@@ -197,6 +197,10 @@ func resolveSkillsDir(workDir, provider string, manifest *sidecarManifest) (stri
 		// Kiro CLI auto-discovers project-level skills from .kiro/skills/
 		// in the workdir.
 		skillsDir = filepath.Join(workDir, ".kiro", "skills")
+	case "qoder":
+		// Qoder CLI auto-discovers project-level skills from .qoder/skills/
+		// in the workdir. See https://docs.qoder.com/en/cli/Skills
+		skillsDir = filepath.Join(workDir, ".qoder", "skills")
 	case "antigravity":
 		// Antigravity (`agy`) auto-discovers workspace-level skills from
 		// .agents/skills/ in the workdir. The CLI inherits Gemini CLI's
@@ -387,6 +391,9 @@ func renderIssueContext(provider string, ctx TaskContextForEnv) string {
 	if ctx.QuickCreatePrompt != "" {
 		return renderQuickCreateContext(ctx)
 	}
+	if ctx.ChatSessionID != "" || ctx.RoomID != "" {
+		return renderConversationalContext(ctx)
+	}
 
 	var b strings.Builder
 
@@ -412,6 +419,53 @@ func renderIssueContext(provider string, ctx TaskContextForEnv) string {
 		b.WriteString("\n")
 	}
 
+	return b.String()
+}
+
+// renderConversationalContext renders issue_context.md for chat and room tasks.
+// There is no assigned issue; the file carries only the trigger message and
+// optional room history so resumed sessions retain conversational context.
+func renderConversationalContext(ctx TaskContextForEnv) string {
+	var b strings.Builder
+	if ctx.RoomID != "" {
+		b.WriteString("# Room Conversation\n\n")
+		fmt.Fprintf(&b, "**Room ID:** `%s`\n\n", ctx.RoomID)
+		if ctx.RoomTopicID != "" {
+			fmt.Fprintf(&b, "**Topic ID:** `%s`\n\n", ctx.RoomTopicID)
+		}
+		if ctx.RoomSenderType != "" {
+			fmt.Fprintf(&b, "**Trigger sender:** %s", ctx.RoomSenderType)
+			if ctx.RoomSenderID != "" {
+				fmt.Fprintf(&b, " (`%s`)", ctx.RoomSenderID)
+			}
+			b.WriteString("\n\n")
+		}
+		if ctx.RoomQuoteMessageID != "" {
+			fmt.Fprintf(&b, "**Quoted message:** `%s`\n\n", ctx.RoomQuoteMessageID)
+		}
+	} else {
+		b.WriteString("# Chat Conversation\n\n")
+		fmt.Fprintf(&b, "**Chat session ID:** `%s`\n\n", ctx.ChatSessionID)
+	}
+	b.WriteString("**Trigger:** Direct message — no assigned issue.\n\n")
+	if strings.TrimSpace(ctx.ChatMessage) != "" {
+		b.WriteString("## User message\n\n")
+		b.WriteString("> ")
+		b.WriteString(ctx.ChatMessage)
+		b.WriteString("\n\n")
+	}
+	if strings.TrimSpace(ctx.RoomContext) != "" {
+		b.WriteString("## Recent room discussion\n\n")
+		b.WriteString(ctx.RoomContext)
+		b.WriteString("\n\n")
+	}
+	if len(ctx.AgentSkills) > 0 {
+		b.WriteString("## Agent Skills\n\n")
+		for _, skill := range ctx.AgentSkills {
+			fmt.Fprintf(&b, "- **%s**\n", skill.Name)
+		}
+		b.WriteString("\n")
+	}
 	return b.String()
 }
 

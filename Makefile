@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree db-up db-down db-reset selfhost selfhost-build selfhost-stop
+.PHONY: help makehelp dev server daemon daemon-local-setup daemon-local-login cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree db-up db-down db-reset selfhost selfhost-build selfhost-stop
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -264,8 +264,26 @@ server: ## Run only the Go server for the current checkout
 	@bash scripts/ensure-postgres.sh "$(ENV_FILE)"
 	cd server && go run ./cmd/server
 
-daemon: ## Restart the local agent daemon using the CLI's stored auth/session
-	@$(MAKE) multica MULTICA_ARGS="daemon restart --profile local"
+daemon-local-setup: build ## Configure ~/.multica profile 'local' to use this checkout's localhost URLs
+	$(REQUIRE_ENV)
+	@set -a; \
+	. "$(ENV_FILE)"; \
+	set +a; \
+	. scripts/local-env.sh; \
+	echo "==> Configuring profile 'local'"; \
+	echo "    server_url=http://localhost:$${PORT}"; \
+	echo "    app_url=http://localhost:$${FRONTEND_PORT}"; \
+	./server/bin/multica config set server_url "http://localhost:$${PORT}" --profile local; \
+	./server/bin/multica config set app_url "http://localhost:$${FRONTEND_PORT}" --profile local; \
+	echo ""; \
+	echo "✓ Profile 'local' configured. If needed, run:"; \
+	echo "    make daemon-local-login"
+
+daemon-local-login: build ## Login once for profile 'local' (uses URLs set by daemon-local-setup)
+	@./server/bin/multica login --profile local
+
+daemon: build ## Restart daemon for profile 'local' (run daemon-local-setup once first)
+	@./server/bin/multica daemon restart --profile local
 
 cli: ## Run the multica CLI with ARGS or MULTICA_ARGS from source
 	@$(MAKE) multica MULTICA_ARGS="$(MULTICA_ARGS)"

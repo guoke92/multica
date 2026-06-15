@@ -9,12 +9,19 @@ missing=()
 command -v node >/dev/null 2>&1 || missing+=("node")
 command -v pnpm >/dev/null 2>&1 || missing+=("pnpm")
 command -v go >/dev/null 2>&1 || missing+=("go")
-command -v docker >/dev/null 2>&1 || missing+=("docker")
-
 if [ ${#missing[@]} -gt 0 ]; then
   echo "✗ Missing prerequisites: ${missing[*]}"
-  echo "  Please install: Node.js v20+, pnpm v10.28+, Go v1.26+, Docker"
+  echo "  Please install: Node.js v20+ (v24 OK), pnpm v10.28+, Go v1.26+"
+  echo "  PostgreSQL: native (scripts/setup-native-postgres.sh) or Docker"
   exit 1
+fi
+
+if command -v node >/dev/null 2>&1; then
+  node_major="$(node -p "process.versions.node.split('.')[0]")"
+  if [ "${node_major:-0}" -lt 20 ] 2>/dev/null; then
+    echo "✗ Node.js $(node -v) is too old; need v20+"
+    exit 1
+  fi
 fi
 
 # ---------- Environment file ----------

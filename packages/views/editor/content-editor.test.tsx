@@ -100,7 +100,7 @@ describe("ContentEditor", () => {
     expect(mockFocus).not.toHaveBeenCalled();
   });
 
-  it("syncs editor content when defaultValue changes externally and editor is unfocused", () => {
+  it("syncs editor content when defaultValue changes externally and editor is unfocused", async () => {
     editorState.markdown = "old content";
     const { rerender } = render(<ContentEditor defaultValue="old content" />);
 
@@ -110,6 +110,7 @@ describe("ContentEditor", () => {
     editorState.markdown = "old content";
     rerender(<ContentEditor defaultValue="new content from server" />);
 
+    await Promise.resolve();
     expect(mockSetContent).toHaveBeenCalledTimes(1);
     expect(mockSetContent).toHaveBeenCalledWith(
       "new content from server",
@@ -131,7 +132,7 @@ describe("ContentEditor", () => {
     expect(mockSetContent).not.toHaveBeenCalled();
   });
 
-  it("syncs even when editor is focused, as long as it is clean (focused-but-clean must not be permanently dropped)", () => {
+  it("syncs even when editor is focused, as long as it is clean (focused-but-clean must not be permanently dropped)", async () => {
     // This case is the regression test for the focused-but-clean hole:
     // user clicks into the editor (focused = true) but types nothing
     // (markdown still equals lastEmittedRef). An external update arrives.
@@ -145,6 +146,7 @@ describe("ContentEditor", () => {
 
     rerender(<ContentEditor defaultValue="new content from server" />);
 
+    await Promise.resolve();
     expect(mockSetContent).toHaveBeenCalledTimes(1);
     expect(mockSetContent).toHaveBeenCalledWith(
       "new content from server",
@@ -152,7 +154,7 @@ describe("ContentEditor", () => {
     );
   });
 
-  it("does not sync when editor is unfocused but has unsaved local edits (blur-before-debounce window)", () => {
+  it("does not sync when editor is unfocused but has unsaved local edits (blur-before-debounce window)", async () => {
     editorState.markdown = "old content";
     const { rerender } = render(
       <ContentEditor defaultValue="old content" onUpdate={() => {}} />,
@@ -170,10 +172,11 @@ describe("ContentEditor", () => {
       />,
     );
 
+    await Promise.resolve();
     expect(mockSetContent).not.toHaveBeenCalled();
   });
 
-  it("does not sync when defaultValue normalizes to the current editor markdown", () => {
+  it("does not sync when defaultValue normalizes to the current editor markdown", async () => {
     editorState.markdown = "same content";
     const { rerender } = render(<ContentEditor defaultValue="same content" />);
 
@@ -182,6 +185,7 @@ describe("ContentEditor", () => {
     // via `trimEnd()`, so `setContent` must still short-circuit.
     rerender(<ContentEditor defaultValue={"same content\n"} />);
 
+    await Promise.resolve();
     expect(mockSetContent).not.toHaveBeenCalled();
   });
 });

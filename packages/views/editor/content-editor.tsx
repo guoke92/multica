@@ -96,6 +96,8 @@ interface ContentEditorProps {
    * prompts) but *preserving* an existing one still matters.
    */
   disableMentions?: boolean;
+  /** When set, @ suggestions only list principals in this collaboration room. */
+  roomMentionScope?: import("./extensions/mention-suggestion").RoomMentionScope;
   /**
    * Attachments referenced by this content. The download buttons on file
    * cards and images inside the editor look up an attachment by `url` and
@@ -139,6 +141,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       submitOnEnter = false,
       currentIssueId,
       disableMentions = false,
+      roomMentionScope,
       attachments,
     },
     ref,
@@ -164,6 +167,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     onUploadFileRef.current = onUploadFile;
 
     const queryClient = useQueryClient();
+    const roomMentionScopeRef = useRef(roomMentionScope);
+    roomMentionScopeRef.current = roomMentionScope;
 
     const editor = useEditor({
       immediatelyRender: false,
@@ -182,6 +187,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         onUploadFileRef,
         submitOnEnter,
         disableMentions,
+        roomMentionScopeRef,
       }),
       onUpdate: ({ editor: ed }) => {
         if (!onUpdateRef.current) return;
@@ -258,24 +264,39 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       // when the cache reflects a write this same editor just emitted.
       if (incomingNormalized === current) return;
 
-      // Guard 4: `emitUpdate: false`. Tiptap v3's setContent defaults to
-      // `emitUpdate: true`; without this we would re-trigger onUpdate →
-      // server save → self-write loop.
+      // Defer ProseMirror writes out of the effect turn. Tiptap's setContent
+      // uses flushSync; calling it synchronously inside useEffect triggers
+      // React 19's "flushSync from inside a lifecycle method" warning (e.g.
+      // room quote-reply prefilling the composer from a message-list click).
       const { from, to } = editor.state.selection;
-      editor.commands.setContent(incoming, {
-        emitUpdate: false,
-        contentType: "markdown",
-      });
+      queueMicrotask(() => {
+        if (!editor || editor.isDestroyed) return;
 
-      // Clamp prior selection to the new doc size so the caret doesn't snap
-      // to position 0 after ProseMirror replaces the document.
-      const docSize = editor.state.doc.content.size;
-      editor.commands.setTextSelection({
-        from: Math.min(from, docSize),
-        to: Math.min(to, docSize),
-      });
+        const live = stripBlobUrls(editor.getMarkdown()).trimEnd();
+        const liveDirty =
+          lastEmittedRef.current !== null && live !== lastEmittedRef.current;
+        if (editor.isFocused && liveDirty) return;
+        if (liveDirty) return;
+        if (incomingNormalized === live) return;
 
-      lastEmittedRef.current = stripBlobUrls(editor.getMarkdown()).trimEnd();
+        // Guard 4: `emitUpdate: false`. Tiptap v3's setContent defaults to
+        // `emitUpdate: true`; without this we would re-trigger onUpdate →
+        // server save → self-write loop.
+        editor.commands.setContent(incoming, {
+          emitUpdate: false,
+          contentType: "markdown",
+        });
+
+        // Clamp prior selection to the new doc size so the caret doesn't snap
+        // to position 0 after ProseMirror replaces the document.
+        const docSize = editor.state.doc.content.size;
+        editor.commands.setTextSelection({
+          from: Math.min(from, docSize),
+          to: Math.min(to, docSize),
+        });
+
+        lastEmittedRef.current = stripBlobUrls(editor.getMarkdown()).trimEnd();
+      });
     }, [defaultValue, editor]);
 
     useImperativeHandle(ref, () => ({

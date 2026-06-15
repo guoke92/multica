@@ -371,10 +371,17 @@ function issueToMention(i: Pick<Issue, "id" | "identifier" | "title" | "status">
   };
 }
 
-export function createMentionSuggestion(qc: QueryClient): Omit<
-  SuggestionOptions<MentionItem>,
-  "editor"
-> {
+/** When set, @ suggestions are limited to these room principals (no issues / workspace-wide agents). */
+export type RoomMentionScope = {
+  memberUserIds: string[];
+  agentIds: string[];
+  squadIds?: string[];
+};
+
+export function createMentionSuggestion(
+  qc: QueryClient,
+  roomScopeRef?: { current?: RoomMentionScope },
+): Omit<SuggestionOptions<MentionItem>, "editor"> {
   // Renderer/popup instances live in this closure so each ContentEditor owns
   // its own TipTap suggestion popup lifecycle.
   let renderer: ReactRenderer<MentionListRef> | null = null;
@@ -390,58 +397,77 @@ export function createMentionSuggestion(qc: QueryClient): Omit<
     const members: MemberWithUser[] = qc.getQueryData(workspaceKeys.members(wsId)) ?? [];
     const agents: Agent[] = qc.getQueryData(workspaceKeys.agents(wsId)) ?? [];
     const squads: Squad[] = qc.getQueryData(workspaceKeys.squads(wsId)) ?? [];
-    const listQueries = qc.getQueriesData<ListIssuesCache>({ queryKey: issueKeys.list(wsId) });
-    const cachedResponse = listQueries[0]?.[1];
-    const cachedIssues: Issue[] = cachedResponse ? flattenIssueBuckets(cachedResponse) : [];
 
-    // Read current user identity imperatively — this factory runs outside
-    // React render so we can't useAuthStore() as a hook here. The Proxy in
-    // packages/core/auth/index.ts forwards `.getState()` to the registered
-    // store. Used to gate personal agents in the @mention list so members
-    // don't see (or auto-complete) agents they couldn't assign anyway.
     const userId = useAuthStore.getState().user?.id ?? null;
     const myRole =
       members.find((m) => m.user_id === userId)?.role ?? null;
 
     const q = query.toLowerCase();
 
-    const allItem: MentionItem[] =
-      "all members".includes(q) || "all".includes(q)
+    const roomScope = roomScopeRef?.current;
+    const memberPool = roomScope
+      ? members.filter((m) => roomScope.memberUserIds.includes(m.user_id))
+      : members;
+    const agentPool = roomScope
+      ? agents.filter(
+          (a) => roomScope.agentIds.includes(a.id) && !a.archived_at,
+        )
+      : agents;
+    const squadPool = roomScope
+      ? squads.filter(
+          (s) =>
+            (roomScope.squadIds?.includes(s.id) ?? false) && !s.archived_at,
+        )
+      : squads;
+
+    const allItem: MentionItem[] = roomScope
+      ? []
+      : "all members".includes(q) || "all".includes(q)
         ? [{ id: "all", label: "All members", type: "all" as const }]
         : [];
 
-    const memberItems: MentionItem[] = members
-      .filter((m) => m.name.toLowerCase().includes(q) || matchesPinyin(m.name, q))
+    const memberItems: MentionItem[] = memberPool
+      .filter(
+        (m) =>
+          (!roomScope || m.user_id !== userId) &&
+          (m.name.toLowerCase().includes(q) || matchesPinyin(m.name, q)),
+      )
       .map((m) => ({
         id: m.user_id,
         label: m.name,
         type: "member" as const,
       }));
 
-    const agentItems: MentionItem[] = agents
+    const agentItems: MentionItem[] = agentPool
       .filter(
         (a) =>
-          !a.archived_at &&
-          (a.name.toLowerCase().includes(q) || matchesPinyin(a.name, q)) &&
-          canAssignAgentToIssue(a, { userId, role: myRole }).allowed,
+          (roomScope ||
+            canAssignAgentToIssue(a, { userId, role: myRole }).allowed) &&
+          (a.name.toLowerCase().includes(q) || matchesPinyin(a.name, q)),
       )
       .map((a) => ({ id: a.id, label: a.name, type: "agent" as const }));
 
-    const squadItems: MentionItem[] = squads
-      .filter((s) => !s.archived_at && (s.name.toLowerCase().includes(q) || matchesPinyin(s.name, q)))
+    const squadItems: MentionItem[] = squadPool
+      .filter((s) => s.name.toLowerCase().includes(q) || matchesPinyin(s.name, q))
       .map((s) => ({ id: s.id, label: s.name, type: "squad" as const }));
 
-    // Members and agents share a single ranked list — recently mentioned
-    // targets come first regardless of type, with an alphabetical fallback
-    // for everyone the user hasn't mentioned yet on this device.
     const recency = getRecencyMap(wsId);
     const userItems = sortUserItemsByRecency(
       [...memberItems, ...agentItems, ...squadItems],
       recency,
     );
 
-    // Cached issues give an instant first paint; MentionList adds server
-    // matches for done/cancelled and any other issues not in this cache.
+    if (roomScope) {
+      return userItems;
+    }
+
+    const listQueries = qc.getQueriesData<ListIssuesCache>({
+      queryKey: issueKeys.list(wsId),
+    });
+    const cachedResponse = listQueries[0]?.[1];
+    const cachedIssues: Issue[] = cachedResponse
+      ? flattenIssueBuckets(cachedResponse)
+      : [];
     const issueItems: MentionItem[] = cachedIssues
       .filter(
         (i) =>

@@ -271,6 +271,21 @@ The following commands all ensure the target database exists before they continu
 
 That logic lives in `scripts/ensure-postgres.sh`.
 
+### Native PostgreSQL (no Docker)
+
+On macOS you can use Homebrew PostgreSQL instead of the Compose container:
+
+```bash
+bash scripts/setup-local-dev.sh      # check Node (v20+, v24 OK), pnpm, Go
+bash scripts/setup-native-postgres.sh # install/start Postgres, create multica DB
+echo 'MULTICA_POSTGRES_SKIP_DOCKER=1' >> .env
+make dev
+```
+
+`ensure-postgres.sh` prefers a running native server on `localhost`; it only
+falls back to Docker when native Postgres is not reachable (unless
+`MULTICA_POSTGRES_SKIP_DOCKER=1`).
+
 ## Testing
 
 Run all local checks:

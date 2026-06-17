@@ -1410,7 +1410,19 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 			}); err == nil && len(msgs) > 0 {
 				var parts []string
 				for i := len(msgs) - 1; i >= 0; i-- {
-					parts = append(parts, msgs[i].Content)
+					m := msgs[i]
+					var line strings.Builder
+					fmt.Fprintf(&line, "[%s", m.SenderType)
+					if m.SenderID.Valid {
+						fmt.Fprintf(&line, " id=%s", util.UUIDToString(m.SenderID))
+					}
+					fmt.Fprintf(&line, " msg_id=%s", util.UUIDToString(m.ID))
+					if m.QuoteMessageID.Valid {
+						fmt.Fprintf(&line, " quote=%s", util.UUIDToString(m.QuoteMessageID))
+					}
+					line.WriteString("] ")
+					line.WriteString(m.Content)
+					parts = append(parts, line.String())
 				}
 				resp.RoomContext = strings.Join(parts, "\n---\n")
 			}

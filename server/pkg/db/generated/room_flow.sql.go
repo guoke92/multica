@@ -13,15 +13,33 @@ import (
 
 const insertRoomFlowEvent = `-- name: InsertRoomFlowEvent :one
 INSERT INTO room_flow_events (
-    room_id, topic_id, type, message_id, invocation_id, actor_type, actor_id, payload
+    room_id, topic_id, category, step_id, from_message_id, to_message_id,
+    type, message_id, invocation_id, actor_type, actor_id, payload
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8::jsonb, '{}'::jsonb))
-RETURNING id, room_id, topic_id, type, message_id, invocation_id, actor_type, actor_id, payload, created_at
+VALUES (
+    $1,
+    $2,
+    COALESCE($3, 'control'),
+    $4,
+    $5,
+    $6,
+    $7,
+    $8,
+    $9,
+    $10,
+    $11,
+    COALESCE($12::jsonb, '{}'::jsonb)
+)
+RETURNING id, room_id, topic_id, category, step_id, from_message_id, to_message_id, type, message_id, invocation_id, actor_type, actor_id, payload, created_at
 `
 
 type InsertRoomFlowEventParams struct {
 	RoomID        pgtype.UUID `json:"room_id"`
 	TopicID       pgtype.UUID `json:"topic_id"`
+	Category      pgtype.Text `json:"category"`
+	StepID        pgtype.Text `json:"step_id"`
+	FromMessageID pgtype.UUID `json:"from_message_id"`
+	ToMessageID   pgtype.UUID `json:"to_message_id"`
 	Type          string      `json:"type"`
 	MessageID     pgtype.UUID `json:"message_id"`
 	InvocationID  pgtype.UUID `json:"invocation_id"`
@@ -32,19 +50,58 @@ type InsertRoomFlowEventParams struct {
 
 func (q *Queries) InsertRoomFlowEvent(ctx context.Context, arg InsertRoomFlowEventParams) (RoomFlowEvent, error) {
 	row := q.db.QueryRow(ctx, insertRoomFlowEvent,
-		arg.RoomID, arg.TopicID, arg.Type, arg.MessageID, arg.InvocationID,
+		arg.RoomID, arg.TopicID, arg.Category, arg.StepID, arg.FromMessageID,
+		arg.ToMessageID, arg.Type, arg.MessageID, arg.InvocationID,
 		arg.ActorType, arg.ActorID, arg.Payload,
 	)
 	var i RoomFlowEvent
 	err := row.Scan(
-		&i.ID, &i.RoomID, &i.TopicID, &i.Type, &i.MessageID, &i.InvocationID,
+		&i.ID, &i.RoomID, &i.TopicID, &i.Category, &i.StepID, &i.FromMessageID,
+		&i.ToMessageID, &i.Type, &i.MessageID, &i.InvocationID,
 		&i.ActorType, &i.ActorID, &i.Payload, &i.CreatedAt,
 	)
 	return i, err
 }
 
+const listRoomFlowEventsByRoom = `-- name: ListRoomFlowEventsByRoom :many
+SELECT id, room_id, topic_id, category, step_id, from_message_id, to_message_id, type, message_id, invocation_id, actor_type, actor_id, payload, created_at FROM room_flow_events
+WHERE room_id = $1
+  AND ($2::timestamptz IS NULL OR created_at < $2::timestamptz)
+ORDER BY created_at DESC
+LIMIT $3
+`
+
+type ListRoomFlowEventsByRoomParams struct {
+	RoomID          pgtype.UUID        `json:"room_id"`
+	BeforeCreatedAt pgtype.Timestamptz `json:"before_created_at"`
+	Limit           int32              `json:"limit"`
+}
+
+func (q *Queries) ListRoomFlowEventsByRoom(ctx context.Context, arg ListRoomFlowEventsByRoomParams) ([]RoomFlowEvent, error) {
+	rows, err := q.db.Query(ctx, listRoomFlowEventsByRoom,
+		arg.RoomID, arg.BeforeCreatedAt, arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoomFlowEvent{}
+	for rows.Next() {
+		var i RoomFlowEvent
+		if err := rows.Scan(
+			&i.ID, &i.RoomID, &i.TopicID, &i.Category, &i.StepID, &i.FromMessageID,
+			&i.ToMessageID, &i.Type, &i.MessageID, &i.InvocationID,
+			&i.ActorType, &i.ActorID, &i.Payload, &i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	return items, rows.Err()
+}
+
 const listRoomFlowEventsByTopic = `-- name: ListRoomFlowEventsByTopic :many
-SELECT id, room_id, topic_id, type, message_id, invocation_id, actor_type, actor_id, payload, created_at FROM room_flow_events
+SELECT id, room_id, topic_id, category, step_id, from_message_id, to_message_id, type, message_id, invocation_id, actor_type, actor_id, payload, created_at FROM room_flow_events
 WHERE room_id = $1 AND topic_id = $2
   AND ($3::timestamptz IS NULL OR created_at < $3::timestamptz)
 ORDER BY created_at DESC
@@ -70,7 +127,8 @@ func (q *Queries) ListRoomFlowEventsByTopic(ctx context.Context, arg ListRoomFlo
 	for rows.Next() {
 		var i RoomFlowEvent
 		if err := rows.Scan(
-			&i.ID, &i.RoomID, &i.TopicID, &i.Type, &i.MessageID, &i.InvocationID,
+			&i.ID, &i.RoomID, &i.TopicID, &i.Category, &i.StepID, &i.FromMessageID,
+			&i.ToMessageID, &i.Type, &i.MessageID, &i.InvocationID,
 			&i.ActorType, &i.ActorID, &i.Payload, &i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -115,6 +173,19 @@ func (q *Queries) CreateRoomHumanAction(ctx context.Context, arg CreateRoomHuman
 		&i.CreatedAt, &i.UpdatedAt,
 	)
 	return i, err
+}
+
+const countPendingRoomHumanActions = `-- name: CountPendingRoomHumanActions :one
+SELECT COUNT(*)::int AS count
+FROM room_human_actions
+WHERE room_id = $1 AND status = 'pending'
+`
+
+func (q *Queries) CountPendingRoomHumanActions(ctx context.Context, roomID pgtype.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, countPendingRoomHumanActions, roomID)
+	var count int32
+	err := row.Scan(&count)
+	return count, err
 }
 
 const getRoomHumanActionInRoom = `-- name: GetRoomHumanActionInRoom :one

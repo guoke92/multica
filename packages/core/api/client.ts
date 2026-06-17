@@ -1751,18 +1751,20 @@ export class ApiClient {
 
   async listRoomFlowEvents(
     roomId: string,
-    topicId: string,
-    params?: { limit?: number; before?: string },
+    params?: { topicId?: string; limit?: number; before?: string },
   ): Promise<{ events: import("../types/room").RoomFlowEvent[] }> {
     const q = new URLSearchParams();
     if (params?.limit) q.set("limit", String(params.limit));
     if (params?.before) q.set("before", params.before);
     const suffix = q.toString() ? `?${q}` : "";
-    const raw = await this.fetch(
-      `/api/rooms/${roomId}/topics/${topicId}/flow-events${suffix}`,
-    );
+    const path = params?.topicId
+      ? `/api/rooms/${roomId}/topics/${params.topicId}/flow-events${suffix}`
+      : `/api/rooms/${roomId}/flow-events${suffix}`;
+    const raw = await this.fetch(path);
     return parseWithFallback(raw, RoomFlowEventsResponseSchema, EMPTY_ROOM_FLOW_EVENTS_RESPONSE, {
-      endpoint: "GET /api/rooms/:id/topics/:topicId/flow-events",
+      endpoint: params?.topicId
+        ? "GET /api/rooms/:id/topics/:topicId/flow-events"
+        : "GET /api/rooms/:id/flow-events",
     });
   }
 

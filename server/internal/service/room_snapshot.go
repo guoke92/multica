@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
@@ -26,7 +27,11 @@ func (s *TaskService) buildRoomSnapshotJSON(ctx context.Context, room db.Room, c
 	if len(room.Snapshot) > 0 {
 		_ = json.Unmarshal(room.Snapshot, &base)
 	}
-	base["pending_count"] = int(counts.PendingCount)
+	pendingCount := int(counts.PendingCount)
+	if humanPending, err := s.Queries.CountPendingRoomHumanActions(ctx, room.ID); err == nil {
+		pendingCount = int(humanPending)
+	}
+	base["pending_count"] = pendingCount
 	base["queued_count"] = int(counts.QueuedCount)
 	base["running_count"] = int(counts.RunningCount)
 	base["failed_count"] = int(counts.FailedCount)
@@ -35,9 +40,11 @@ func (s *TaskService) buildRoomSnapshotJSON(ctx context.Context, room db.Room, c
 	summaries, activeTopicID := s.listTopicSummariesForSnapshot(ctx, room.ID)
 	if len(summaries) > 0 {
 		base["topic_summaries"] = summaries
+		base["compressed_topics"] = summaries
 	}
 	if activeTopicID != "" {
 		base["active_topic_id"] = activeTopicID
+		base["active_graph_id"] = activeTopicID
 	}
 	if eventID, err := s.Queries.GetLatestRoomFlowEventID(ctx, room.ID); err == nil && eventID.Valid {
 		base["latest_event_id"] = util.UUIDToString(eventID)
@@ -152,10 +159,22 @@ func (s *TaskService) publishRoomFlowEventCreated(ctx context.Context, room db.R
 	}
 	payload := map[string]any{
 		"room_id":    util.UUIDToString(room.ID),
-		"topic_id":   util.UUIDToString(event.TopicID),
 		"event_id":   util.UUIDToString(event.ID),
+		"category":   event.Category,
 		"type":       event.Type,
 		"created_at": event.CreatedAt.Time.Format("2006-01-02T15:04:05Z07:00"),
+	}
+	if event.TopicID.Valid {
+		payload["topic_id"] = util.UUIDToString(event.TopicID)
+	}
+	if event.StepID.Valid {
+		payload["step_id"] = event.StepID.String
+	}
+	if event.FromMessageID.Valid {
+		payload["from_message_id"] = util.UUIDToString(event.FromMessageID)
+	}
+	if event.ToMessageID.Valid {
+		payload["to_message_id"] = util.UUIDToString(event.ToMessageID)
 	}
 	if event.MessageID.Valid {
 		payload["message_id"] = util.UUIDToString(event.MessageID)
@@ -171,16 +190,76 @@ func (s *TaskService) publishRoomFlowEventCreated(ctx context.Context, room db.R
 }
 
 func (s *TaskService) RecordRoomFlowEvent(ctx context.Context, room db.Room, params db.InsertRoomFlowEventParams) {
+	params = normalizeRoomFlowEventParams(params)
 	event, err := s.Queries.InsertRoomFlowEvent(ctx, params)
 	if err != nil {
 		return
 	}
-	_, _ = s.Queries.IncrementRoomTopicEventCount(ctx, params.TopicID)
-	if params.MessageID.Valid {
+	if params.TopicID.Valid {
+		_, _ = s.Queries.IncrementRoomTopicEventCount(ctx, params.TopicID)
+	}
+	if params.TopicID.Valid && params.MessageID.Valid {
 		_ = s.TouchRoomTopicLastMessage(ctx, params.TopicID, params.MessageID)
 	}
 	s.publishRoomFlowEventCreated(ctx, room, event)
 	s.patchSnapshotLatestEventID(ctx, room.ID, event.ID)
+}
+
+func normalizeRoomFlowEventParams(params db.InsertRoomFlowEventParams) db.InsertRoomFlowEventParams {
+	if !params.Category.Valid {
+		params.Category = pgtype.Text{String: inferRoomFlowEventCategory(params.Type), Valid: true}
+	}
+	if !params.StepID.Valid {
+		if stepID := inferRoomFlowEventStepID(params.Type, params.MessageID, params.InvocationID); stepID != "" {
+			params.StepID = pgtype.Text{String: stepID, Valid: true}
+		}
+	}
+	if !params.FromMessageID.Valid && params.MessageID.Valid {
+		params.FromMessageID = params.MessageID
+	}
+	return params
+}
+
+func inferRoomFlowEventCategory(eventType string) string {
+	switch {
+	case strings.HasPrefix(eventType, "invocation_"), eventType == "user_intent":
+		return "message"
+	case strings.HasPrefix(eventType, "human_confirm_"), strings.HasPrefix(eventType, "approval_"):
+		return "confirm"
+	case strings.HasPrefix(eventType, "topic_"):
+		return "phase"
+	case eventType == "notification_sent", eventType == "todo_created":
+		return "meta"
+	default:
+		return "control"
+	}
+}
+
+func inferRoomFlowEventStepID(eventType string, messageID, invocationID pgtype.UUID) string {
+	var prefix string
+	switch {
+	case strings.HasPrefix(eventType, "manager_route"):
+		prefix = "route"
+	case strings.HasPrefix(eventType, "manager_relay"), eventType == "agent_at":
+		prefix = "relay"
+	case strings.HasPrefix(eventType, "manager_retry"):
+		prefix = "retry"
+	case strings.HasPrefix(eventType, "manager_escalate"):
+		prefix = "escalate"
+	case strings.HasPrefix(eventType, "human_confirm_"):
+		prefix = "confirm"
+	case strings.HasPrefix(eventType, "approval_"):
+		prefix = "approval"
+	default:
+		return ""
+	}
+	if invocationID.Valid {
+		return prefix + ":" + util.UUIDToString(invocationID)
+	}
+	if messageID.Valid {
+		return prefix + ":" + util.UUIDToString(messageID)
+	}
+	return prefix
 }
 
 func (s *TaskService) TouchRoomTopicLastMessage(ctx context.Context, topicID, messageID pgtype.UUID) error {
@@ -240,6 +319,27 @@ func invocationStatusFlowEventType(status string) string {
 	}
 }
 
+func invocationStatusDisplayToken(status string) string {
+	switch status {
+	case "pending":
+		return "pending"
+	case "queued":
+		return "queued"
+	case "running":
+		return "思考中"
+	case "succeeded":
+		return "完成"
+	case "failed":
+		return "失败"
+	case "timed_out":
+		return "超时"
+	case "cancelled":
+		return "已取消"
+	default:
+		return ""
+	}
+}
+
 func (s *TaskService) resolveFlowEventTopicID(ctx context.Context, roomID pgtype.UUID, inv db.MentionInvocation) pgtype.UUID {
 	if inv.TopicID.Valid {
 		return inv.TopicID
@@ -249,13 +349,6 @@ func (s *TaskService) resolveFlowEventTopicID(ctx context.Context, roomID pgtype
 	})
 	if err == nil && msg.TopicID.Valid {
 		return msg.TopicID
-	}
-	rows, err := s.Queries.ListRoomTopicsByRoom(ctx, db.ListRoomTopicsByRoomParams{
-		RoomID: roomID,
-		Limit:  1,
-	})
-	if err == nil && len(rows) > 0 {
-		return rows[0].ID
 	}
 	return pgtype.UUID{}
 }
@@ -269,9 +362,6 @@ func (s *TaskService) RecordInvocationFlowEvent(
 	payload map[string]any,
 ) {
 	topicID := s.resolveFlowEventTopicID(ctx, room.ID, inv)
-	if !topicID.Valid {
-		return
-	}
 	payloadBytes := []byte("{}")
 	if len(payload) > 0 {
 		if b, err := json.Marshal(payload); err == nil {
@@ -281,6 +371,7 @@ func (s *TaskService) RecordInvocationFlowEvent(
 	s.RecordRoomFlowEvent(ctx, room, db.InsertRoomFlowEventParams{
 		RoomID:       room.ID,
 		TopicID:      topicID,
+		Category:     pgtype.Text{String: "message", Valid: true},
 		Type:         eventType,
 		MessageID:    inv.MessageID,
 		InvocationID: inv.ID,
@@ -302,8 +393,55 @@ func (s *TaskService) MaybeRecordInvocationStatusFlowEvent(ctx context.Context, 
 		actorID = inv.TargetID
 	}
 	payload := map[string]any{"status": newStatus}
+	if inv.TargetType == "agent" && inv.TargetID.Valid {
+		agentName := s.resolveAgentName(ctx, inv.TargetID)
+		if agentName == "" {
+			agentName = "Agent"
+		}
+		payload["agent_name"] = agentName
+		payload["target_agent_id"] = util.UUIDToString(inv.TargetID)
+		if token := invocationStatusDisplayToken(newStatus); token != "" {
+			payload["label"] = agentName + " · " + token
+		}
+	}
 	if inv.FailureReason.Valid {
 		payload["failure_reason"] = inv.FailureReason.String
 	}
 	s.RecordInvocationFlowEvent(ctx, room, inv, eventType, actorType, actorID, payload)
+}
+
+// recordLabeledWorkflowFlowEvent appends a topic flow event with a human-readable label (v2.3).
+func (s *TaskService) recordLabeledWorkflowFlowEvent(
+	ctx context.Context,
+	room db.Room,
+	inv db.MentionInvocation,
+	eventType string,
+	label string,
+	extra map[string]string,
+) {
+	topicID := s.resolveFlowEventTopicID(ctx, room.ID, inv)
+	payload := map[string]any{"label": label}
+	for k, v := range extra {
+		payload[k] = v
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		payloadBytes = []byte("{}")
+	}
+	actorType := "agent"
+	actorID := room.ManagerAgentID
+	if !actorID.Valid && inv.TargetType == "agent" && inv.TargetID.Valid {
+		actorID = inv.TargetID
+	}
+	s.RecordRoomFlowEvent(ctx, room, db.InsertRoomFlowEventParams{
+		RoomID:       room.ID,
+		TopicID:      topicID,
+		Category:     pgtype.Text{String: inferRoomFlowEventCategory(eventType), Valid: true},
+		Type:         eventType,
+		MessageID:    inv.MessageID,
+		InvocationID: inv.ID,
+		ActorType:    actorType,
+		ActorID:      actorID,
+		Payload:      payloadBytes,
+	})
 }

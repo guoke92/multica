@@ -1353,11 +1353,7 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 		if s.MaybeAutoRetryRoomInvocation(ctx, task) {
 			s.DrainQueuedRoomInvocations(ctx, task.AgentID)
 		} else {
-			reason := failureReason
-			if reason == "" {
-				reason = "agent_error"
-			}
-			s.finalizeRoomInvocation(ctx, task, "failed", "", reason)
+			s.finalizeRoomInvocation(ctx, task, "failed", "", roomInvocationFailureText(errMsg, failureReason))
 		}
 	}
 
@@ -1368,6 +1364,18 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 	s.broadcastTaskEvent(ctx, protocol.EventTaskFailed, task)
 
 	return &task, nil
+}
+
+// roomInvocationFailureText prefers the daemon's human-readable error over the
+// coarse classifier code (e.g. agent_error) so room UI can show what went wrong.
+func roomInvocationFailureText(errMsg, failureReason string) string {
+	if trimmed := strings.TrimSpace(errMsg); trimmed != "" {
+		return trimmed
+	}
+	if trimmed := strings.TrimSpace(failureReason); trimmed != "" {
+		return trimmed
+	}
+	return "agent_error"
 }
 
 // retryableReasons enumerates failure reasons that the auto-retry path is

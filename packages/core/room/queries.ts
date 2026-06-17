@@ -1,5 +1,7 @@
-import { queryOptions } from "@tanstack/react-query";
+import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 import { api } from "../api";
+
+export const ROOM_MESSAGES_PAGE_SIZE = 50;
 
 export const roomKeys = {
   all: (wsId: string) => ["rooms", wsId] as const,
@@ -15,8 +17,8 @@ export const roomKeys = {
     [...roomKeys.all(wsId), roomId, "workboard"] as const,
   topics: (wsId: string, roomId: string) =>
     [...roomKeys.all(wsId), roomId, "topics"] as const,
-  flowEvents: (wsId: string, roomId: string, topicId: string) =>
-    [...roomKeys.all(wsId), roomId, "flow-events", topicId] as const,
+  flowEvents: (wsId: string, roomId: string, scope: string = "room") =>
+    [...roomKeys.all(wsId), roomId, "flow-events", scope] as const,
 };
 
 export function roomWorkboardOptions(wsId: string, roomId: string) {
@@ -42,15 +44,16 @@ export function roomTopicsOptions(wsId: string, roomId: string) {
 export function roomFlowEventsOptions(
   wsId: string,
   roomId: string,
-  topicId: string | undefined,
+  topicId?: string,
 ) {
+  const scope = topicId ? `topic:${topicId}` : "room";
   return queryOptions({
-    queryKey: roomKeys.flowEvents(wsId, roomId, topicId ?? ""),
+    queryKey: roomKeys.flowEvents(wsId, roomId, scope),
     queryFn: async () => {
-      const res = await api.listRoomFlowEvents(roomId, topicId!);
+      const res = await api.listRoomFlowEvents(roomId, topicId ? { topicId } : undefined);
       return res.events;
     },
-    enabled: !!wsId && !!roomId && !!topicId,
+    enabled: !!wsId && !!roomId,
   });
 }
 
@@ -73,7 +76,26 @@ export function roomDetailOptions(wsId: string, roomId: string) {
 export function roomMessagesOptions(wsId: string, roomId: string) {
   return queryOptions({
     queryKey: roomKeys.messages(wsId, roomId),
-    queryFn: () => api.listRoomMessages(roomId),
+    queryFn: () =>
+      api.listRoomMessages(roomId, { limit: ROOM_MESSAGES_PAGE_SIZE }),
+    enabled: !!wsId && !!roomId,
+  });
+}
+
+/** G9: cursor pagination for older messages (`before` = oldest loaded created_at). */
+export function roomMessagesInfiniteOptions(wsId: string, roomId: string) {
+  return infiniteQueryOptions({
+    queryKey: [...roomKeys.messages(wsId, roomId), "infinite"] as const,
+    queryFn: ({ pageParam }: { pageParam: string | undefined }) =>
+      api.listRoomMessages(roomId, {
+        limit: ROOM_MESSAGES_PAGE_SIZE,
+        before: pageParam,
+      }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => {
+      if (lastPage.length < ROOM_MESSAGES_PAGE_SIZE) return undefined;
+      return lastPage[0]?.created_at;
+    },
     enabled: !!wsId && !!roomId,
   });
 }

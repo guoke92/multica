@@ -6,6 +6,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { cn } from "@multica/ui/lib/utils";
 import { ActorAvatar } from "../common/actor-avatar";
+import { RoomAttributionPill } from "./room-attribution-pill";
 import { RoomLiveStream } from "./room-live-stream";
 import {
   RoomAgentReplyActions,
@@ -46,6 +47,7 @@ type Props = {
   onResume?: (invocationId: string) => void;
   onRegenerate?: (message: RoomMessage) => void;
   onReplyToMessage?: (message: RoomMessage, displayName: string) => void;
+  attribution?: string;
   isCancelling?: boolean;
   isRetrying?: boolean;
   isResuming?: boolean;
@@ -63,6 +65,7 @@ export function RoomInvocationReplySlot({
   onResume,
   onRegenerate,
   onReplyToMessage,
+  attribution,
   isCancelling,
   isRetrying,
   isResuming,
@@ -86,6 +89,10 @@ export function RoomInvocationReplySlot({
     isTerminal && RETRYABLE_STATUSES.has(inv.status) && !!onRetry;
   const canResume =
     inv.status === "paused" && !!onResume;
+  const regenLimitReached =
+    inv.max_retries != null &&
+    inv.retry_count != null &&
+    inv.retry_count >= inv.max_retries;
   const cancelLabel =
     inv.status === "running" ? "停止" : "取消排队";
 
@@ -110,6 +117,7 @@ export function RoomInvocationReplySlot({
           <span className="text-muted-foreground text-xs font-medium">
             {agentLabel}
           </span>
+          {attribution ? <RoomAttributionPill text={attribution} /> : null}
           {isTerminal ? (
             <InvocationStatusBadge status={inv.status} />
           ) : null}
@@ -158,7 +166,9 @@ export function RoomInvocationReplySlot({
                   : undefined
               }
               onRegenerate={
-                onRegenerate ? () => onRegenerate(responseMessage) : undefined
+                onRegenerate && !regenLimitReached
+                  ? () => onRegenerate(responseMessage)
+                  : undefined
               }
               isRegenerating={isRegenerating}
             />
@@ -173,7 +183,7 @@ export function RoomInvocationReplySlot({
             <span>加载回答…</span>
           </div>
         ) : isTerminal ? (
-          <TerminalBody status={inv.status} />
+          <TerminalBody status={inv.status} failureReason={inv.failure_reason} />
         ) : isRunning && inv.task_id ? (
           <div className="space-y-1.5">
             <div
@@ -227,9 +237,39 @@ function terminalLabel(status: string): string {
   }
 }
 
-function TerminalBody({ status }: { status: string }) {
+const INVOCATION_FAILURE_CLASSIFIERS = new Set([
+  "agent_error",
+  "agent_fallback_message",
+  "api_invalid_request",
+  "cancelled",
+  "codex_semantic_inactivity",
+  "iteration_limit",
+  "local_directory_error",
+  "orphan",
+  "runtime_offline",
+  "runtime_recovery",
+  "timeout",
+]);
+
+function isInvocationFailureClassifier(reason: string | undefined): boolean {
+  if (!reason) return true;
+  return INVOCATION_FAILURE_CLASSIFIERS.has(reason);
+}
+
+function TerminalBody({
+  status,
+  failureReason,
+}: {
+  status: string;
+  failureReason?: string;
+}) {
+  const detail =
+    failureReason && !isInvocationFailureClassifier(failureReason)
+      ? failureReason
+      : null;
   const hint =
-    status === "cancelled"
+    detail ??
+    (status === "cancelled"
       ? "已取消排队，Agent 不会继续回答本条 @ 请求。"
       : status === "failed"
         ? "Agent 未能完成回答。"
@@ -237,7 +277,7 @@ function TerminalBody({ status }: { status: string }) {
           ? "等待时间过长，任务已超时。"
           : status === "paused"
             ? "链式调用深度已达上限，需管理员手动恢复。"
-            : null;
+            : null);
 
   if (!hint) return null;
 

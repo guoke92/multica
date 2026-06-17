@@ -81,24 +81,23 @@ func (s *TaskService) RouteRoomMessage(ctx context.Context, p RoomMentionDispatc
 
 	var deliveryID, topicID pgtype.UUID
 	if active, ok := s.resolveActiveRoomTopicContext(ctx, p.Room.ID); ok {
-		topicID = active.Topic.ID
 		deliveryID = active.DeliveryID
 	}
 
 	inv, err := s.dispatchRoomWorkflowInvocation(ctx, dispatchWorkflowInvocationParams{
-		Room:           p.Room,
-		Message:        p.Message,
-		AgentID:        p.Room.ManagerAgentID,
-		Intent:         "route",
-		MaxDepth:       maxDepth,
-		TimeoutAt:      timeoutAt,
+		Room:               p.Room,
+		Message:            p.Message,
+		AgentID:            p.Room.ManagerAgentID,
+		Intent:             "route",
+		MaxDepth:           maxDepth,
+		TimeoutAt:          timeoutAt,
 		ParentInvocationID: p.ParentInvocationID,
-		DeliveryID:     deliveryID,
-		TopicID:        topicID,
-		CanAccessAgent: p.CanAccessAgent,
-		AuthorType:     p.AuthorType,
-		AuthorID:       p.AuthorID,
-		WorkspaceID:    p.WorkspaceID,
+		DeliveryID:         deliveryID,
+		TopicID:            topicID,
+		CanAccessAgent:     p.CanAccessAgent,
+		AuthorType:         p.AuthorType,
+		AuthorID:           p.AuthorID,
+		WorkspaceID:        p.WorkspaceID,
 	})
 	if err != nil {
 		return nil, err
@@ -170,6 +169,7 @@ func (s *TaskService) dispatchRoomWorkflowInvocation(
 		return db.MentionInvocation{}, err
 	}
 	if status == "paused" {
+		s.maybeEscalateManagerOnChainDepth(ctx, p.Room, inv)
 		return inv, nil
 	}
 	s.MaybeRecordInvocationStatusFlowEvent(ctx, p.Room, inv, "pending")

@@ -13,16 +13,21 @@ import {
   TooltipContent,
 } from "@multica/ui/components/ui/tooltip";
 import { useT } from "../../i18n";
+import { useNavigation } from "../../navigation";
 
 const logger = createLogger("chat.ui");
 
 export function ChatFab() {
   const { t } = useT("chat");
+  const { pathname } = useNavigation();
   const wsId = useWorkspaceId();
   const isOpen = useChatStore((s) => s.isOpen);
   const toggle = useChatStore((s) => s.toggle);
   const { data: sessions = [] } = useQuery(chatSessionsOptions(wsId));
   const { data: pending } = useQuery(pendingChatTasksOptions(wsId));
+
+  // Collaboration rooms use the full-width chat surface — hide the global FAB there for now.
+  if (pathname.includes("/rooms")) return null;
 
   if (isOpen) return null;
 

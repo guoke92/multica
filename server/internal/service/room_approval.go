@@ -41,18 +41,6 @@ func (s *TaskService) RequestRoomApproval(ctx context.Context, p RequestRoomAppr
 
 	inv, invErr := s.Queries.GetMentionInvocation(ctx, p.InvocationID)
 	topicID := s.resolveFlowEventTopicID(ctx, p.Room.ID, inv)
-	if !topicID.Valid {
-		rows, listErr := s.Queries.ListRoomTopicsByRoom(ctx, db.ListRoomTopicsByRoomParams{
-			RoomID: p.Room.ID,
-			Limit:  1,
-		})
-		if listErr == nil && len(rows) > 0 {
-			topicID = rows[0].ID
-		}
-	}
-	if !topicID.Valid {
-		return db.RoomHumanAction{}, db.RoomMessage{}, fmt.Errorf("no topic for human action")
-	}
 
 	var invocationID pgtype.UUID
 	if invErr == nil {
@@ -83,7 +71,9 @@ func (s *TaskService) RequestRoomApproval(ctx context.Context, p RequestRoomAppr
 		ID:       msg.ID,
 		Metadata: meta,
 	})
-	_ = s.TouchRoomTopicLastMessage(ctx, topicID, msg.ID)
+	if topicID.Valid {
+		_ = s.TouchRoomTopicLastMessage(ctx, topicID, msg.ID)
+	}
 
 	if s.Bus != nil {
 		s.Bus.Publish(events.Event{

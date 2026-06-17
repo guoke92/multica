@@ -774,30 +774,44 @@ export function useRealtimeSync(
         room_id?: string;
         topic_id?: string;
         event_id?: string;
+        category?: string;
+        step_id?: string;
+        from_message_id?: string;
+        to_message_id?: string;
         type?: string;
         created_at?: string;
         message_id?: string;
         invocation_id?: string;
       };
-      if (!wsId || !payload.room_id || !payload.topic_id || !payload.event_id) return;
-      qc.setQueryData<import("../types/room").RoomFlowEvent[] | undefined>(
-        roomKeys.flowEvents(wsId, payload.room_id, payload.topic_id),
-        (old) => {
-          const next: import("../types/room").RoomFlowEvent = {
-            id: payload.event_id!,
-            room_id: payload.room_id!,
-            topic_id: payload.topic_id!,
-            type: payload.type ?? "unknown",
-            message_id: payload.message_id,
-            invocation_id: payload.invocation_id,
-            actor_type: "system",
-            payload: {},
-            created_at: payload.created_at ?? new Date().toISOString(),
-          };
-          if (old?.some((e) => e.id === next.id)) return old;
-          return [next, ...(old ?? [])];
-        },
-      );
+      if (!wsId || !payload.room_id || !payload.event_id) return;
+      const next: import("../types/room").RoomFlowEvent = {
+        id: payload.event_id!,
+        room_id: payload.room_id!,
+        topic_id: payload.topic_id,
+        category: payload.category,
+        step_id: payload.step_id,
+        from_message_id: payload.from_message_id,
+        to_message_id: payload.to_message_id,
+        type: payload.type ?? "unknown",
+        message_id: payload.message_id,
+        invocation_id: payload.invocation_id,
+        actor_type: "system",
+        payload: {},
+        created_at: payload.created_at ?? new Date().toISOString(),
+      };
+      const patchFlowEvents = (scope: string) => {
+        qc.setQueryData<import("../types/room").RoomFlowEvent[] | undefined>(
+          roomKeys.flowEvents(wsId, payload.room_id!, scope),
+          (old) => {
+            if (old?.some((e) => e.id === next.id)) return old;
+            return [next, ...(old ?? [])];
+          },
+        );
+      };
+      patchFlowEvents("room");
+      if (payload.topic_id) {
+        patchFlowEvents(`topic:${payload.topic_id}`);
+      }
       void qc.invalidateQueries({ queryKey: roomKeys.workboard(wsId, payload.room_id) });
     });
 

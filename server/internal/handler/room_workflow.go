@@ -173,12 +173,7 @@ func (h *Handler) ListRoomFlowEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
 	roomID := chi.URLParam(r, "roomId")
-	topicID := chi.URLParam(r, "topicId")
 	room, _, ok := h.loadRoomMember(w, r, userID, workspaceID, roomID)
-	if !ok {
-		return
-	}
-	topicUUID, ok := parseUUIDOrBadRequest(w, topicID, "topic id")
 	if !ok {
 		return
 	}
@@ -194,37 +189,72 @@ func (h *Handler) ListRoomFlowEvents(w http.ResponseWriter, r *http.Request) {
 			before = pgtype.Timestamptz{Time: t, Valid: true}
 		}
 	}
-	rows, err := h.Queries.ListRoomFlowEventsByTopic(r.Context(), db.ListRoomFlowEventsByTopicParams{
-		RoomID:          room.ID,
-		TopicID:         topicUUID,
-		BeforeCreatedAt: before,
-		Limit:           limit,
-	})
+	topicID := chi.URLParam(r, "topicId")
+	var rows []db.RoomFlowEvent
+	var err error
+	if topicID != "" {
+		topicUUID, ok := parseUUIDOrBadRequest(w, topicID, "topic id")
+		if !ok {
+			return
+		}
+		rows, err = h.Queries.ListRoomFlowEventsByTopic(r.Context(), db.ListRoomFlowEventsByTopicParams{
+			RoomID:          room.ID,
+			TopicID:         topicUUID,
+			BeforeCreatedAt: before,
+			Limit:           limit,
+		})
+	} else {
+		rows, err = h.Queries.ListRoomFlowEventsByRoom(r.Context(), db.ListRoomFlowEventsByRoomParams{
+			RoomID:          room.ID,
+			BeforeCreatedAt: before,
+			Limit:           limit,
+		})
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list flow events")
 		return
 	}
 	type flowEventResp struct {
-		ID           string          `json:"id"`
-		RoomID       string          `json:"room_id"`
-		TopicID      string          `json:"topic_id"`
-		Type         string          `json:"type"`
-		MessageID    *string         `json:"message_id,omitempty"`
-		InvocationID *string         `json:"invocation_id,omitempty"`
-		ActorType    string          `json:"actor_type"`
-		ActorID      *string         `json:"actor_id,omitempty"`
-		Payload      json.RawMessage `json:"payload"`
-		CreatedAt    string          `json:"created_at"`
+		ID            string          `json:"id"`
+		RoomID        string          `json:"room_id"`
+		TopicID       *string         `json:"topic_id,omitempty"`
+		Category      string          `json:"category"`
+		StepID        *string         `json:"step_id,omitempty"`
+		FromMessageID *string         `json:"from_message_id,omitempty"`
+		ToMessageID   *string         `json:"to_message_id,omitempty"`
+		Type          string          `json:"type"`
+		MessageID     *string         `json:"message_id,omitempty"`
+		InvocationID  *string         `json:"invocation_id,omitempty"`
+		ActorType     string          `json:"actor_type"`
+		ActorID       *string         `json:"actor_id,omitempty"`
+		Payload       json.RawMessage `json:"payload"`
+		CreatedAt     string          `json:"created_at"`
 	}
 	out := make([]flowEventResp, 0, len(rows))
 	for _, e := range rows {
 		item := flowEventResp{
 			ID:        uuidToString(e.ID),
 			RoomID:    uuidToString(e.RoomID),
-			TopicID:   uuidToString(e.TopicID),
+			Category:  e.Category,
 			Type:      e.Type,
 			ActorType: e.ActorType,
 			CreatedAt: timestampToString(e.CreatedAt),
+		}
+		if e.TopicID.Valid {
+			s := uuidToString(e.TopicID)
+			item.TopicID = &s
+		}
+		if e.StepID.Valid {
+			s := e.StepID.String
+			item.StepID = &s
+		}
+		if e.FromMessageID.Valid {
+			s := uuidToString(e.FromMessageID)
+			item.FromMessageID = &s
+		}
+		if e.ToMessageID.Valid {
+			s := uuidToString(e.ToMessageID)
+			item.ToMessageID = &s
 		}
 		if e.MessageID.Valid {
 			s := uuidToString(e.MessageID)
@@ -316,6 +346,40 @@ func (h *Handler) DecideRoomHumanAction(w http.ResponseWriter, r *http.Request) 
 		ActorID:      parseUUID(userID),
 		Payload:      []byte(`{}`),
 	})
+	if status == "approved" {
+		topicID := action.TopicID
+		if !topicID.Valid {
+			title := strings.TrimSpace(action.Title)
+			if title == "" {
+				title = "阶段确认"
+			}
+			topic, topicErr := h.Queries.CreateRoomTopic(r.Context(), db.CreateRoomTopicParams{
+				RoomID:   room.ID,
+				Title:    title,
+				Status:   "compressed",
+				PhaseKey: "confirmed",
+			})
+			if topicErr == nil {
+				topicID = topic.ID
+			}
+		} else {
+			_, _ = h.Queries.UpdateRoomTopic(r.Context(), db.UpdateRoomTopicParams{
+				ID:     topicID,
+				Status: pgtype.Text{String: "compressed", Valid: true},
+			})
+		}
+		if topicID.Valid {
+			h.TaskService.RecordRoomFlowEvent(r.Context(), room, db.InsertRoomFlowEventParams{
+				RoomID:    room.ID,
+				TopicID:   topicID,
+				Type:      "topic_compressed",
+				MessageID: action.MessageID,
+				ActorType: "user",
+				ActorID:   parseUUID(userID),
+				Payload:   []byte(`{}`),
+			})
+		}
+	}
 	h.publishRoom(protocol.EventRoomHumanActionUpdated, workspaceID, "member", userID, map[string]any{
 		"room_id":   uuidToString(room.ID),
 		"action_id": uuidToString(action.ID),

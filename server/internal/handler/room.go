@@ -592,7 +592,8 @@ func (h *Handler) ArchiveRoom(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Archive the manager agent if it was auto-created with this room
-	// and is not managing any other active room.
+	// and is not managing any other active room. Use the same side effects
+	// as POST /api/agents/:id/archive so clients refresh archived_at.
 	if room.ManagerAgentID.Valid {
 		if mgr, mgrErr := h.Queries.GetAgent(r.Context(), room.ManagerAgentID); mgrErr == nil &&
 			!mgr.ArchivedAt.Valid &&
@@ -600,10 +601,8 @@ func (h *Handler) ArchiveRoom(w http.ResponseWriter, r *http.Request) {
 			stillManaging, _ := h.Queries.IsRoomManagerAgent(r.Context(), room.ManagerAgentID)
 			if !stillManaging {
 				userUUID := parseUUID(userID)
-				if _, archiveErr := h.Queries.ArchiveAgent(r.Context(), db.ArchiveAgentParams{
-					ID:         room.ManagerAgentID,
-					ArchivedBy: userUUID,
-				}); archiveErr != nil {
+				actorType, actorID := h.resolveActor(r, userID, workspaceID)
+				if _, archiveErr := h.archiveAgentAndNotify(r.Context(), mgr, userUUID, actorType, actorID); archiveErr != nil {
 					slog.Warn("archive manager agent with room",
 						"room_id", uuidToString(room.ID),
 						"agent_id", uuidToString(room.ManagerAgentID),
@@ -1214,7 +1213,7 @@ func (h *Handler) SendRoomMessage(w http.ResponseWriter, r *http.Request) {
 		CanAccessAgent: func(ctx context.Context, agent db.Agent, authorType, authorID, wsID string) bool {
 			return h.canAccessPrivateAgent(ctx, agent, authorType, authorID, wsID)
 		},
-		MaxChainDepth:  5,
+		MaxChainDepth:  service.RoomMaxChainDepth(room),
 		DefaultTimeout: defaultRoomMentionTimeout,
 	})
 	if err != nil {
@@ -1305,7 +1304,7 @@ func (h *Handler) UpdateRoomMessage(w http.ResponseWriter, r *http.Request) {
 		CanAccessAgent: func(ctx context.Context, agent db.Agent, authorType, authorID, wsID string) bool {
 			return h.canAccessPrivateAgent(ctx, agent, authorType, authorID, wsID)
 		},
-		MaxChainDepth:  5,
+		MaxChainDepth:  service.RoomMaxChainDepth(room),
 		DefaultTimeout: defaultRoomMentionTimeout,
 	})
 	if err != nil {
@@ -1375,6 +1374,11 @@ func (h *Handler) RegenerateRoomAgentMessage(w http.ResponseWriter, r *http.Requ
 	})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "invocation not found for this message")
+		return
+	}
+	// G15: enforce max_retries limit on regenerate (same as RetryInvocation).
+	if inv.RetryCount >= inv.MaxRetries {
+		writeError(w, http.StatusBadRequest, "max retries exceeded")
 		return
 	}
 

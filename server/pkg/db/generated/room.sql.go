@@ -58,7 +58,7 @@ SET status = 'cancelled',
     cancelled_at = now(),
     updated_at = now()
 WHERE id = $1 AND status NOT IN ('succeeded', 'cancelled')
-RETURNING id, room_id, message_id, target_type, target_id, intent, status, priority, retry_count, max_retries, task_id, response_message_id, failure_reason, parent_invocation_id, chain_depth, timeout_at, delivered_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at
+RETURNING id, room_id, message_id, target_type, target_id, intent, status, priority, retry_count, max_retries, task_id, response_message_id, failure_reason, parent_invocation_id, chain_depth, timeout_at, delivered_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at, delivery_id, topic_id
 `
 
 type CancelMentionInvocationParams struct {
@@ -200,7 +200,7 @@ INSERT INTO mention_invocation (
     max_retries, parent_invocation_id, chain_depth, timeout_at
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $11, $9, $10)
-RETURNING id, room_id, message_id, target_type, target_id, intent, status, priority, retry_count, max_retries, task_id, response_message_id, failure_reason, parent_invocation_id, chain_depth, timeout_at, delivered_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at
+RETURNING id, room_id, message_id, target_type, target_id, intent, status, priority, retry_count, max_retries, task_id, response_message_id, failure_reason, parent_invocation_id, chain_depth, timeout_at, delivered_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at, delivery_id, topic_id
 `
 
 type CreateMentionInvocationParams struct {
@@ -1431,7 +1431,7 @@ SET status = $2,
     retry_count = COALESCE($9, retry_count),
     updated_at = now()
 WHERE id = $1
-RETURNING id, room_id, message_id, target_type, target_id, intent, status, priority, retry_count, max_retries, task_id, response_message_id, failure_reason, parent_invocation_id, chain_depth, timeout_at, delivered_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at
+RETURNING id, room_id, message_id, target_type, target_id, intent, status, priority, retry_count, max_retries, task_id, response_message_id, failure_reason, parent_invocation_id, chain_depth, timeout_at, delivered_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at, delivery_id, topic_id
 `
 
 type UpdateMentionInvocationStatusParams struct {
@@ -1566,6 +1566,21 @@ func (q *Queries) UpdateRoomMessageMetadata(ctx context.Context, arg UpdateRoomM
 	return err
 }
 
+const updateRoomMessageTopicID = `-- name: UpdateRoomMessageTopicID :exec
+UPDATE room_message SET topic_id = $2 WHERE id = $1 AND room_id = $3
+`
+
+type UpdateRoomMessageTopicIDParams struct {
+	ID      pgtype.UUID `json:"id"`
+	TopicID pgtype.UUID `json:"topic_id"`
+	RoomID  pgtype.UUID `json:"room_id"`
+}
+
+func (q *Queries) UpdateRoomMessageTopicID(ctx context.Context, arg UpdateRoomMessageTopicIDParams) error {
+	_, err := q.db.Exec(ctx, updateRoomMessageTopicID, arg.ID, arg.TopicID, arg.RoomID)
+	return err
+}
+
 const updateRoomMessageContent = `-- name: UpdateRoomMessageContent :one
 UPDATE room_message
 SET content = $2, edited_at = now()
@@ -1680,7 +1695,7 @@ SET status = 'pending',
     retry_count = retry_count + 1,
     updated_at = now()
 WHERE id = $1 AND status = 'succeeded'
-RETURNING id, room_id, message_id, target_type, target_id, intent, status, priority, retry_count, max_retries, task_id, response_message_id, failure_reason, parent_invocation_id, chain_depth, timeout_at, delivered_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at
+RETURNING id, room_id, message_id, target_type, target_id, intent, status, priority, retry_count, max_retries, task_id, response_message_id, failure_reason, parent_invocation_id, chain_depth, timeout_at, delivered_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at, delivery_id, topic_id
 `
 
 func (q *Queries) ResetMentionInvocationForRegenerate(ctx context.Context, id pgtype.UUID) (MentionInvocation, error) {

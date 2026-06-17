@@ -1,13 +1,50 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/stretchr/testify/require"
 )
+
+func TestArchiveRoomArchivesAutoCreatedManagerAgent(t *testing.T) {
+	createReq := newRequest(http.MethodPost, "/api/rooms", map[string]any{
+		"name": "Mgr Archive Room",
+		"type": "project",
+		"manager_agent": map[string]any{
+			"runtime_id": testRuntimeID,
+		},
+	})
+	createReq = withChatTestWorkspaceCtx(t, createReq)
+	w := httptest.NewRecorder()
+	testHandler.CreateRoom(w, createReq)
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	var room RoomResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &room))
+	require.NotNil(t, room.ManagerAgentID)
+
+	archiveReq := newRequest(http.MethodDelete, "/api/rooms/"+room.ID, nil)
+	archiveReq = withURLParam(archiveReq, "roomId", room.ID)
+	archiveReq = withChatTestWorkspaceCtx(t, archiveReq)
+	wArchive := httptest.NewRecorder()
+	testHandler.ArchiveRoom(wArchive, archiveReq)
+	require.Equal(t, http.StatusNoContent, wArchive.Code)
+
+	agent, err := testHandler.Queries.GetAgent(context.Background(), util.MustParseUUID(*room.ManagerAgentID))
+	require.NoError(t, err)
+	require.True(t, agent.ArchivedAt.Valid, "auto-created manager agent should be archived with the room")
+
+	archReq := newRequest(http.MethodPost, "/api/agents/"+*room.ManagerAgentID+"/archive", nil)
+	archReq = withURLParam(archReq, "id", *room.ManagerAgentID)
+	wConflict := httptest.NewRecorder()
+	testHandler.ArchiveAgent(wConflict, archReq)
+	require.Equal(t, http.StatusConflict, wConflict.Code)
+}
 
 func TestCreateRoomRequiresName(t *testing.T) {
 	req := newRequest(http.MethodPost, "/api/rooms", map[string]any{})

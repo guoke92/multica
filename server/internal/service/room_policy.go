@@ -3,6 +3,8 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // RoomPolicy is the V1 room.policy JSON contract.
@@ -93,6 +95,15 @@ func ParseRoomPolicy(raw []byte) RoomPolicy {
 		p.Fallback.RoleTaskMaxRetries = 1
 	}
 	return p
+}
+
+// RoomMaxChainDepth returns the configured agent-to-agent chain cap for a room.
+func RoomMaxChainDepth(room db.Room) int {
+	d := ParseRoomPolicy(room.Policy).MaxChainDepth
+	if d <= 0 {
+		return 5
+	}
+	return d
 }
 
 func MarshalRoomPolicy(p RoomPolicy) ([]byte, error) {

@@ -38,7 +38,7 @@ export function RoomDeliveryCard({ message }: Props) {
   return (
     <div className="border-border bg-card w-full max-w-lg rounded-lg border p-4 shadow-sm">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="text-sm font-medium">{message.content || "话题"}</span>
+        <span className="text-sm font-medium">{message.content || "阶段摘要"}</span>
         {meta.status ? (
           <Badge variant="secondary">{meta.status}</Badge>
         ) : null}

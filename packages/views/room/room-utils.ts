@@ -1,4 +1,4 @@
-import type { RoomMessage } from "@multica/core/types/room";
+import type { MentionInvocation, RoomMessage } from "@multica/core/types/room";
 
 export type QuoteReplyTarget = {
   messageId: string;
@@ -52,6 +52,53 @@ export function extractRoomAgentCopyText(message: RoomMessage): string {
     return meta.detailed_explanation;
   }
   return message.content;
+}
+
+/** v2.3 attribution pill text for an agent invocation reply slot. */
+export function resolveInvocationAttribution(
+  inv: MentionInvocation,
+  rootUserMessage: RoomMessage,
+  invocations: MentionInvocation[],
+  messagesById: Map<string, RoomMessage>,
+  agentNameById: Map<string, string>,
+  managerAgentId?: string,
+): string | undefined {
+  const responseMsg = inv.response_message_id
+    ? messagesById.get(inv.response_message_id)
+    : undefined;
+  const quoted = responseMsg?.quote_message_id
+    ? messagesById.get(responseMsg.quote_message_id)
+    : undefined;
+
+  if (quoted?.sender_type === "agent" && quoted.sender_id) {
+    const name = agentNameById.get(quoted.sender_id) ?? "Agent";
+    return `由 @${name} 指定`;
+  }
+
+  if (rootUserMessage.sender_type !== "user") {
+    return undefined;
+  }
+
+  const managerRouted =
+    !!managerAgentId &&
+    invocations.some(
+      (i) =>
+        i.message_id === rootUserMessage.id &&
+        i.target_id === managerAgentId &&
+        (i.intent === "route" ||
+          i.intent === "orchestrate" ||
+          i.intent === "review"),
+    );
+
+  if (managerRouted && inv.intent === "execute") {
+    return "由群管理分配指定";
+  }
+
+  if (inv.message_id === rootUserMessage.id && inv.intent === "execute") {
+    return "用户 @指定";
+  }
+
+  return undefined;
 }
 
 export type RoomViewMode = "timeline" | "thread";

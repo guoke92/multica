@@ -171,21 +171,32 @@ func (s *TaskService) finalizeRoomInvocation(ctx context.Context, task db.AgentT
 						RoomID: task.RoomID, SenderType: "agent",
 						SenderID: pgtype.UUID{Bytes: task.AgentID.Bytes, Valid: true},
 						Content:  redact.Text(short), Metadata: meta,
+						QuoteMessageID: task.RoomMessageID,
 					})
 					if err != nil {
 						s.commitRoomInvocationStatus(ctx, task, "failed", roomInvocationCommitOpts{
 							failureReason: "failed to post agent reply",
 							completedAt:   now,
 						})
+						invocationCommitted = true
 					} else {
 						responseMsgID = msg.ID
-						s.commitRoomInvocationStatus(ctx, task, "succeeded", roomInvocationCommitOpts{
-							responseMessageID: msg.ID,
-							completedAt:       now,
-						})
+						// G2 follow-up: attach response_message_id without re-firing
+						// invocation_succeeded (already emitted by the pre-commit above).
+						if _, updateErr := s.Queries.UpdateMentionInvocationStatus(ctx, db.UpdateMentionInvocationStatusParams{
+							ID:                task.InvocationID,
+							Status:            "succeeded",
+							ResponseMessageID: msg.ID,
+						}); updateErr != nil {
+							slog.Warn("attach response_message_id failed",
+								"invocation_id", util.UUIDToString(task.InvocationID),
+								"error", updateErr,
+							)
+						}
 						s.publishRoomMessage(ctx, room, msg, task)
 
 						if atMentions, atErr := s.collectRoomMentions(ctx, room, body); atErr == nil {
+							parentInv, parentInvErr := s.loadMentionInvocation(ctx, task.InvocationID)
 							for _, atM := range atMentions {
 								if atM.Type != "agent" || atM.ID == util.UUIDToString(task.AgentID) {
 									continue
@@ -195,23 +206,32 @@ func (s *TaskService) finalizeRoomInvocation(ctx context.Context, task db.AgentT
 									continue
 								}
 								atSourceID := pgtype.UUID{Bytes: task.AgentID.Bytes, Valid: true}
-								atMeta, _ := json.Marshal(map[string]string{
-									"from_agent_id":   util.UUIDToString(atSourceID),
-									"from_agent_name": s.resolveAgentName(ctx, atSourceID),
-									"to_agent_id":     atM.ID,
-									"to_agent_name":   s.resolveAgentName(ctx, atTargetID),
-								})
-								if _, atCreateErr := s.Queries.CreateRoomMessageExtended(ctx, db.CreateRoomMessageExtendedParams{
-									RoomID:        room.ID,
-									SenderType:    "system",
-									Content:       truncateForSummary(body, 500),
-									MessageKind:   pgtype.Text{String: "agent_at", Valid: true},
-									RelayMetadata: atMeta,
-								}); atCreateErr != nil {
-									slog.Warn("agent_at: create system message failed",
-										"room_id", util.UUIDToString(room.ID),
-										"error", atCreateErr,
-									)
+								fromName := s.resolveAgentName(ctx, atSourceID)
+								toName := s.resolveAgentName(ctx, atTargetID)
+								if parentInvErr == nil {
+									label := fromName + " → @" + toName
+									payload, _ := json.Marshal(map[string]any{
+										"label":           label,
+										"from_agent_id":   util.UUIDToString(atSourceID),
+										"from_agent_name": fromName,
+										"to_agent_id":     atM.ID,
+										"to_agent_name":   toName,
+									})
+									topicID := s.resolveFlowEventTopicID(ctx, room.ID, parentInv)
+									s.RecordRoomFlowEvent(ctx, room, db.InsertRoomFlowEventParams{
+										RoomID:        room.ID,
+										TopicID:       topicID,
+										Category:      pgtype.Text{String: "control", Valid: true},
+										StepID:        pgtype.Text{String: "relay:" + util.UUIDToString(task.InvocationID), Valid: true},
+										FromMessageID: parentInv.MessageID,
+										ToMessageID:   msg.ID,
+										Type:          "agent_at_succeeded",
+										MessageID:     msg.ID,
+										InvocationID:  task.InvocationID,
+										ActorType:     "agent",
+										ActorID:       atSourceID,
+										Payload:       payload,
+									})
 								}
 							}
 						}
@@ -219,11 +239,11 @@ func (s *TaskService) finalizeRoomInvocation(ctx context.Context, task db.AgentT
 						if _, err := s.DispatchRoomMentions(ctx, RoomMentionDispatchParams{
 							Room: room, Message: msg,
 							AuthorType: "agent", AuthorID: util.UUIDToString(task.AgentID),
-							WorkspaceID: util.UUIDToString(room.WorkspaceID),
+							WorkspaceID:    util.UUIDToString(room.WorkspaceID),
 							CanAccessAgent: func(_ context.Context, _ db.Agent, _, _, _ string) bool { return true },
-							MaxChainDepth: 5, DefaultTimeout: 30 * time.Minute,
+							MaxChainDepth:  RoomMaxChainDepth(room), DefaultTimeout: 30 * time.Minute,
 							ParentInvocationID: task.InvocationID,
-							MentionContent: body,
+							MentionContent:     body,
 						}); err != nil {
 							slog.Warn("dispatch room mentions from agent reply",
 								"room_id", util.UUIDToString(room.ID), "error", err,

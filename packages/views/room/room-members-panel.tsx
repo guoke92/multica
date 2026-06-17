@@ -81,7 +81,6 @@ export function RoomMembersPanel({
 
   const [addOpen, setAddOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<RoomMember | null>(null);
-  const [selectedTopicId, setSelectedTopicId] = useState<string | undefined>();
 
   const userNames = new Map(
     workspaceMembers.map((m) => [m.user_id, m.name || m.email]),
@@ -338,8 +337,9 @@ export function RoomMembersPanel({
         <RoomWorkboardPanel
           wsId={wsId}
           roomId={roomId}
-          selectedTopicId={selectedTopicId}
-          onSelectTopic={setSelectedTopicId}
+          managerAgentId={managerAgentId}
+          agentNameById={agentNames}
+          invocations={invocations}
         />
       </aside>
 

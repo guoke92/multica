@@ -153,6 +153,13 @@ export class TestApiClient {
     return this.token;
   }
 
+  /** Reuse a session established by ensureDefaultSession (E2E helpers). */
+  adoptSession(token: string, workspace: TestWorkspace) {
+    this.token = token;
+    this.workspaceId = workspace.id;
+    this.workspaceSlug = workspace.slug;
+  }
+
   private async authedFetch(path: string, init?: RequestInit) {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",

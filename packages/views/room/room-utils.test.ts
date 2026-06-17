@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildQuoteMentionPrefix, buildThreadForest, truncatePreview } from "./room-utils";
+import { buildQuoteMentionPrefix, buildThreadForest, resolveInvocationAttribution, truncatePreview } from "./room-utils";
 
 describe("buildQuoteMentionPrefix", () => {
   it("auto-mentions agent sender", () => {
@@ -75,5 +75,47 @@ describe("buildThreadForest", () => {
     const forest = buildThreadForest(messages);
     expect(forest).toHaveLength(2);
     expect(forest.every((n) => n.children.length === 0)).toBe(true);
+  });
+});
+
+describe("resolveInvocationAttribution", () => {
+  const root = {
+    id: "u1",
+    sender_type: "user",
+    content: "hi",
+    created_at: "2026-01-01T00:00:00Z",
+  } as import("@multica/core/types/room").RoomMessage;
+
+  it("shows manager attribution for routed execute invocations", () => {
+    const invocations = [
+      { id: "m1", message_id: "u1", target_id: "mgr", intent: "route", target_type: "agent" },
+      { id: "e1", message_id: "u1", target_id: "a1", intent: "execute", target_type: "agent" },
+    ] as import("@multica/core/types/room").MentionInvocation[];
+    expect(
+      resolveInvocationAttribution(
+        invocations[1]!,
+        root,
+        invocations,
+        new Map(),
+        new Map([["a1", "分析师"]]),
+        "mgr",
+      ),
+    ).toBe("由群管理分配指定");
+  });
+
+  it("shows user @ attribution for direct mentions", () => {
+    const invocations = [
+      { id: "e1", message_id: "u1", target_id: "a1", intent: "execute", target_type: "agent" },
+    ] as import("@multica/core/types/room").MentionInvocation[];
+    expect(
+      resolveInvocationAttribution(
+        invocations[0]!,
+        root,
+        invocations,
+        new Map(),
+        new Map(),
+        "mgr",
+      ),
+    ).toBe("用户 @指定");
   });
 });

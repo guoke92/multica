@@ -14,6 +14,8 @@ export type RoomSnapshot = {
   running_count?: number;
   failed_count?: number;
   timed_out_count?: number;
+  active_graph_id?: string;
+  compressed_topics?: TopicSummary[];
   active_topic_id?: string;
   topic_summaries?: TopicSummary[];
   latest_event_id?: string;
@@ -81,7 +83,11 @@ export type RoomTopic = {
 export type RoomFlowEvent = {
   id: string;
   room_id: string;
-  topic_id: string;
+  topic_id?: string;
+  category?: "message" | "control" | "confirm" | "phase" | "meta" | string;
+  step_id?: string;
+  from_message_id?: string;
+  to_message_id?: string;
   type: string;
   message_id?: string;
   invocation_id?: string;
@@ -118,6 +124,8 @@ export type RoomWorkboard = {
   running_count: number;
   failed_count?: number;
   timed_out_count?: number;
+  active_graph_id?: string;
+  compressed_topics?: TopicSummary[];
   active_topic_id?: string;
   topic_summaries?: TopicSummary[];
   latest_event_id?: string;

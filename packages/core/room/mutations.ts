@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import { workspaceKeys } from "../workspace/queries";
 import { roomKeys } from "./queries";
 
 export function useCreateRoom(wsId: string) {
@@ -178,6 +179,7 @@ export function useArchiveRoom(wsId: string) {
     mutationFn: (roomId: string) => api.archiveRoom(roomId),
     onSuccess: (_data, roomId) => {
       void qc.invalidateQueries({ queryKey: roomKeys.list(wsId) });
+      void qc.invalidateQueries({ queryKey: workspaceKeys.agents(wsId) });
       void qc.removeQueries({ queryKey: roomKeys.detail(wsId, roomId) });
       void qc.removeQueries({ queryKey: roomKeys.messages(wsId, roomId) });
       void qc.removeQueries({ queryKey: roomKeys.invocations(wsId, roomId) });

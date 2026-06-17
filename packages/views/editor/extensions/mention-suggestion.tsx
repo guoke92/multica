@@ -418,7 +418,7 @@ export function createMentionSuggestion(
           (s) =>
             (roomScope.squadIds?.includes(s.id) ?? false) && !s.archived_at,
         )
-      : squads;
+      : squads.filter((s) => !s.archived_at);
 
     const allItem: MentionItem[] = roomScope
       ? []

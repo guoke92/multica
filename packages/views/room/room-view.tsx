@@ -1,11 +1,11 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   roomDetailOptions,
   roomInvocationsOptions,
-  roomMessagesOptions,
+  roomMessagesInfiniteOptions,
   roomMembersOptions,
   roomKeys,
 } from "@multica/core/room/queries";
@@ -54,7 +54,20 @@ export function RoomView({ roomId, onArchived }: Props) {
   const [quoteReply, setQuoteReply] = useState<QuoteReplyTarget | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { data: room } = useQuery(roomDetailOptions(wsId, roomId));
-  const { data: messages = [] } = useQuery(roomMessagesOptions(wsId, roomId));
+  const {
+    data: messagePages,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery(roomMessagesInfiniteOptions(wsId, roomId));
+  const messages = useMemo(
+    () =>
+      messagePages?.pages
+        .slice()
+        .reverse()
+        .flat() ?? [],
+    [messagePages?.pages],
+  );
   const { data: invocations = [] } = useQuery(roomInvocationsOptions(wsId, roomId));
   const { data: members = [] } = useQuery(roomMembersOptions(wsId, roomId));
   const { data: workspaceMembers = [] } = useQuery(memberListOptions(wsId));
@@ -290,6 +303,11 @@ export function RoomView({ roomId, onArchived }: Props) {
           agentNameById={agentNameById}
           memberNameById={memberNameById}
           squadNameById={squadNameById}
+          hasOlderMessages={hasNextPage === true}
+          isLoadingOlderMessages={isFetchingNextPage}
+          onLoadOlderMessages={() => {
+            void fetchNextPage();
+          }}
         />
         <RoomComposer
           roomId={roomId}

@@ -21,8 +21,7 @@ import { ApprovalCard } from "./approval-card";
 import { RoomDeliveryCard } from "./room-delivery-card";
 import { RoomInvocationReplySlot } from "./room-invocation-reply-slot";
 import { RoomRouteHint } from "./room-route-hint";
-import { RoomRelayHint } from "./room-relay-hint";
-import { RoomAgentAtCard } from "./room-agent-at-card";
+import { RoomEscalationBanner } from "./room-escalation-banner";
 import {
   isManagerInvocation,
   shouldHideRoomMessage,
@@ -36,6 +35,7 @@ import {
   getRoomViewMode,
   setRoomViewMode,
   stripWorkflowActionFooter,
+  resolveInvocationAttribution,
   truncatePreview,
   type RoomViewMode,
   type ThreadBlock,
@@ -199,33 +199,25 @@ function getManagerResponseContent(
   return resp?.content;
 }
 
-/**
- * Build a map from agent_at message ID → invocation status.
- * Matches by target agent ID + time proximity (within 120 s).
- */
-function buildAgentAtStatusMap(
+/** Escalation banner anchored to the user message at the quote-chain root (v2.3). */
+function findEscalationForRoot(
+  rootMessageId: string,
   messages: RoomMessage[],
-  invocations: MentionInvocation[],
-): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const m of messages) {
-    if (m.message_kind !== "agent_at") continue;
-    const rm = (m.relay_metadata ?? {}) as Record<string, string>;
-    const toAgentId = rm.to_agent_id;
-    if (!toAgentId) continue;
-    const msgTime = new Date(m.created_at).getTime();
-    let best: MentionInvocation | undefined;
-    for (const inv of invocations) {
-      if (inv.target_id !== toAgentId) continue;
-      const invTime = new Date(inv.created_at ?? 0).getTime();
-      if (Math.abs(invTime - msgTime) > 120_000) continue;
-      if (!best || invTime > new Date(best.created_at ?? 0).getTime()) {
-        best = inv;
-      }
-    }
-    if (best) map.set(m.id, best.status);
-  }
-  return map;
+): RoomMessage | undefined {
+  return messages.find(
+    (m) =>
+      m.message_kind === "escalate_hint" &&
+      m.quote_message_id === rootMessageId,
+  );
+}
+
+function escalationBannerCopy(msg: RoomMessage): { title: string; detail?: string } {
+  const rm = (msg.relay_metadata ?? {}) as Record<string, string>;
+  const targetName = rm.target_agent_name ?? "高级角色";
+  const reason = rm.reason?.trim();
+  const title = reason ? reason : `已引入 ${targetName} 协助裁决`;
+  const detail = reason ? `已引入 ${targetName} 协助裁决` : undefined;
+  return { title, detail: detail !== title ? detail : undefined };
 }
 
 type Props = {
@@ -240,6 +232,9 @@ type Props = {
   onReplyToMessage?: (message: RoomMessage, displayName: string) => void;
   onRegenerateAgentMessage?: (message: RoomMessage) => void;
   regeneratingMessageId?: string | null;
+  hasOlderMessages?: boolean;
+  isLoadingOlderMessages?: boolean;
+  onLoadOlderMessages?: () => void;
   cancellingInvocationId?: string | null;
   retryingInvocationId?: string | null;
   resumingInvocationId?: string | null;
@@ -272,6 +267,9 @@ export function RoomMessageList({
   onReplyToMessage,
   onRegenerateAgentMessage,
   regeneratingMessageId,
+  hasOlderMessages,
+  isLoadingOlderMessages,
+  onLoadOlderMessages,
   cancellingInvocationId,
   retryingInvocationId,
   resumingInvocationId,
@@ -291,7 +289,6 @@ export function RoomMessageList({
 
   const messagesById = new Map(messages.map((m) => [m.id, m]));
   const anchoredResponseIds = collectAnchoredResponseIds(messages, invocations);
-  const agentAtStatusMap = buildAgentAtStatusMap(messages, invocations);
 
   const visibleMessages = useMemo(
     () =>
@@ -357,6 +354,20 @@ export function RoomMessageList({
             引用链
           </Button>
         </div>
+        {hasOlderMessages ? (
+          <div className="flex justify-center pb-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="text-muted-foreground text-xs"
+              disabled={isLoadingOlderMessages}
+              onClick={onLoadOlderMessages}
+            >
+              {isLoadingOlderMessages ? "加载中…" : "加载更早消息"}
+            </Button>
+          </div>
+        ) : null}
         {orderedMessages.map((m) => {
           const threadDepth = viewMode === "thread" ? (threadDepthById.get(m.id) ?? 0) : 0;
 
@@ -392,6 +403,12 @@ export function RoomMessageList({
           const managerResponseContent = managerInvocation
             ? getManagerResponseContent(managerInvocation, messages, messagesById)
             : undefined;
+          const escalationMsg = isUserMessage
+            ? findEscalationForRoot(m.id, messages)
+            : undefined;
+          const escalationCopy = escalationMsg
+            ? escalationBannerCopy(escalationMsg)
+            : undefined;
           const displayName = resolveSenderName(m, agentNameById, memberNameById);
           const quoted = m.quote_message_id
             ? messagesById.get(m.quote_message_id)
@@ -422,7 +439,6 @@ export function RoomMessageList({
                     ? resolveSenderName(quoted, agentNameById, memberNameById)
                     : undefined
                 }
-                agentAtStatus={agentAtStatusMap.get(m.id)}
                 onEdit={canEdit ? () => onEditMessage(m) : undefined}
                 onReply={
                   m.sender_type !== "system" && onReplyToMessage
@@ -450,6 +466,12 @@ export function RoomMessageList({
                   isRetrying={retryingInvocationId === managerInvocation.id}
                 />
               ) : null}
+              {isUserMessage && escalationCopy ? (
+                <RoomEscalationBanner
+                  title={escalationCopy.title}
+                  detail={escalationCopy.detail}
+                />
+              ) : null}
               {isUserMessage
                 ? slotInvocations.map((inv) => {
                     const responseMessage = findResponseMessage(
@@ -457,11 +479,20 @@ export function RoomMessageList({
                       messages,
                       messagesById,
                     );
+                    const attribution = resolveInvocationAttribution(
+                      inv,
+                      m,
+                      invocations,
+                      messagesById,
+                      agentNameById,
+                      managerAgentId,
+                    );
                     return (
                       <RoomInvocationReplySlot
                         key={inv.id}
                         invocation={inv}
                         responseMessage={responseMessage}
+                        attribution={attribution}
                         agentNameById={agentNameById}
                         squadNameById={squadNameById}
                         onCancel={onCancelInvocation}
@@ -574,7 +605,6 @@ function RoomMessageRow({
   roomId,
   quotedMessage,
   quotedSenderName,
-  agentAtStatus,
   onEdit,
   onReply,
   onRegenerate,
@@ -586,7 +616,6 @@ function RoomMessageRow({
   roomId: string;
   quotedMessage?: RoomMessage;
   quotedSenderName?: string;
-  agentAtStatus?: string;
   onEdit?: () => void;
   onReply?: () => void;
   onRegenerate?: () => void;
@@ -601,30 +630,6 @@ function RoomMessageRow({
       <div className="mx-auto max-w-[90%]">
         <RoomDeliveryCard message={m} />
       </div>
-    );
-  }
-
-  // Router/Supervisor mode hint messages.
-  // route_hint is now rendered inline with the user message; hidden by shouldHideRoomMessage.
-  if (m.message_kind === "relay_hint") {
-    const rm = (m.relay_metadata ?? {}) as Record<string, string>;
-    return (
-      <RoomRelayHint
-        fromAgentName={rm.from_agent_name ?? "Agent"}
-        toAgentName={rm.to_agent_name ?? "Agent"}
-        reason={rm.reason}
-      />
-    );
-  }
-  if (m.message_kind === "agent_at") {
-    const rm = (m.relay_metadata ?? {}) as Record<string, string>;
-    return (
-      <RoomAgentAtCard
-        fromAgentName={rm.from_agent_name ?? "Agent"}
-        toAgentName={rm.to_agent_name ?? "Agent"}
-        content={m.content}
-        status={agentAtStatus}
-      />
     );
   }
 

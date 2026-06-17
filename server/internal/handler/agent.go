@@ -1150,6 +1150,44 @@ func (h *Handler) resolveAgentProvider(r *http.Request, workspaceID pgtype.UUID,
 	return rt.Provider, true
 }
 
+// archiveAgentAndNotify archives an agent, cancels its active tasks, and
+// publishes agent:archived so clients refresh the agents list. Callers must
+// ensure the agent is not already archived.
+func (h *Handler) archiveAgentAndNotify(
+	ctx context.Context,
+	agent db.Agent,
+	archivedBy pgtype.UUID,
+	actorType string,
+	actorID string,
+) (db.Agent, error) {
+	if agent.ArchivedAt.Valid {
+		return agent, fmt.Errorf("agent already archived")
+	}
+
+	archived, err := h.Queries.ArchiveAgent(ctx, db.ArchiveAgentParams{
+		ID:         agent.ID,
+		ArchivedBy: archivedBy,
+	})
+	if err != nil {
+		return db.Agent{}, err
+	}
+
+	if cancelled, err := h.Queries.CancelAgentTasksByAgent(ctx, agent.ID); err != nil {
+		slog.Warn("cancel agent tasks on archive failed", "error", err, "agent_id", uuidToString(agent.ID))
+	} else {
+		h.TaskService.CaptureCancelledTasks(ctx, cancelled)
+	}
+
+	wsID := uuidToString(archived.WorkspaceID)
+	slog.Info("agent archived", "agent_id", uuidToString(agent.ID), "workspace_id", wsID)
+	resp := agentToResponse(archived)
+	if err := h.attachAgentSkills(ctx, &resp, archived.ID); err != nil {
+		return archived, err
+	}
+	h.publish(protocol.EventAgentArchived, wsID, actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
+	return archived, nil
+}
+
 func (h *Handler) ArchiveAgent(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	agent, ok := h.loadAgentForUser(w, r, id)
@@ -1165,36 +1203,21 @@ func (h *Handler) ArchiveAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := requestUserID(r)
-	archived, err := h.Queries.ArchiveAgent(r.Context(), db.ArchiveAgentParams{
-		ID:         agent.ID,
-		ArchivedBy: parseUUID(userID),
-	})
+	wsID := uuidToString(agent.WorkspaceID)
+	actorType, actorID := h.resolveActor(r, userID, wsID)
+	archived, err := h.archiveAgentAndNotify(r.Context(), agent, parseUUID(userID), actorType, actorID)
 	if err != nil {
 		slog.Warn("archive agent failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to archive agent")
 		return
 	}
 
-	// Cancel all pending/active tasks for this agent. Discard the returned
-	// rows here — the agent:archived event below already triggers a full
-	// active-tasks invalidation on every connected client, so per-task
-	// task:cancelled events would be redundant noise.
-	if cancelled, err := h.Queries.CancelAgentTasksByAgent(r.Context(), agent.ID); err != nil {
-		slog.Warn("cancel agent tasks on archive failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-	} else {
-		h.TaskService.CaptureCancelledTasks(r.Context(), cancelled)
-	}
-
-	wsID := uuidToString(archived.WorkspaceID)
-	slog.Info("agent archived", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", wsID)...)
 	resp := agentToResponse(archived)
 	if err := h.attachAgentSkills(r.Context(), &resp, archived.ID); err != nil {
 		slog.Warn("load agent skills after archive failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
 		return
 	}
-	actorType, actorID := h.resolveActor(r, userID, wsID)
-	h.publish(protocol.EventAgentArchived, wsID, actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
 	redactAgentResponseForActor(&resp, actorType)
 	writeJSON(w, http.StatusOK, resp)
 }

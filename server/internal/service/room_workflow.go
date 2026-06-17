@@ -28,16 +28,16 @@ type RoomWorkflowContext struct {
 
 // WorkflowAction is the structured footer managers emit on task completion.
 type WorkflowAction struct {
-	Action      string              `json:"action"`
-	Title       string              `json:"title,omitempty"`
-	RoleKey     string              `json:"role_key,omitempty"`
-	RoleKeys    []string            `json:"role_keys,omitempty"`
-	AgentID     string              `json:"agent_id,omitempty"`
-	AgentIDs    []string            `json:"agent_ids,omitempty"`
-	PhaseKey    string              `json:"phase_key,omitempty"`
-	Message     string              `json:"message,omitempty"`
-	SyncIssue   bool                `json:"sync_issue,omitempty"`
-	Progress    []ProgressItemInput `json:"progress,omitempty"`
+	Action    string              `json:"action"`
+	Title     string              `json:"title,omitempty"`
+	RoleKey   string              `json:"role_key,omitempty"`
+	RoleKeys  []string            `json:"role_keys,omitempty"`
+	AgentID   string              `json:"agent_id,omitempty"`
+	AgentIDs  []string            `json:"agent_ids,omitempty"`
+	PhaseKey  string              `json:"phase_key,omitempty"`
+	Message   string              `json:"message,omitempty"`
+	SyncIssue bool                `json:"sync_issue,omitempty"`
+	Progress  []ProgressItemInput `json:"progress,omitempty"`
 	// Router/Supervisor mode fields.
 	RouteTo        string `json:"route_to,omitempty"`
 	RelayTo        string `json:"relay_to,omitempty"`
@@ -175,10 +175,10 @@ func (s *TaskService) ProcessRoomWorkflowOnComplete(
 			if err == nil {
 				mgrInv, mgrErr := s.dispatchRoomWorkflowInvocation(ctx, dispatchWorkflowInvocationParams{
 					Room: room, Message: msg, AgentID: room.ManagerAgentID,
-					Intent: "review", MaxDepth: 5,
-					TimeoutAt: time.Now().Add(30 * time.Minute),
+					Intent: "review", MaxDepth: RoomMaxChainDepth(room),
+					TimeoutAt:  time.Now().Add(30 * time.Minute),
 					DeliveryID: inv.DeliveryID, TopicID: inv.TopicID,
-					OnFailure: "manager_replan",
+					OnFailure:          "manager_replan",
 					ParentInvocationID: inv.ID,
 				})
 				if mgrErr == nil {
@@ -266,11 +266,11 @@ func (s *TaskService) enqueueManagerReview(ctx context.Context, room db.Room, in
 	}
 	mgrInv, err := s.dispatchRoomWorkflowInvocation(ctx, dispatchWorkflowInvocationParams{
 		Room: room, Message: msg, AgentID: room.ManagerAgentID,
-		Intent: "review", MaxDepth: 5,
-		TimeoutAt:      time.Now().Add(30 * time.Minute),
+		Intent: "review", MaxDepth: RoomMaxChainDepth(room),
+		TimeoutAt:          time.Now().Add(30 * time.Minute),
 		ParentInvocationID: inv.ID,
-		DeliveryID:     inv.DeliveryID,
-		TopicID:        inv.TopicID,
+		DeliveryID:         inv.DeliveryID,
+		TopicID:            inv.TopicID,
 	})
 	if err != nil {
 		return
@@ -342,9 +342,9 @@ func (s *TaskService) workflowCreateTopic(
 		rootTitle = title
 	}
 	topic, err := s.Queries.CreateRoomTopic(ctx, db.CreateRoomTopicParams{
-		RoomID: room.ID,
-		Title:  rootTitle,
-		Status: "pending",
+		RoomID:   room.ID,
+		Title:    rootTitle,
+		Status:   "pending",
 		PhaseKey: "root",
 	})
 	if err != nil {
@@ -561,7 +561,7 @@ func (s *TaskService) workflowDispatchRole(
 		_, err = s.dispatchRoomWorkflowInvocation(ctx, dispatchWorkflowInvocationParams{
 			Room: room, Message: msg, AgentID: agentID,
 			Intent: "execute", RoleKey: roleKey, PhaseKey: action.PhaseKey,
-			MaxDepth: 5, TimeoutAt: time.Now().Add(30 * time.Minute),
+			MaxDepth: RoomMaxChainDepth(room), TimeoutAt: time.Now().Add(30 * time.Minute),
 			DeliveryID: deliveryID, TopicID: topic.ID,
 		})
 		if err != nil {
@@ -798,7 +798,9 @@ func (s *TaskService) resolveAgentName(ctx context.Context, agentID pgtype.UUID)
 	return strings.TrimSpace(agent.Name)
 }
 
-// workflowRouteTo creates a route_hint system message and dispatches the target agent.
+// workflowRouteTo records a RouteStep and dispatches the target agent. It does
+// not create chat-visible route hint messages; routing is shown only in the
+// workboard event graph.
 func (s *TaskService) workflowRouteTo(
 	ctx context.Context,
 	room db.Room,
@@ -820,6 +822,8 @@ func (s *TaskService) workflowRouteTo(
 		return nil
 	}
 
+	topicID := s.ensureTopicForMessage(ctx, room, inv.MessageID)
+
 	// Guard: skip if the target agent already has an active or recently completed
 	// invocation for the same message chain (prevents Manager review loops).
 	if s.agentRecentlyHandled(ctx, room, targetID, inv.MessageID) {
@@ -835,26 +839,10 @@ func (s *TaskService) workflowRouteTo(
 		targetName = "Agent"
 	}
 
-	relayMeta, _ := json.Marshal(map[string]string{
+	s.recordLabeledWorkflowFlowEvent(ctx, room, inv, "manager_route_succeeded", "群管 → 路由给 "+targetName, map[string]string{
 		"target_agent_id":   util.UUIDToString(targetID),
 		"target_agent_name": targetName,
-		"reason":            action.RelayReason,
 	})
-	content := "\u2197\ufe0f \u8def\u7531\u7ed9 " + targetName
-	if action.Title != "" {
-		content = "\u2197\ufe0f " + action.Title
-	}
-
-	_, err := s.Queries.CreateRoomMessageExtended(ctx, db.CreateRoomMessageExtendedParams{
-		RoomID:        room.ID,
-		SenderType:    "system",
-		Content:       content,
-		MessageKind:   pgtype.Text{String: "route_hint", Valid: true},
-		RelayMetadata: relayMeta,
-	})
-	if err != nil {
-		slog.Warn("workflow route_to: create hint failed", "error", err)
-	}
 
 	msg, err := s.Queries.GetRoomMessageInRoom(ctx, db.GetRoomMessageInRoomParams{
 		ID: inv.MessageID, RoomID: room.ID,
@@ -865,8 +853,9 @@ func (s *TaskService) workflowRouteTo(
 
 	newInv, err := s.dispatchRoomWorkflowInvocation(ctx, dispatchWorkflowInvocationParams{
 		Room: room, Message: msg, AgentID: targetID,
-		Intent: "execute", MaxDepth: 5,
+		Intent: "execute", MaxDepth: RoomMaxChainDepth(room),
 		TimeoutAt: time.Now().Add(30 * time.Minute),
+		TopicID:   topicID,
 	})
 	if err != nil {
 		slog.Warn("workflow route_to: dispatch failed", "agent_id", util.UUIDToString(targetID), "error", err)
@@ -878,7 +867,8 @@ func (s *TaskService) workflowRouteTo(
 	return nil
 }
 
-// workflowRelayTo creates a relay_hint system message and dispatches the next agent.
+// workflowRelayTo records a RelayStep and dispatches the next agent. It does
+// not create chat-visible relay hint messages.
 func (s *TaskService) workflowRelayTo(
 	ctx context.Context,
 	room db.Room,
@@ -898,6 +888,7 @@ func (s *TaskService) workflowRelayTo(
 	if !targetID.Valid {
 		return nil
 	}
+	topicID := s.ensureTopicForMessage(ctx, room, inv.MessageID)
 	// Guard: prevent relay loops to the same agent for the same message.
 	if s.agentRecentlyHandled(ctx, room, targetID, inv.MessageID) {
 		slog.Info("workflow relay_to: skipped duplicate relay to agent",
@@ -914,28 +905,17 @@ func (s *TaskService) workflowRelayTo(
 		toName = "Agent"
 	}
 
-	relayMeta, _ := json.Marshal(map[string]string{
+	relayLabel := fromName + " → " + toName
+	if action.RelayReason != "" {
+		relayLabel += " · " + action.RelayReason
+	}
+	s.recordLabeledWorkflowFlowEvent(ctx, room, inv, "manager_relay_succeeded", relayLabel, map[string]string{
 		"from_agent_id":   util.UUIDToString(inv.TargetID),
 		"from_agent_name": fromName,
 		"to_agent_id":     util.UUIDToString(targetID),
 		"to_agent_name":   toName,
 		"reason":          action.RelayReason,
 	})
-	content := "\U0001F504 " + fromName + " \u2192 " + toName
-	if action.RelayReason != "" {
-		content += " \u201c" + action.RelayReason + "\u201d"
-	}
-
-	_, err := s.Queries.CreateRoomMessageExtended(ctx, db.CreateRoomMessageExtendedParams{
-		RoomID:        room.ID,
-		SenderType:    "system",
-		Content:       content,
-		MessageKind:   pgtype.Text{String: "relay_hint", Valid: true},
-		RelayMetadata: relayMeta,
-	})
-	if err != nil {
-		slog.Warn("workflow relay_to: create hint failed", "error", err)
-	}
 
 	msg, err := s.Queries.GetRoomMessageInRoom(ctx, db.GetRoomMessageInRoomParams{
 		ID: inv.MessageID, RoomID: room.ID,
@@ -946,9 +926,10 @@ func (s *TaskService) workflowRelayTo(
 
 	newInv, err := s.dispatchRoomWorkflowInvocation(ctx, dispatchWorkflowInvocationParams{
 		Room: room, Message: msg, AgentID: targetID,
-		Intent: "execute", MaxDepth: 5,
+		Intent: "execute", MaxDepth: RoomMaxChainDepth(room),
 		TimeoutAt:          time.Now().Add(30 * time.Minute),
 		ParentInvocationID: inv.ID,
+		TopicID:            topicID,
 	})
 	if err != nil {
 		slog.Warn("workflow relay_to: dispatch failed", "agent_id", util.UUIDToString(targetID), "error", err)
@@ -980,6 +961,7 @@ func (s *TaskService) workflowEscalate(
 	if !targetID.Valid {
 		return nil
 	}
+	topicID := s.ensureTopicForMessage(ctx, room, inv.MessageID)
 	targetName := s.resolveAgentName(ctx, targetID)
 	if targetName == "" {
 		targetName = "Agent"
@@ -997,15 +979,27 @@ func (s *TaskService) workflowEscalate(
 		content += " \u2014 " + action.Message
 	}
 
-	_, err := s.Queries.CreateRoomMessageExtended(ctx, db.CreateRoomMessageExtendedParams{
-		RoomID:        room.ID,
-		SenderType:    "system",
-		Content:       content,
-		MessageKind:   pgtype.Text{String: "system_dispatch", Valid: true},
-		RelayMetadata: relayMeta,
+	escalateMsg, err := s.Queries.CreateRoomMessageExtended(ctx, db.CreateRoomMessageExtendedParams{
+		RoomID:         room.ID,
+		SenderType:     "system",
+		Content:        content,
+		QuoteMessageID: inv.MessageID,
+		MessageKind:    pgtype.Text{String: "escalate_hint", Valid: true},
+		RelayMetadata:  relayMeta,
 	})
 	if err != nil {
 		slog.Warn("workflow escalate: create message failed", "error", err)
+	} else {
+		s.publishRoomMessage(ctx, room, escalateMsg, db.AgentTaskQueue{})
+		escalateTitle := targetName + " 升级介入"
+		if action.EscalateReason != "" {
+			escalateTitle = action.EscalateReason
+		}
+		s.recordLabeledWorkflowFlowEvent(ctx, room, inv, "manager_escalate", escalateTitle, map[string]string{
+			"target_agent_id":   util.UUIDToString(targetID),
+			"target_agent_name": targetName,
+			"reason":            action.EscalateReason,
+		})
 	}
 
 	msg, err := s.Queries.GetRoomMessageInRoom(ctx, db.GetRoomMessageInRoomParams{
@@ -1017,9 +1011,10 @@ func (s *TaskService) workflowEscalate(
 
 	_, err = s.dispatchRoomWorkflowInvocation(ctx, dispatchWorkflowInvocationParams{
 		Room: room, Message: msg, AgentID: targetID,
-		Intent: "execute", MaxDepth: 5,
+		Intent: "execute", MaxDepth: RoomMaxChainDepth(room),
 		TimeoutAt:          time.Now().Add(30 * time.Minute),
 		ParentInvocationID: inv.ID,
+		TopicID:            topicID,
 	})
 	if err != nil {
 		slog.Warn("workflow escalate: dispatch failed", "agent_id", util.UUIDToString(targetID), "error", err)
@@ -1112,7 +1107,7 @@ func (s *TaskService) agentRecentlyHandled(
 		switch inv.Status {
 		case "pending", "queued", "running", "delivered", "succeeded":
 			return true
-		// "failed" and "cancelled" — allow re-routing for retry.
+			// "failed" and "cancelled" — allow re-routing for retry.
 		}
 	}
 	return false

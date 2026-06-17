@@ -67,7 +67,7 @@ func (s *TaskService) MaybeTriggerManagerProgressScan(ctx context.Context, room 
 	}
 	_, err = s.dispatchRoomWorkflowInvocation(ctx, dispatchWorkflowInvocationParams{
 		Room: room, Message: msg, AgentID: room.ManagerAgentID,
-		Intent: "review", MaxDepth: 5,
+		Intent: "review", MaxDepth: RoomMaxChainDepth(room),
 		TimeoutAt:  time.Now().Add(30 * time.Minute),
 		DeliveryID: activeTopic.DeliveryID,
 		TopicID:    activeTopic.Topic.ID,

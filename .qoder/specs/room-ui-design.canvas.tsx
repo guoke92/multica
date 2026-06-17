@@ -1,3 +1,7 @@
+/**
+ * 协作群 Room 域 — 唯一设计规范（Single Source of Truth）
+ * 禁止另写平行实施方案；工程验收见 Tab「✅ 验收清单」。
+ */
 import { useState } from "react";
 
 // ─── Design Tokens ───
@@ -75,7 +79,7 @@ const MEMBERS = {
   ],
 };
 
-// ─── v2.3 消息模型（设计规范核心）───
+// ─── 消息模型（设计规范核心）───
 /** 一条 Room 消息 = 一个 message_id；思考中→完成是同一消息的状态变迁，不是两条消息 */
 type MessageState = "pending" | "queued" | "thinking" | "streaming" | "succeeded" | "failed" | "cancelled" | "timed_out" | "paused";
 type ChatViewMode = "thread" | "timeline";
@@ -98,9 +102,11 @@ type RoomMessage = {
 };
 
 /**
- * Topic：Manager 按上下文+语义聚合；可跨多条消息。
- * TopicView：话题内消息的串联展示（流程动态 + 消息引用链）；v2.3 起不再以 Delivery 作为产品概念。
- * ThreadBlock：强关联（quote_message_id 链）的 UI 聚合视图，可切换为时间线视图。
+ * Room 是一张消息事件图：
+ * - MessageNode：RoomMessage，是聊天事实与 Agent 产出正文。
+ * - ControlStepNode：route / relay / retry / confirm 等流程控制步骤，过程与结果共享 step_id，展示为一个原子节点。
+ * - FlowEvent：append-only 审计事实；按 category 投影到消息节点、控制节点、确认节点或阶段压缩。
+ * - Topic：阶段完成后对一段已闭合子图的压缩视图；可展开还原为原始消息节点 + 控制节点 + 事件。
  */
 const SNAKE_MESSAGES: RoomMessage[] = [
   { id: "1", sender: "dev", senderType: "user", content: "开发一个贪吃蛇游戏啊", time: "14:02", state: "succeeded" },
@@ -124,24 +130,36 @@ const MULTI_ROOM_MESSAGES: RoomMessage[] = [
   ...PARALLEL_MESSAGES.slice(1).map((m) => ({ ...m, id: m.id === "p1" ? "6" : "7", quoteMessageId: "5" })),
 ];
 
-// ─── 流程动态：话题 + 事件流（append-only，模板文案）───
+// ─── 流程动态：消息事件图（append-only，模板文案）───
 type FlowEventTone = "default" | "active" | "success" | "error" | "manager" | "human";
+type FlowEventCategory = "message" | "control" | "confirm" | "phase" | "meta";
+type ControlStepState = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 type FlowEvent = {
   id: string;
   type: string;
+  category?: FlowEventCategory;
+  /** 同一控制步骤的 running / succeeded / failed 共享 step_id，UI 合并成一个 ControlStepNode */
+  stepId?: string;
+  stepType?: "route" | "relay" | "retry" | "escalate" | "human_confirm" | "approval";
+  stepState?: ControlStepState;
   label: string;
   tone?: FlowEventTone;
   time?: string;
   /** 双向定位：点击事件滚动并高亮对应消息 */
   messageId?: string;
+  fromMessageId?: string;
+  toMessageId?: string;
+  topicId?: string;
 };
 type RoomTopic = {
   id: string;
   title: string;
-  /** 群内交付状态；结案由 human_confirm + topic_closed 驱动，不依赖 Issue */
-  status?: "open" | "in_progress" | "closing" | "closed";
+  /** Topic 是阶段压缩视图，不是事件写入前提；压缩后默认折叠，可展开为原始事件子图 */
+  status?: "compressed" | "expanded" | "archived";
   active: boolean;
   totalEvents: number;
+  eventRange?: [string, string];
+  summary?: string;
   /** 完整时间轴；UI 默认只渲染末尾 PAGE_SIZE 条 */
   events: FlowEvent[];
 };
@@ -149,26 +167,26 @@ type RoomTopic = {
 const FLOW_PAGE_SIZE = 20;
 
 const SNAKE_FLOW_EVENTS: FlowEvent[] = [
-  { id: "e0", type: "topic_create", label: "话题创建 · 贪吃蛇游戏开发", tone: "manager", time: "14:02" },
-  { id: "e1", type: "user_intent", label: "用户发起任务", tone: "default", time: "14:02", messageId: "1" },
-  { id: "e2", type: "manager_route", label: "群管 → 路由给 需求分析师", tone: "manager", time: "14:02", messageId: "2" },
-  { id: "e3", type: "invocation_running", label: "需求分析师 · 思考中", tone: "active", time: "14:03", messageId: "2" },
-  { id: "e4", type: "invocation_failed", label: "需求分析师 · 失败", tone: "error", time: "14:04", messageId: "2" },
-  { id: "e5", type: "manager_retry", label: "群管 → 重试", tone: "manager", time: "14:04" },
-  { id: "e6", type: "invocation_running", label: "需求分析师 · 思考中", tone: "active", time: "14:05", messageId: "2" },
-  { id: "e7", type: "invocation_succeeded", label: "需求分析师 · 完成", tone: "success", time: "14:06", messageId: "2" },
-  { id: "e8", type: "agent_at", label: "需求分析师 → @前端工程师", tone: "default", time: "14:06", messageId: "3" },
-  { id: "e9", type: "invocation_running", label: "前端工程师 · 思考中", tone: "active", time: "14:07", messageId: "3" },
-  { id: "e10", type: "invocation_succeeded", label: "前端工程师 · 完成", tone: "success", time: "14:12", messageId: "3" },
-  { id: "e11", type: "agent_at", label: "前端工程师 → @需求分析师", tone: "default", time: "14:12", messageId: "4" },
-  { id: "e12", type: "invocation_running", label: "需求分析师 · 思考中", tone: "active", time: "14:13", messageId: "4" },
-  { id: "e13", type: "invocation_succeeded", label: "需求分析师 · 完成", tone: "success", time: "14:15", messageId: "4" },
-  { id: "e14", type: "manager_complete", label: "群管 → 判定任务完成", tone: "manager", time: "14:15" },
-  { id: "e15", type: "human_confirm_requested", label: "待 dev 确认结案", tone: "human", time: "14:15", messageId: "4" },
-  { id: "e16", type: "todo_created", label: "已添加待办 · 确认贪吃蛇任务结案", tone: "human", time: "14:15" },
-  { id: "e17", type: "notification_sent", label: "已通知 dev", tone: "human", time: "14:15" },
-  { id: "e18", type: "human_confirm_accepted", label: "dev 已确认结案", tone: "success", time: "14:18" },
-  { id: "e19", type: "topic_closed", label: "话题已结束", tone: "success", time: "14:18" },
+  { id: "e1", type: "user_intent", category: "message", label: "用户发起任务", tone: "default", time: "14:02", messageId: "1" },
+  { id: "e2a", type: "manager_route_running", category: "control", stepId: "route-1", stepType: "route", stepState: "running", label: "群管路由 · 决策中", tone: "manager", time: "14:02", fromMessageId: "1" },
+  { id: "e2b", type: "manager_route_succeeded", category: "control", stepId: "route-1", stepType: "route", stepState: "succeeded", label: "群管路由 · 分配给 需求分析师", tone: "manager", time: "14:02", fromMessageId: "1", toMessageId: "2", messageId: "2" },
+  { id: "e3", type: "invocation_running", category: "message", label: "需求分析师 · 思考中", tone: "active", time: "14:03", messageId: "2" },
+  { id: "e4", type: "invocation_failed", category: "message", label: "需求分析师 · 失败", tone: "error", time: "14:04", messageId: "2" },
+  { id: "e5", type: "manager_retry_succeeded", category: "control", stepId: "retry-1", stepType: "retry", stepState: "succeeded", label: "群管重试 · 需求分析师", tone: "manager", time: "14:04", fromMessageId: "1", toMessageId: "2" },
+  { id: "e6", type: "invocation_running", category: "message", label: "需求分析师 · 思考中", tone: "active", time: "14:05", messageId: "2" },
+  { id: "e7", type: "invocation_succeeded", category: "message", label: "需求分析师 · 完成", tone: "success", time: "14:06", messageId: "2" },
+  { id: "e8", type: "agent_at_succeeded", category: "control", stepId: "relay-a2a-1", stepType: "relay", stepState: "succeeded", label: "需求分析师 → @前端工程师", tone: "default", time: "14:06", fromMessageId: "2", toMessageId: "3", messageId: "3" },
+  { id: "e9", type: "invocation_running", category: "message", label: "前端工程师 · 思考中", tone: "active", time: "14:07", messageId: "3" },
+  { id: "e10", type: "invocation_succeeded", category: "message", label: "前端工程师 · 完成", tone: "success", time: "14:12", messageId: "3" },
+  { id: "e11", type: "agent_at_succeeded", category: "control", stepId: "relay-a2a-2", stepType: "relay", stepState: "succeeded", label: "前端工程师 → @需求分析师", tone: "default", time: "14:12", fromMessageId: "3", toMessageId: "4", messageId: "4" },
+  { id: "e12", type: "invocation_running", category: "message", label: "需求分析师 · 思考中", tone: "active", time: "14:13", messageId: "4" },
+  { id: "e13", type: "invocation_succeeded", category: "message", label: "需求分析师 · 完成", tone: "success", time: "14:15", messageId: "4" },
+  { id: "e14", type: "manager_complete_succeeded", category: "control", stepId: "complete-1", stepType: "human_confirm", stepState: "succeeded", label: "群管判定阶段可结案", tone: "manager", time: "14:15", fromMessageId: "4" },
+  { id: "e15", type: "human_confirm_requested", category: "confirm", stepId: "confirm-1", stepType: "human_confirm", stepState: "running", label: "待 dev 确认结案", tone: "human", time: "14:15", messageId: "4" },
+  { id: "e16", type: "todo_created", category: "meta", label: "已添加待办 · 确认贪吃蛇任务结案", tone: "human", time: "14:15" },
+  { id: "e17", type: "notification_sent", category: "meta", label: "已通知 dev", tone: "human", time: "14:15" },
+  { id: "e18", type: "human_confirm_accepted", category: "confirm", stepId: "confirm-1", stepType: "human_confirm", stepState: "succeeded", label: "dev 已确认结案", tone: "success", time: "14:18" },
+  { id: "e19", type: "topic_compressed", category: "phase", topicId: "topic1", label: "阶段已压缩 · 贪吃蛇游戏开发", tone: "success", time: "14:18" },
 ];
 
 const REJECT_FLOW_EVENTS: FlowEvent[] = [
@@ -177,54 +195,43 @@ const REJECT_FLOW_EVENTS: FlowEvent[] = [
   { id: "r3", type: "manager_relay", label: "群管 → 接力给 前端工程师补充", tone: "manager", time: "14:18", messageId: "3" },
 ];
 
-const SNAKE_CURRENT_FLOW_EVENTS = SNAKE_FLOW_EVENTS.filter((ev) => ev.type !== "human_confirm_accepted" && ev.type !== "topic_closed");
+const SNAKE_CURRENT_FLOW_EVENTS = SNAKE_FLOW_EVENTS.filter((ev) => ev.type !== "human_confirm_accepted" && ev.type !== "topic_compressed");
 
 const PARALLEL_FLOW_EVENTS: FlowEvent[] = [
-  { id: "pfe0", type: "topic_create", label: "话题创建 · 登录页方案评估", tone: "manager", time: "16:10" },
-  { id: "pfe1", type: "user_intent", label: "用户 @前端工程师 @后端工程师", tone: "default", time: "16:10", messageId: "p0" },
-  { id: "pfe2", type: "invocation_running", label: "前端工程师 · 思考中", tone: "active", time: "16:11", messageId: "p1" },
-  { id: "pfe3", type: "invocation_running", label: "后端工程师 · 思考中", tone: "active", time: "16:11", messageId: "p2" },
-  { id: "pfe4", type: "invocation_succeeded", label: "前端工程师 · 完成", tone: "success", time: "16:18", messageId: "p1" },
-  { id: "pfe5", type: "invocation_succeeded", label: "后端工程师 · 完成", tone: "success", time: "16:20", messageId: "p2" },
+  { id: "pfe1", type: "user_intent", category: "message", label: "用户 @前端工程师 @后端工程师", tone: "default", time: "16:10", messageId: "p0" },
+  { id: "pfe2", type: "invocation_running", category: "message", label: "前端工程师 · 思考中", tone: "active", time: "16:11", messageId: "p1" },
+  { id: "pfe3", type: "invocation_running", category: "message", label: "后端工程师 · 思考中", tone: "active", time: "16:11", messageId: "p2" },
+  { id: "pfe4", type: "invocation_succeeded", category: "message", label: "前端工程师 · 完成", tone: "success", time: "16:18", messageId: "p1" },
+  { id: "pfe5", type: "invocation_succeeded", category: "message", label: "后端工程师 · 完成", tone: "success", time: "16:20", messageId: "p2" },
+  { id: "pfe6", type: "topic_compressed", category: "phase", topicId: "topic2", label: "阶段已压缩 · 登录页方案评估", tone: "success", time: "16:22" },
 ];
 
 const ROOM_TOPICS: RoomTopic[] = [
-  { id: "topic1", title: "贪吃蛇游戏开发", status: "in_progress", active: true, totalEvents: SNAKE_CURRENT_FLOW_EVENTS.length, events: SNAKE_CURRENT_FLOW_EVENTS },
-  { id: "topic2", title: "登录页方案评估", status: "closed", active: false, totalEvents: PARALLEL_FLOW_EVENTS.length, events: PARALLEL_FLOW_EVENTS },
+  { id: "topic1", title: "贪吃蛇游戏开发", status: "expanded", active: true, totalEvents: SNAKE_CURRENT_FLOW_EVENTS.length, events: SNAKE_CURRENT_FLOW_EVENTS, eventRange: ["e1", "e18"], summary: "需求、前端实现与结案确认已串联完成" },
+  { id: "topic2", title: "登录页方案评估", status: "compressed", active: false, totalEvents: PARALLEL_FLOW_EVENTS.length, events: PARALLEL_FLOW_EVENTS, eventRange: ["pfe1", "pfe6"], summary: "前后端并行评估完成，等待后续决策" },
 ];
 
 const WORKBOARD_SNAPSHOT = {
   /** 待处理 = 需人工确认/授权/冲突处理的事项数 */
   pending: 1,
   running: 2,
-  activeTopicId: "topic1",
+  activeStageId: "topic1",
   topics: ROOM_TOPICS,
-  /** 话题摘要：协作群内交付跟踪的唯一载体（不桥接 Issue） */
-  topicSummaries: [
-    { id: "topic1", title: "贪吃蛇游戏开发", status: "进行中" as const },
-    { id: "topic2", title: "登录页方案评估", status: "已完成" as const },
+  /** 阶段摘要：对已闭合消息事件子图的压缩展示 */
+  compressedTopics: [
+    { id: "topic1", title: "贪吃蛇游戏开发", status: "展开中" as const },
+    { id: "topic2", title: "登录页方案评估", status: "已压缩" as const },
   ],
 };
 
-const FLOW_EVENT_TYPE_SPEC: { type: string; trigger: string; labelTemplate: string; note?: string }[] = [
-  { type: "topic_create", trigger: "Manager 判定新语义话题", labelTemplate: "话题创建 · {title}" },
-  { type: "topic_split", trigger: "Manager 检测换题", labelTemplate: "话题拆分 · {new_title}" },
-  { type: "topic_link", trigger: "Manager 弱关联编入已有话题", labelTemplate: "关联消息 #{message_id}", note: "弱关联" },
-  { type: "topic_closed", trigger: "人工确认通过或授权结案", labelTemplate: "话题已结束" },
-  { type: "user_intent", trigger: "用户发送意图型消息", labelTemplate: "用户发起任务", note: "message_id" },
-  { type: "manager_route", trigger: "Manager route 成功", labelTemplate: "群管 → 路由给 {agent}", note: "message_id=新 Agent 消息" },
-  { type: "manager_retry", trigger: "Manager / 用户触发重试", labelTemplate: "群管 → 重试" },
-  { type: "manager_relay", trigger: "Manager review 决定接力", labelTemplate: "群管 → 接力给 {agent}" },
-  { type: "manager_complete", trigger: "Manager 判定可结案", labelTemplate: "群管 → 判定任务完成" },
-  { type: "human_confirm_requested", trigger: "需人工确认/授权", labelTemplate: "待 {user} 确认{action}", note: "message_id=挂载轻卡的消息" },
-  { type: "human_confirm_accepted", trigger: "用户接受确认", labelTemplate: "{user} 已确认{action}" },
-  { type: "human_confirm_rejected", trigger: "用户拒绝确认", labelTemplate: "{user} 已拒绝 · {reason_preview}" },
-  { type: "invocation_running", trigger: "invocation → running（仅首次）", labelTemplate: "{agent} · 思考中", note: "message_id" },
-  { type: "invocation_succeeded", trigger: "invocation → succeeded", labelTemplate: "{agent} · 完成", note: "message_id" },
-  { type: "invocation_failed", trigger: "invocation → failed", labelTemplate: "{agent} · 失败", note: "message_id" },
-  { type: "agent_at", trigger: "Agent @另一 Agent 并创建新消息", labelTemplate: "{from} → @{to}", note: "仅流程动态审计；非聊天区消息类型" },
-  { type: "notification_sent", trigger: "系统发送通知", labelTemplate: "已通知 {user}" },
-  { type: "todo_created", trigger: "系统创建待办", labelTemplate: "已添加待办 · {title}" },
+const FLOW_EVENT_TYPE_SPEC: { category: FlowEventCategory; type: string; trigger: string; projection: string; note?: string }[] = [
+  { category: "message", type: "invocation_running/succeeded/failed", trigger: "Agent 消息状态变迁", projection: "折叠进同一 AgentMessage 节点", note: "message_id 必填；不单独占行" },
+  { category: "control", type: "manager_route_*", trigger: "无 @ 消息需要群管路由", projection: "同 step_id 合并为 RouteStep 原子节点", note: "running 与结果不拆两行" },
+  { category: "control", type: "manager_relay_* / agent_at_*", trigger: "接力或 Agent 互@", projection: "同 step_id 合并为 RelayStep，成功后连到新 AgentMessage", note: "聊天区无 relay_hint/agent_at 卡" },
+  { category: "control", type: "manager_retry_* / manager_escalate_*", trigger: "失败、超时、僵局", projection: "RetryStep / EscalateStep 原子节点", note: "失败时挂 RouteFailurePicker 或升级横幅" },
+  { category: "confirm", type: "human_confirm_* / approval_*", trigger: "结案、审批、冲突处理", projection: "ConfirmStep 原子节点 + 消息轻卡 / Composer 横幅", note: "pending_count 只统计此类待处理" },
+  { category: "phase", type: "topic_compressed", trigger: "人工确认通过或授权结案", projection: "压缩一段已闭合子图为 TopicCard", note: "可展开还原原始事件" },
+  { category: "meta", type: "notification_sent / todo_created", trigger: "通知、待办等副作用", projection: "挂在相关 ConfirmStep 下，默认折叠", note: "不污染主流程图" },
 ];
 
 // ─── 流程动态 UI ───
@@ -254,7 +261,7 @@ const FlowEventRow = ({ event, isLatest }: { event: FlowEvent; isLatest?: boolea
   </div>
 );
 
-/** 话题流程时间轴：默认末尾 20 条，向上滚动加载更早，新事件自动滚到底 */
+/** 流程动态：默认折叠已压缩阶段，展开当前消息事件子图；向上滚动加载更早事件 */
 const FlowTimelinePanel = ({ compact = false, showLoadMoreHint = false }: { compact?: boolean; showLoadMoreHint?: boolean }) => {
   const active = ROOM_TOPICS.find((t) => t.active) || ROOM_TOPICS[0];
   const visible = active.events.slice(-FLOW_PAGE_SIZE);
@@ -264,12 +271,12 @@ const FlowTimelinePanel = ({ compact = false, showLoadMoreHint = false }: { comp
     <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
       {ROOM_TOPICS.filter((t) => !t.active).map((t) => (
         <div key={t.id} style={{ fontSize: 10, color: C.textDim, padding: "4px 0", cursor: "pointer", borderBottom: `1px solid ${C.border}` }}>
-          ▶ {t.title} <span style={{ color: C.textDim }}>({t.totalEvents})</span>
+          ▶ {t.title} <span style={{ color: C.textDim }}>({t.totalEvents} events · Topic 压缩)</span>
         </div>
       ))}
       <div style={{ fontSize: 11, fontWeight: 600, color: C.text, padding: "6px 0 4px", display: "flex", alignItems: "center", gap: 6 }}>
         <span style={{ width: 6, height: 6, borderRadius: "50%", background: C.green }} />
-        {active.title}
+        当前阶段 · {active.title}
       </div>
       <div style={{
         maxHeight: compact ? 140 : 220,
@@ -296,7 +303,7 @@ const FlowTimelinePanel = ({ compact = false, showLoadMoreHint = false }: { comp
   );
 };
 
-// ─── ThreadBlock UI primitives (v2.3) ───
+// ─── ThreadBlock UI primitives ───
 
 const RouteFailurePicker = () => (
   <div style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "8px 10px", background: C.redBg, borderRadius: 8, border: `1px solid ${C.red}30` }}>
@@ -552,17 +559,17 @@ const MembersPanelScreen = () => (
         );
       })}
     </div>
-    {/* Workboard (v2.3: 话题摘要 + 流程动态，无 Issue 桥接) */}
+    {/* Workboard: 阶段压缩 + 流程动态 */}
     <div style={{ borderTop: `1px solid ${C.border}`, padding: "10px 12px" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
         <span style={{ fontSize: 10, color: C.textDim, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1 }}>工作看板</span>
         <div style={{ fontSize: 10, color: C.textDim }} title="待处理=人工确认事项">待处理 {WORKBOARD_SNAPSHOT.pending} · 运行中 {WORKBOARD_SNAPSHOT.running}</div>
       </div>
-      <div style={{ fontSize: 10, color: C.textDim, fontWeight: 600, textTransform: "uppercase", marginBottom: 4 }}>活跃话题</div>
-      {WORKBOARD_SNAPSHOT.topicSummaries.map((t) => (
-        <div key={t.id} style={{ fontSize: 11, color: t.id === WORKBOARD_SNAPSHOT.activeTopicId ? C.text : C.textMuted, padding: "2px 0", cursor: "pointer", display: "flex", justifyContent: "space-between", gap: 6 }}>
+      <div style={{ fontSize: 10, color: C.textDim, fontWeight: 600, textTransform: "uppercase", marginBottom: 4 }}>阶段摘要</div>
+      {WORKBOARD_SNAPSHOT.compressedTopics.map((t) => (
+        <div key={t.id} style={{ fontSize: 11, color: t.id === WORKBOARD_SNAPSHOT.activeStageId ? C.text : C.textMuted, padding: "2px 0", cursor: "pointer", display: "flex", justifyContent: "space-between", gap: 6 }}>
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.title}</span>
-          <span style={{ fontSize: 9, color: t.status === "进行中" ? C.amber : C.green, flexShrink: 0 }}>{t.status}</span>
+          <span style={{ fontSize: 9, color: t.status === "展开中" ? C.amber : C.green, flexShrink: 0 }}>{t.status}</span>
         </div>
       ))}
       <div style={{ fontSize: 10, color: C.textDim, fontWeight: 600, textTransform: "uppercase", margin: "8px 0 4px" }}>流程动态</div>
@@ -731,11 +738,11 @@ const WorkboardFlowScreen = () => (
       <span style={{ fontSize: 10, color: C.textDim, fontWeight: 600 }}>工作看板</span>
       <span style={{ fontSize: 10, color: C.textDim }}>待处理 {WORKBOARD_SNAPSHOT.pending} · 运行中 {WORKBOARD_SNAPSHOT.running}</span>
     </div>
-    <div style={{ fontSize: 9, color: C.textDim, fontWeight: 600, textTransform: "uppercase", marginBottom: 4 }}>活跃话题</div>
-    {WORKBOARD_SNAPSHOT.topicSummaries.map((t) => (
-      <div key={t.id} style={{ fontSize: 10, color: t.id === WORKBOARD_SNAPSHOT.activeTopicId ? C.text : C.textMuted, padding: "2px 0", display: "flex", justifyContent: "space-between" }}>
+      <div style={{ fontSize: 9, color: C.textDim, fontWeight: 600, textTransform: "uppercase", marginBottom: 4 }}>阶段摘要</div>
+    {WORKBOARD_SNAPSHOT.compressedTopics.map((t) => (
+      <div key={t.id} style={{ fontSize: 10, color: t.id === WORKBOARD_SNAPSHOT.activeStageId ? C.text : C.textMuted, padding: "2px 0", display: "flex", justifyContent: "space-between" }}>
         <span>{t.title}</span>
-        <span style={{ color: t.status === "进行中" ? C.amber : C.green }}>{t.status}</span>
+        <span style={{ color: t.status === "展开中" ? C.amber : C.green }}>{t.status}</span>
       </div>
     ))}
     <div style={{ fontSize: 9, color: C.textDim, fontWeight: 600, textTransform: "uppercase", margin: "6px 0 4px" }}>流程动态</div>
@@ -750,11 +757,11 @@ const FlowDiagram = () => {
       title: "路由模式（无 @）",
       steps: [
         { label: "用户输入消息（无 @）", color: C.primary },
-        { label: "Manager 分析意图", color: C.primaryLight },
-        { label: "创建 Agent 消息 + attribution", color: C.amber },
+        { label: "RouteStep 原子节点", color: C.primaryLight },
+        { label: "成功后创建 Agent 消息", color: C.amber },
         { label: "Agent 执行任务", color: C.blue },
-        { label: "Manager 评估结果", color: C.primaryLight },
-        { label: "接力 / 结束", color: C.green },
+        { label: "Review/RelayStep 原子节点", color: C.primaryLight },
+        { label: "接力 / 确认 / 压缩阶段", color: C.green },
       ],
     },
     {
@@ -827,8 +834,8 @@ const BackendDesignScreen = () => (
   <div>
     <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>前后端架构与契约方案</h2>
     <p style={{ fontSize: 13, color: C.textMuted, marginBottom: 20, lineHeight: 1.6, maxWidth: 760 }}>
-      UI 规范依赖后端提供稳定的消息、话题、流程动态、人工确认与实时事件契约。后端不应把这些逻辑散落在 completion/worker/handler 中，
-      应以「RoomMessage 为事实源、Invocation/Task 为执行原子、FlowEvent 为审计源、Snapshot 为看板派生状态」组织。
+      UI 规范依赖后端提供稳定的消息事件图、控制步骤、阶段压缩、人工确认与实时事件契约。后端不应把这些逻辑散落在 completion/worker/handler 中，
+      应以「RoomMessage 为内容节点、ControlStep 为流程原子、FlowEvent 为审计源、Topic 为事后压缩视图、Snapshot 为看板派生状态」组织。
     </p>
 
     <div style={{ display: "grid", gridTemplateColumns: "1.1fr 0.9fr", gap: 24, marginBottom: 28 }}>
@@ -836,12 +843,13 @@ const BackendDesignScreen = () => (
         <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>核心数据表/对象</h3>
         <div style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${C.border}`, fontSize: 12, lineHeight: 1.85 }}>
           {[
-            ["room_messages", "消息事实源；quote_message_id、topic_id、content、metadata、created_at；message_state 由 invocation 派生"],
-            ["room_topics", "群内交付单元；status=open/in_progress/closing/closed、root_message_id、closed_by/closed_at"],
-            ["room_flow_events", "append-only 审计流；topic_id、type、message_id、invocation_id、actor_type/id、payload、created_at"],
+            ["room_messages", "内容节点事实源；quote_message_id、content、metadata、created_at；message_state 由 invocation 派生"],
+            ["room_control_steps", "控制步骤原子；step_type、state、from_message_id、to_message_id、payload；route running/result 合并到同一 step"],
+            ["room_topics", "阶段压缩视图；title、summary、event_range_start/end、compressed_at、expanded 状态；不作为事件写入前提"],
+            ["room_flow_events", "append-only 审计流；category、step_id?、message_id?、from/to_message_id?、topic_id?、type、payload、created_at"],
             ["room_invocations", "执行状态机；message_id 唯一绑定，task_id、retry_of/root_message_id、chain_depth、timeout_at"],
             ["room_human_actions", "人工事项；confirm/approval/conflict，status=pending/accepted/rejected/expired、assignee_id、reason"],
-            ["room_snapshots", "看板派生快照；pending_count、running_count、active_topic_id、topic_summaries、latest_event_id"],
+            ["room_snapshots", "看板派生快照；pending_count、running_count、active_graph_id、compressed_topics、latest_event_id"],
           ].map(([name, desc]) => (
             <div key={name} style={{ display: "grid", gridTemplateColumns: "150px 1fr", gap: 12, padding: "6px 0", borderBottom: `1px solid ${C.border}` }}>
               <div style={{ fontFamily: "monospace", color: C.primaryLight }}>{name}</div>
@@ -854,10 +862,10 @@ const BackendDesignScreen = () => (
       <div>
         <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>事务边界</h3>
         <div style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${C.border}`, fontSize: 12, lineHeight: 1.9, color: C.textMuted }}>
-          <div>• 发送用户消息：room_message + topic_create/link + user_intent 同事务；返回 message + invocations</div>
-          <div>• 路由成功：预创建 Agent room_message + invocation + manager_route 同事务；后续只更新同一 message_id</div>
-          <div>• Agent 完成：message.content + invocation.status + flow_event 同事务；广播 room:message_updated</div>
-          <div>• 人工确认：human_action.status + flow_event + snapshot.pending_count 同事务；拒绝 reason 必填</div>
+          <div>• 发送用户消息：room_message + user_intent flow_event 同事务；不要求先创建 Topic</div>
+          <div>• 路由步骤：manager_route_running 创建/更新 control_step；成功后补 to_message_id 并创建 Agent room_message + invocation</div>
+          <div>• Agent 完成：message.content + invocation.status + message 类 flow_event 同事务；广播 room:message_updated</div>
+          <div>• 人工确认：human_action.status + confirm 类 flow_event + snapshot.pending_count 同事务；接受后可触发 topic_compressed</div>
           <div>• 所有写接口带 idempotency_key，避免 WS 重连/重试导致重复消息；服务端按 room_id+key 去重</div>
         </div>
       </div>
@@ -872,15 +880,16 @@ const BackendDesignScreen = () => (
         <div style={{ fontWeight: 700 }}>约束</div>
         {[
           ["GET /rooms/:id/messages?limit&before", "房间全量消息分页", "prepend/append messages", "返回 items + next_before；不按 topic 过滤；quote 预览由 message.quote 填充"],
-          ["POST /rooms/:id/messages", "发送用户消息/引用回复", "optimistic → server message", "body.content、quote_message_id、idempotency_key；禁止 linked_issue_id"],
-          ["GET /rooms/:id/workboard", "右侧看板快照", "patch snapshot + topic summaries", "pending/running/topic_summaries 派生；不返回 issues"],
-          ["GET /rooms/:id/topics/:topicId/flow-events", "看板话题时间轴分页", "只更新流程动态面板", "limit 默认 20；before=event_id；返回 items + next_before"],
+          ["POST /rooms/:id/messages", "发送用户消息/引用回复", "optimistic → server message", "body.content、quote_message_id、idempotency_key"],
+          ["GET /rooms/:id/workboard", "右侧看板快照", "patch snapshot + compressed topics", "pending/running/compressed_topics/current_graph 派生"],
+          ["GET /rooms/:id/flow-events?graph_id&topic_id&limit&before", "消息事件图时间轴分页", "更新流程动态面板", "默认当前图尾部；topic_id 表示展开已压缩阶段"],
           ["POST /rooms/:id/human-actions/:actionId/decide", "接受/拒绝确认或审批", "轻卡终态 + pending -1", "decision=accepted|rejected；拒绝 reason 必填；权限 owner/admin/assignee"],
           ["POST /rooms/:id/invocations/:id/cancel", "取消当前用户引用链或管理员群级停止", "message state=cancelled", "scope=chain|room；默认 chain；admin 可 room"],
           ["room:message_created", "新增消息", "append/replace optimistic", "payload.message 完整可解析"],
           ["room:message_updated", "消息状态/内容变迁", "patch by message.id", "同 id 状态更新，不追加新行"],
-          ["room:flow_event_created", "追加流程动态", "append topic timeline", "包含 topic_id + optional message_id/invocation_id"],
-          ["room:snapshot_updated", "看板计数/活跃话题", "patch workboard snapshot", "pending/running 为派生值"],
+          ["room:flow_event_created", "追加流程动态", "append current graph/topic timeline", "包含 category + optional step_id/message_id/topic_id"],
+          ["room:control_step_updated", "控制步骤状态变化", "patch ControlStepNode", "同 step_id 状态更新，不追加新节点"],
+          ["room:snapshot_updated", "看板计数/阶段摘要", "patch workboard snapshot", "pending/running/compressed_topics 为派生值"],
           ["room:human_action_updated", "人工事项变化", "横幅/轻卡/通知同步", "accepted/rejected/expired 均广播"],
         ].map(([api, use, update, rule]) => (
           <div key={api} style={{ display: "contents" }}>
@@ -898,10 +907,12 @@ const BackendDesignScreen = () => (
         <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Worker / Sweeper 职责</h3>
         <div style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${C.border}`, fontSize: 12, lineHeight: 1.9, color: C.textMuted }}>
           <div>• dispatch worker：只把 queued → running，不直接生成聊天系统消息；running 只更新预创建 Agent message</div>
-          <div>• completion worker：先落 message.content + invocation.status，再落 flow_event，最后广播 WS</div>
+          <div>• control-step worker：route/relay/retry/confirm 的过程与结果写同一 step_id，UI 只显示一个原子节点</div>
+          <div>• completion worker：先落 message.content + invocation.status，再落 message 类 flow_event，最后广播 WS</div>
           <div>• invocation sweeper：超时 → timed_out + flow_event，必要时 manager_escalate_human</div>
           <div>• human-action sweeper：expires_at 到期 → expired + notification_sent</div>
-          <div>• snapshot builder：从 invocations/human_actions/flow_events 派生，不由前端轮询猜测</div>
+          <div>• topic compressor：仅在人工确认通过或授权结案后压缩已闭合子图；不阻塞新事件写入</div>
+          <div>• snapshot builder：从 invocations/human_actions/control_steps/flow_events 派生，不由前端轮询猜测</div>
         </div>
       </div>
 
@@ -909,12 +920,11 @@ const BackendDesignScreen = () => (
         <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>后端防错规则</h3>
         <div style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${C.border}`, fontSize: 12, lineHeight: 1.9, color: C.textMuted }}>
           <div>• membership check 贯穿所有 room/message/topic/action 查询</div>
-          <div>• quote_message_id 必须属于同 room；强关联自动继承父消息 topic_id</div>
+          <div>• quote_message_id 必须属于同 room；强关联用于计算消息事件图根，不强制预分配 Topic</div>
           <div>• Agent 互@深度用 root_message_id + quote 链计算，超过上限写 paused</div>
           <div>• Manager route 输出必须结构化校验，失败走 RouteFailurePicker，不写散文系统消息</div>
           <div>• API 响应提供 zod 可解析的稳定 shape，新增 enum 默认降级为 unknown；前端不得裸 cast response</div>
-          <div>• <strong style={{ color: C.red }}>禁止 Issue 桥接</strong>：不读写 linked_issue_id、不暴露 promote-issue、不镜像 Topic/旧 Delivery → Issue</div>
-          <div>• <strong style={{ color: C.red }}>淡化 Delivery</strong>：v2.3 目标模型以 Topic 为交付单元；旧 room_delivery 仅作为迁移期实现细节，不进入 UI/公有 API</div>
+          <div>• <strong style={{ color: C.red }}>禁止 Delivery 概念</strong>：阶段压缩仅使用 Topic；room_delivery 不得进入 UI 或公有 API</div>
         </div>
       </div>
     </div>
@@ -923,8 +933,8 @@ const BackendDesignScreen = () => (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 28 }}>
       {[
         ["packages/core/room", "API client、zod schema、query/mutation hooks、query keys；无 UI、无 DOM", "所有 room query key 必须包含 wsId + roomId，防止 workspace 切换缓存串味"],
-        ["packages/core/types/room", "唯一 TS 契约源：RoomMessage、RoomTopic、FlowEvent、HumanAction、RoomSnapshot", "字段使用后端 snake_case；组件内再映射为展示文案"],
-        ["packages/views/room", "RoomView、MessageList、Composer、Workboard、成员/设置面板", "禁止 next/*、react-router-dom；禁止读取 Issue hooks 或 IssueCard"],
+        ["packages/core/types/room", "唯一 TS 契约源：RoomMessage、ControlStep、RoomTopic、FlowEvent、HumanAction、RoomSnapshot", "字段使用后端 snake_case；组件内再映射为展示文案"],
+        ["packages/views/room", "RoomView、MessageList、Composer、Workboard、成员/设置面板", "禁止 next/*、react-router-dom；业务逻辑走 core/room"],
         ["apps/web/app/.../rooms", "仅 Next route shell，传 roomId/workspaceSlug 到 shared view", "不放业务逻辑"],
         ["apps/desktop/routes", "仅桌面路由接入；使用 shared RoomView", "桌面预工作区规则不影响 Room session route"],
         ["realtime/use-realtime-sync", "订阅 room:* WS 事件并 invalidate/patch query", "优先 patch by id；失败再 invalidate"],
@@ -937,19 +947,20 @@ const BackendDesignScreen = () => (
       ))}
     </div>
 
-    <Divider label="统一响应字段（目标契约）" />
+    <Divider label="统一响应字段（API 契约）" />
     <div style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${C.border}`, marginBottom: 28, overflowX: "auto" }}>
       <div style={{ display: "grid", gridTemplateColumns: "150px 1.6fr 1fr", gap: "6px 12px", fontSize: 11, minWidth: 820 }}>
         <div style={{ fontWeight: 700 }}>对象</div>
         <div style={{ fontWeight: 700 }}>字段</div>
         <div style={{ fontWeight: 700 }}>说明</div>
         {[
-          ["RoomMessage", "id, room_id, sender_type, sender_id, content, quote_message_id, quote?, topic_id, state, attribution?, human_action?, created_at, edited_at?", "state 是 API 展示态，后端可由 invocation 派生；不包含 linked_issue_id"],
+          ["RoomMessage", "id, room_id, sender_type, sender_id, content, quote_message_id, quote?, state, attribution?, human_action?, created_at, edited_at?", "state 是 API 展示态，后端可由 invocation 派生"],
+          ["ControlStep", "id, room_id, step_type, state, from_message_id?, to_message_id?, actor_type, actor_id?, payload, started_at?, completed_at?", "route/relay/retry/confirm 的过程与结果以 step_id 合并展示"],
           ["MentionInvocation", "id, room_id, message_id, target_type, target_id, intent, status, task_id?, retry_count, max_retries, failure_reason?, started_at?, completed_at?", "cancel/retry/resume 均以 invocation_id 为主键"],
-          ["RoomTopic", "id, room_id, title, status, root_message_id, last_message_id?, closed_by?, closed_at?, event_count, updated_at", "Topic 是交付单元；不要求 delivery_id"],
-          ["RoomFlowEvent", "id, room_id, topic_id, type, message_id?, invocation_id?, actor_type, actor_id?, payload, created_at", "append-only；payload 只放模板变量，不放整段散文"],
-          ["RoomHumanAction", "id, room_id, topic_id, message_id, invocation_id?, type, status, assignee_id?, title, reason?, expires_at?, decided_at?", "confirm/approval/conflict 统一入口"],
-          ["RoomSnapshot", "pending_count, queued_count, running_count, failed_count, timed_out_count, active_topic_id, topic_summaries[], latest_event_id", "由服务端派生；前端不轮询拼装"],
+          ["RoomTopic", "id, room_id, title, summary, status, event_range_start_id, event_range_end_id, compressed_at?, expanded?", "Topic 是阶段压缩视图；不要求 delivery_id；不阻塞事件写入"],
+          ["RoomFlowEvent", "id, room_id, category, type, step_id?, message_id?, from_message_id?, to_message_id?, topic_id?, actor_type, actor_id?, payload, created_at", "append-only；payload 只放模板变量，不放整段散文"],
+          ["RoomHumanAction", "id, room_id, step_id?, message_id, invocation_id?, type, status, assignee_id?, title, reason?, expires_at?, decided_at?", "confirm/approval/conflict 统一入口"],
+          ["RoomSnapshot", "pending_count, queued_count, running_count, failed_count, timed_out_count, active_graph_id, compressed_topics[], latest_event_id", "由服务端派生；前端不轮询拼装"],
         ].map(([name, fields, note]) => (
           <div key={name} style={{ display: "contents" }}>
             <div style={{ fontFamily: "monospace", color: C.primaryLight }}>{name}</div>
@@ -960,25 +971,25 @@ const BackendDesignScreen = () => (
       </div>
     </div>
 
-    <Divider label="域边界：Room 自闭环（v2.3）" />
+    <Divider label="域边界：Room 自闭环" />
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 28 }}>
       <div style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${C.border}`, fontSize: 12, lineHeight: 1.9, color: C.textMuted }}>
         <div style={{ fontWeight: 600, color: C.text, marginBottom: 8 }}>协作群自有闭环</div>
         <div>• <strong>RoomMessage</strong>：对话事实与 Agent 产出正文</div>
-        <div>• <strong>Invocation + Task</strong>：执行原子（issue_id 恒为 NULL）</div>
-        <div>• <strong>Topic</strong>：语义交付单元；status=open/in_progress/closing/closed</div>
-        <div>• <strong>FlowEvent</strong>：append-only 审计；双向 message_id 定位</div>
-        <div>• <strong>HumanAction</strong>：结案闸门；接受 → topic_closed</div>
-        <div>• <strong>Snapshot</strong>：待处理/运行中/活跃话题派生</div>
+        <div>• <strong>Invocation + Task</strong>：执行原子；与 RoomMessage 一对一或一对多绑定</div>
+        <div>• <strong>ControlStep</strong>：流程控制原子；route running/result 合并展示</div>
+        <div>• <strong>FlowEvent</strong>：append-only 审计；按 category 投影到消息/控制/确认/阶段</div>
+        <div>• <strong>Topic</strong>：已闭合子图的阶段压缩视图；可展开还原事件</div>
+        <div>• <strong>HumanAction</strong>：确认/审批闸门；接受 → topic_compressed</div>
+        <div>• <strong>Snapshot</strong>：待处理/运行中/阶段摘要派生</div>
       </div>
-      <div style={{ background: C.redBg, borderRadius: 10, padding: 16, border: `1px solid ${C.red}30`, fontSize: 12, lineHeight: 1.9, color: C.textMuted }}>
-        <div style={{ fontWeight: 600, color: C.red, marginBottom: 8 }}>移除的 Issue 桥接（v2.3）</div>
-        <div>• room_message.linked_issue_id、room_delivery.linked_issue_id 列与 UI 卡片</div>
-        <div>• POST …/promote-issue、issue.origin_type=room_message</div>
-        <div>• NotifyRoomIssueCreated、ListIssueRoomMessages</div>
-        <div>• issue.source_room_id / source_message_id 反向关联</div>
-        <div>• Agent CLI 在群内 multica issue create 的引导（daemon room prompt）</div>
-        <div>• @mention 中的 @issue 建议项</div>
+      <div style={{ background: C.primaryBg, borderRadius: 10, padding: 16, border: `1px solid ${C.primary}30`, fontSize: 12, lineHeight: 1.9, color: C.textMuted }}>
+        <div style={{ fontWeight: 600, color: C.primaryLight, marginBottom: 8 }}>图投影防错规则</div>
+        <div>• event 永远 append-only；看板折叠不删除、不改写原始事件</div>
+        <div>• ControlStep 必须有 step_id；running / succeeded / failed 共享同一节点</div>
+        <div>• message 类事件只能更新消息节点状态，不得单独占流程行</div>
+        <div>• phase 类事件只能压缩已闭合范围，不能阻塞后续消息写入</div>
+        <div>• 无法定位 from/to_message_id 的元事件进入 meta 区，不污染主图</div>
       </div>
     </div>
   </div>
@@ -999,7 +1010,7 @@ const TABS = [
   { id: "backend", label: "🧩 后台方案" },
   { id: "benchmark", label: "🏆 对标优化" },
   { id: "exceptions", label: "🚨 异常场景" },
-  { id: "implementation", label: "🔧 实现差距" },
+  { id: "acceptance", label: "✅ 验收清单" },
 ];
 
 export default function RoomDesignSpec() {
@@ -1023,7 +1034,7 @@ export default function RoomDesignSpec() {
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
           <span style={{ fontSize: 20 }}>💬</span>
           <div>
-            <h1 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>协作群 UI/UX 设计规范 <Badge color={C.primaryLight} bg={C.primaryBg}>v2.3 前后端契约定稿</Badge></h1>
+            <h1 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>协作群 UI/UX 设计规范 <Badge color={C.primaryLight} bg={C.primaryBg}>唯一蓝本</Badge></h1>
             <p style={{ fontSize: 12, color: C.textMuted, margin: "4px 0 0" }}>Room 域自闭环 · Invocation+Task · Topic 交付跟踪 · API/WS 同名契约</p>
           </div>
         </div>
@@ -1045,23 +1056,23 @@ export default function RoomDesignSpec() {
         {/* Tab: Design Constitution */}
         {tab === "principles" && (
           <div>
-            <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>设计宪法（v2.3 定稿）</h2>
+            <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>设计宪法</h2>
             <p style={{ fontSize: 13, color: C.textMuted, marginBottom: 20, lineHeight: 1.6, maxWidth: 720 }}>
               以下规则优先级高于任何单页线框。实现与后续迭代不得违反；若有冲突，以本页为准。
-              v2.3 起协作群与<strong style={{ color: C.text }}>工作区 Issue 完全解耦</strong>，交付进度在群内以 Topic + 流程动态闭环，前后端使用同名字段契约。
+              协作群以<strong style={{ color: C.text }}>消息事件图</strong>为事实源：消息是节点，流程控制是原子步骤，Topic 是阶段完成后的压缩视图；前后端使用同名字段契约。
             </p>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
               {[
-                { title: "1. 聊天优先", body: "协作群是消息对话，不是编排控制台。语义附着在 RoomMessage 上，附带 attribution pill，不用独立系统墙。" },
+                { title: "1. 聊天优先", body: "协作群是消息对话，不是编排控制台。内容语义附着在 RoomMessage 上；流程语义进入看板的消息事件图。" },
                 { title: "2. 一条消息一 ID", body: "思考中→完成是同一 message_id 的状态变迁。Agent 互@ = 新消息 + quote_message_id，禁止消息子树嵌套。" },
                 { title: "3. 双视图可切换", body: "ThreadBlock（多用户根块并列）与时间线（全量平铺）可切换；默认 ThreadBlock；偏好 per-room 存 localStorage。" },
-                { title: "4. 聊天区 vs 话题", body: "聊天区=房间全量消息，不按话题过滤。Topic/TopicView 仅看板侧语义视图；切换活跃话题不跳转、不过滤聊天区。" },
-                { title: "5. 三种协作模式", body: "路由（无@）· 直连（单@）· 并行（多@）。三种模式均有完整流程动态；并行模式 Manager 不 route、不 review。" },
-                { title: "6. 流程动态", body: "话题级 append-only 事件流；含 message_id 双向定位；待处理=人工确认事项数。" },
-                { title: "7. 人工确认", body: "消息行内轻卡 + Composer 横幅。接受→human_confirm_accepted+topic_closed；拒绝须填原因并写 flow_event。" },
-                { title: "8. 元素预算", body: "禁止任务横幅/居中编排消息。允许：attribution pill、异常横幅、消息内轻卡。agent_at 仅作流程动态审计事件。" },
+                { title: "4. 聊天区 vs 看板", body: "聊天区=房间全量消息，不按 Topic 过滤。看板=消息事件图投影，可折叠已压缩阶段并展开当前流程。" },
+                { title: "5. 三种协作模式", body: "路由（无@）· 直连（单@）· 并行（多@）。三种模式均有完整消息事件图；并行模式 Manager 不 route、不 review。" },
+                { title: "6. 流程动态", body: "FlowEvent 是 append-only 审计源；message 类折叠进消息节点，control/confirm 类按 step_id 合并为原子节点，phase 类压缩为 Topic。" },
+                { title: "7. 人工确认", body: "消息行内轻卡 + Composer 横幅。接受→human_confirm_accepted→topic_compressed；拒绝须填原因并写 confirm 类 flow_event。" },
+                { title: "8. 元素预算", body: "禁止任务横幅/居中编排消息。允许：attribution pill、异常横幅、消息内轻卡、看板 ControlStep。agent_at 仅作控制步骤。" },
                 { title: "9. 停止生成", body: "仅当「当前用户最近发起引用链」内有 running 时显示 Composer 居中按钮；他人并行任务不误伤。" },
-                { title: "10. Room 域自闭环", body: "执行=Invocation+Task（无 issue_id）。交付跟踪=Topic 生命周期+FlowEvent。禁止 Issue 卡片、升格、镜像、跨模块消息泄露接口。" },
+                { title: "10. 阶段压缩", body: "Topic 不是事前分类器，也不是事件写入前提；它只在阶段完成后压缩一段已闭合子图，且必须可展开还原。" },
                 { title: "11. 契约优先", body: "API Response 使用 snake_case，同名进入 packages/core/types/room；前端组件只做展示映射，不发明本地状态字段。" },
               ].map((r) => (
                 <div key={r.title} style={{ background: C.surface, borderRadius: 10, padding: 14, border: `1px solid ${C.border}`, fontSize: 12, lineHeight: 1.7 }}>
@@ -1081,10 +1092,10 @@ export default function RoomDesignSpec() {
                   ["触发", "用户消息无 @", "用户 @单个 Agent", "用户 @多个 Agent"],
                   ["Manager 路由", "✅ route", "❌", "❌"],
                   ["Manager review", "✅ 评估接力", "⚠️ 仅异常升级", "❌ 不 review"],
-                  ["看板话题/流程动态", "✅ 完整（含群管事件）", "✅ 完整（含群管事件）", "✅ 完整（含群管事件）"],
+                  ["看板消息事件图", "✅ 完整（含 RouteStep）", "✅ 完整（无 RouteStep）", "✅ 完整（多 Agent 并列）"],
                   ["attribution", "由群管理分配指定", "用户 @指定", "用户 @指定"],
                   ["消息布局", "引用链串联", "quote 父消息", "多消息并列 quote 同一用户消息"],
-                  ["人工确认", "话题结束须确认", "同左", "同左"],
+                  ["人工确认", "阶段压缩前确认", "同左", "同左"],
                 ].map(([dim, a, b, c]) => (
                   <div key={dim as string} style={{ display: "contents" }}>
                     <div style={{ color: C.textDim, fontWeight: 500 }}>{dim as string}</div>
@@ -1095,9 +1106,9 @@ export default function RoomDesignSpec() {
                 ))}
               </div>
             </div>
-            <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>明确废弃（v1 / v2.1 遗留）</h3>
+            <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>禁止的 UI / 交互模式</h3>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, fontSize: 11 }}>
-              {["消息子树嵌套", "聊天区任务横幅", "模式提示行 / route_hint", "居中编排系统消息", "agent_at 聊天消息类型", "思考中/完成拆成两条消息", "用户消息「创建 Issue」", "消息内 Issue 卡片 / linked_issue_id", "升格 Issue / promote-issue", "Delivery→Issue 镜像 / sync_issue", "Delivery 作为产品概念", "Issue 详情回链群消息", "成员栏长文案状态", "聊天区按话题过滤"].map((x) => (
+              {["消息子树嵌套", "聊天区任务横幅", "模式提示行 / route_hint", "居中编排系统消息", "agent_at 聊天消息类型", "思考中/完成拆成两条消息", "控制步骤拆成多行", "路由决策中与结果分裂展示", "Delivery 作为产品概念", "成员栏长文案状态", "聊天区按 Topic 过滤", "聊天区 relay_hint / agent_at 卡片"].map((x) => (
                 <span key={x} style={{ padding: "4px 10px", borderRadius: 6, background: C.redBg, color: C.red, border: `1px solid ${C.red}30` }}>❌ {x}</span>
               ))}
             </div>
@@ -1114,15 +1125,15 @@ export default function RoomDesignSpec() {
               Agent 互@ = 新消息引用父消息，<strong style={{ color: C.red }}>禁止</strong> 消息子树嵌套。
             </p>
             <div style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${C.border}`, fontSize: 12, lineHeight: 1.9, color: C.textMuted, marginBottom: 24, maxWidth: 720 }}>
-              <div style={{ fontWeight: 600, color: C.text, marginBottom: 8 }}>Topic · ThreadBlock · TopicView 三者关系</div>
-              <div>• <strong style={{ color: C.primaryLight }}>Topic</strong>：Manager 按上下文+语义聚合；强关联（quote 链）必同话题；弱关联可跨消息编入同一话题</div>
-              <div>• <strong style={{ color: C.blue }}>ThreadBlock</strong>：强关联链的<strong>展示形态</strong>（非唯一数据模型）；可切换为时间线平铺</div>
-              <div>• <strong style={{ color: C.green }}>TopicView</strong>：话题内串联的<strong>看板侧呈现</strong> = 该 topic 的 flow_events + topic_id 关联的消息子集（聊天区仍全量展示）</div>
+              <div style={{ fontWeight: 600, color: C.text, marginBottom: 8 }}>MessageNode · ControlStep · Topic 三者关系</div>
+              <div>• <strong style={{ color: C.primaryLight }}>MessageNode</strong>：RoomMessage 内容节点；Agent 思考中/失败/重试/完成折叠为同一消息节点的状态与详情</div>
+              <div>• <strong style={{ color: C.blue }}>ControlStep</strong>：route/relay/retry/confirm 等流程原子；同 step_id 的过程与结果只显示一个节点</div>
+              <div>• <strong style={{ color: C.green }}>Topic</strong>：阶段完成后的<strong>子图压缩视图</strong>；展开后还原消息节点、控制节点与原始 flow_events</div>
             </div>
             <div style={{ background: C.primaryBg, borderRadius: 10, padding: 14, border: `1px solid ${C.primary}30`, fontSize: 12, lineHeight: 1.8, color: C.textMuted, marginBottom: 24, maxWidth: 720 }}>
-              <div style={{ fontWeight: 600, color: C.primaryLight, marginBottom: 6 }}>聊天区 vs 看板话题（硬规则）</div>
+              <div style={{ fontWeight: 600, color: C.primaryLight, marginBottom: 6 }}>聊天区 vs 看板（硬规则）</div>
               <div>• 聊天区始终加载<strong style={{ color: C.text }}>房间全量</strong> RoomMessage，按时间序或引用链展示</div>
-              <div>• 看板「活跃话题」只过滤<strong style={{ color: C.text }}>流程动态时间轴</strong>与待处理计数，不做聊天区话题过滤</div>
+              <div>• 看板只投影<strong style={{ color: C.text }}>消息事件图</strong>、阶段摘要与待处理计数，不做聊天区过滤</div>
               <div>• ThreadBlock 多任务：多个用户根消息 → 多个块自上而下并列；时间线则全量平铺</div>
               <div>• 视图偏好：<code style={{ background: C.bg, padding: "1px 4px", borderRadius: 3 }}>room:{`{roomId}`}:chatView</code> 存 localStorage，默认 thread</div>
             </div>
@@ -1135,14 +1146,13 @@ export default function RoomDesignSpec() {
                   <div>state: thinking | streaming | succeeded | failed | queued</div>
                   <div>attribution?  // 「由群管理分配指定」</div>
                   <div>started_at, completed_at, duration</div>
-                  <div>topic_id?  // Manager 语义归属</div>
-                  <div style={{ color: C.red, marginTop: 6 }}>// v2.3 移除 linked_issue_id — 群内不桥接工作区 Issue</div>
+                  <div style={{ color: C.red, marginTop: 6 }}>// 聊天消息只表达内容事实；流程控制进入 ControlStep</div>
                 </div>
                 <div style={{ marginTop: 12, background: C.surface, borderRadius: 10, padding: 14, border: `1px solid ${C.border}`, fontSize: 12, lineHeight: 1.8, color: C.textMuted }}>
                   <div style={{ fontWeight: 600, color: C.text, marginBottom: 4 }}>关联方式</div>
-                  <div>• <strong>强关联</strong>：引用/回应 → quote_message_id → 必同话题 → ThreadBlock 可聚合</div>
-                  <div>• <strong>弱关联</strong>：Manager 按语义将消息编入同一 Topic</div>
-                  <div>• 同一条消息可出现在不同话题（弱关联场景）</div>
+                  <div>• <strong>强关联</strong>：引用/回应 → quote_message_id → ThreadBlock 可聚合，也用于计算消息事件图边界</div>
+                  <div>• <strong>弱关联</strong>：Manager 可追加 control/meta 事件关联另一条消息，但不改写原消息归属</div>
+                  <div>• Topic 只压缩一段已闭合子图；同一消息可被多个压缩视图引用，但 message_id 唯一</div>
                 </div>
               </div>
               <div>
@@ -1179,11 +1189,11 @@ export default function RoomDesignSpec() {
             <div style={{ background: C.bg, borderRadius: 12, padding: 20, border: `1px solid ${C.border}`, maxWidth: 560, marginBottom: 24 }}>
               <ChatMessageList messages={MULTI_ROOM_MESSAGES} viewMode="thread" />
             </div>
-            <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>弱关联示例（同消息跨话题）</h3>
+            <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>弱关联示例（跨消息控制边）</h3>
             <div style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${C.border}`, fontSize: 12, lineHeight: 1.9, color: C.textMuted, maxWidth: 560 }}>
-              <div>用户 #1「开发贪吃蛇」→ 强关联编入话题 A；后续用户 #5「评估登录方案」→ 话题 B</div>
-              <div>若 Manager 判定 #5 与 A 语义相关，可在话题 A 流程动态追加 <code style={{ background: C.bg, padding: "1px 4px", borderRadius: 3 }}>topic_link</code> 引用 #5（弱关联），聊天区两条用户消息仍全量可见</div>
-              <div>同一条消息可出现在多话题的 flow_event 引用中，但 message_id 唯一</div>
+              <div>用户 #1「开发贪吃蛇」与用户 #5「评估登录方案」在聊天区仍是两条独立消息</div>
+              <div>若 Manager 判断两者相关，可追加 <code style={{ background: C.bg, padding: "1px 4px", borderRadius: 3 }}>manager_link_succeeded</code> ControlStep，from_message_id=#1，to_message_id=#5</div>
+              <div>压缩阶段时 TopicCard 可引用这条边；展开后还原原始消息与控制边</div>
             </div>
           </div>
         )}
@@ -1193,7 +1203,7 @@ export default function RoomDesignSpec() {
           <div>
             <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>三栏布局结构</h2>
             <p style={{ fontSize: 13, color: C.textMuted, marginBottom: 20, lineHeight: 1.6, maxWidth: 700 }}>
-              协作群采用经典三栏布局：左侧群列表、中间消息聊天区（双视图）、右侧成员+看板。
+              协作群采用经典三栏布局：左侧群列表、中间消息聊天区（双视图）、右侧成员+消息事件图看板。
               中间区域自适应；窄屏时右侧收为抽屉。整体高度 100vh，无页面级滚动。
             </p>
             <div style={{ display: "flex", height: 520, borderRadius: 12, overflow: "hidden", border: `1px solid ${C.border}` }}>
@@ -1210,7 +1220,7 @@ export default function RoomDesignSpec() {
               {[
                 { title: "左侧导航栏", w: "w-72 (288px)", items: ["群列表（按活跃度排序）", "活跃度标签（N 个进行中）", "新建群按钮", "空态引导"] },
                 { title: "中间聊天区", w: "flex-1", items: ["Header（动态指示器 + 视图切换）", "待处理横幅 + 消息列表（双视图）", "停止生成 + Composer + 回到底部 FAB"] },
-                { title: "右侧面板", w: "w-56 (224px)", items: ["成员列表 + 实时状态点", "工作看板：活跃话题 + 流程动态", "话题状态 open→closed；默认展示最新 20 条事件", "成员管理（添加/移除/角色）", "窄屏：抽屉唤起"] },
+                { title: "右侧面板", w: "w-56 (224px)", items: ["成员列表 + 实时状态点", "工作看板：阶段摘要 + 当前流程", "已压缩 Topic 默认折叠；当前子图展示最新 20 条事件", "成员管理（添加/移除/角色）", "窄屏：抽屉唤起"] },
               ].map((col) => (
                 <div key={col.title} style={{ background: C.surface, borderRadius: 10, padding: 14, border: `1px solid ${C.border}` }}>
                   <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{col.title}</div>
@@ -1227,10 +1237,10 @@ export default function RoomDesignSpec() {
             <Divider label="端到端使用流程" />
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
               {[
-                { title: "路由模式主路径", steps: ["用户发送无 @ 消息", "Manager 创建 Agent 消息并写 attribution", "Agent 同 message_id 从 thinking → succeeded", "流程动态追加执行/接力事件", "Manager 判定可结案", "人工确认接受 → topic_closed"] },
+                { title: "路由模式主路径", steps: ["用户发送无 @ 消息", "RouteStep 从 running → succeeded", "成功后创建 Agent 消息并写 attribution", "Agent 同 message_id 从 thinking → succeeded", "流程动态追加执行/接力事件", "人工确认接受 → topic_compressed"] },
                 { title: "直连/并行路径", steps: ["用户 @单个或多个 Agent", "前端创建 N 条 quote 用户消息的 Agent 消息", "Manager 不 route；并行模式不 review", "各 Agent 独立运行/完成", "异常才升级为待处理"] },
                 { title: "人工介入路径", steps: ["后台创建 human_action", "消息轻卡 + Composer 横幅 + 待处理计数", "接受直接完成；拒绝必填原因", "结果进入 flow_event、通知与待办同步"] },
-                { title: "交付闭环（无 Issue）", steps: ["用户意图 → Manager 创建/编入 Topic", "Invocation+Task 执行，产出写入 RoomMessage", "FlowEvent 记录路由/执行/接力", "Manager 判定可结案 → human_confirm", "用户接受 → topic_closed；拒绝 → manager_relay 继续"] },
+                { title: "阶段压缩闭环", steps: ["用户意图 → 写入消息事件图", "ControlStep 记录路由/接力/确认", "Invocation+Task 执行，产出写入 RoomMessage", "Manager 判定阶段可结案 → human_confirm", "用户接受 → 压缩已闭合子图为 Topic；拒绝 → relay/retry 继续"] },
                 { title: "恢复路径", steps: ["发送失败保留乐观消息可重试/删除", "路由失败显示 Picker", "超时/深度暂停写入 message state", "管理员恢复或接力给更高级 Agent"] },
               ].map((flow) => (
                 <div key={flow.title} style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${C.border}`, fontSize: 12, lineHeight: 1.85 }}>
@@ -1293,7 +1303,7 @@ export default function RoomDesignSpec() {
             <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>聊天交互设计</h2>
             <p style={{ fontSize: 13, color: C.textMuted, marginBottom: 16, lineHeight: 1.6, maxWidth: 700 }}>
               聊天区支持 <strong style={{ color: C.text }}>ThreadBlock</strong> 与 <strong style={{ color: C.text }}>时间线</strong> 双视图切换。
-              底层均为 RoomMessage + quote_message_id。v2.3 起<strong style={{ color: C.text }}>不渲染 Issue 卡片</strong>，Agent 产出仅以消息正文呈现。详见「🧵 消息与视图」Tab。
+              底层均为 RoomMessage + quote_message_id。Agent 产出仅以消息正文呈现；流程状态进入看板的消息事件图。详见「🧵 消息与视图」Tab。
             </p>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
               <div>
@@ -1399,21 +1409,20 @@ export default function RoomDesignSpec() {
           <div>
             <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>流程动态 — Manager 处理节点时间轴</h2>
             <p style={{ fontSize: 13, color: C.textMuted, marginBottom: 20, lineHeight: 1.6, maxWidth: 720 }}>
-              流程动态是<strong style={{ color: C.text }}>话题级 append-only 事件流</strong>，记录群聊中每一步真实发生的动作
-              （路由、执行、失败、重试、接力、@人工等）。文案由<strong style={{ color: C.text }}>事件类型 + 模板</strong>生成，
-              Manager 只做决策、不写摘要散文。聊天区不出现此时间轴。
+              流程动态是<strong style={{ color: C.text }}>消息事件图的看板投影</strong>：消息类事件折叠进消息节点，控制/确认类事件按 step_id 合并为原子节点，
+              阶段完成后压缩为 TopicCard。文案由<strong style={{ color: C.text }}>事件类型 + 模板</strong>生成，Manager 只做决策、不写摘要散文。
             </p>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 28 }}>
               <div>
                 <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>设计原则</h3>
                 <div style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${C.border}`, fontSize: 12, lineHeight: 1.9, color: C.textMuted }}>
-                  <div>• <strong style={{ color: C.text }}>一步一记录</strong>：每个离散状态变迁追加一条，不刷流式心跳</div>
-                  <div>• <strong style={{ color: C.text }}>一话题一时间轴</strong>：话题可跨多条用户消息；活跃话题置顶展开</div>
-                  <div>• <strong style={{ color: C.text }}>默认末尾 20 条</strong>：进入时只拉最新一页，自动滚到最新记录</div>
+                  <div>• <strong style={{ color: C.text }}>审计全量保留</strong>：每个离散状态变迁追加 FlowEvent，不刷流式心跳</div>
+                  <div>• <strong style={{ color: C.text }}>展示按类投影</strong>：message 类进消息节点；control/confirm 类按 step_id 合并；phase 类压缩为 Topic</div>
+                  <div>• <strong style={{ color: C.text }}>默认末尾 20 条</strong>：当前子图只拉最新一页，已压缩阶段默认折叠</div>
                   <div>• <strong style={{ color: C.text }}>向上滚动加载</strong>：scrollTop≈0 时 prepend 更早事件（cursor 分页）</div>
                   <div>• <strong style={{ color: C.text }}>新事件</strong>：用户在底部附近时自动滚到底；上翻阅读时不打断</div>
-                  <div>• 与聊天区互补：消息=内容，流程动态=动作审计；点击事件 ↔ 高亮 message_id</div>
+                  <div>• 与聊天区互补：聊天区只放内容消息；看板展示控制节点与阶段摘要；点击节点 ↔ 高亮 message_id</div>
                 </div>
               </div>
               <div>
@@ -1422,18 +1431,20 @@ export default function RoomDesignSpec() {
               </div>
             </div>
 
-            <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>事件类型表</h3>
+            <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>事件分类与投影规则</h3>
             <div style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${C.border}`, marginBottom: 28, overflowX: "auto" }}>
-              <div style={{ display: "grid", gridTemplateColumns: "130px 1fr 1fr 100px", gap: "6px 12px", fontSize: 11, minWidth: 680 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "90px 150px 1fr 1.2fr 110px", gap: "6px 12px", fontSize: 11, minWidth: 840 }}>
+                <div style={{ fontWeight: 700 }}>category</div>
                 <div style={{ fontWeight: 700 }}>type</div>
                 <div style={{ fontWeight: 700 }}>触发时机</div>
-                <div style={{ fontWeight: 700 }}>展示模板</div>
-                <div style={{ fontWeight: 700 }}>message_id</div>
+                <div style={{ fontWeight: 700 }}>看板投影</div>
+                <div style={{ fontWeight: 700 }}>约束</div>
                 {FLOW_EVENT_TYPE_SPEC.map((row) => (
                   <div key={row.type} style={{ display: "contents" }}>
+                    <div style={{ fontFamily: "monospace", color: C.textDim }}>{row.category}</div>
                     <div style={{ fontFamily: "monospace", color: C.primaryLight }}>{row.type}</div>
                     <div style={{ color: C.textMuted }}>{row.trigger}</div>
-                    <div style={{ color: C.text }}>{row.labelTemplate}</div>
+                    <div style={{ color: C.text }}>{row.projection}</div>
                     <div style={{ color: C.textDim, fontSize: 10 }}>{row.note || "—"}</div>
                   </div>
                 ))}
@@ -1447,7 +1458,7 @@ export default function RoomDesignSpec() {
               ))}
             </div>
             <div style={{ fontSize: 11, color: C.textMuted, marginTop: 8, marginBottom: 24, maxWidth: 420, lineHeight: 1.7 }}>
-              结案闭环：manager_complete → human_confirm_requested → 用户接受 → human_confirm_accepted → topic_closed；待处理 -1，横幅消失
+              结案闭环：manager_complete_succeeded → human_confirm_requested → 用户接受 → human_confirm_accepted → topic_compressed；待处理 -1，横幅消失，阶段折叠为 TopicCard
             </div>
 
             <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>示例：并行指派流程动态（无 Manager review）</h3>
@@ -1457,29 +1468,27 @@ export default function RoomDesignSpec() {
               ))}
             </div>
 
-            <Divider label="分页与滚动（实现约定）" />
+            <Divider label="分页与滚动" />
             <div style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${C.border}`, fontSize: 12, lineHeight: 1.9, color: C.textMuted }}>
               <div style={{ fontFamily: "monospace", fontSize: 11, background: C.bg, padding: 12, borderRadius: 8, marginBottom: 12 }}>
-                GET /api/rooms/:id/topics/:topicId/flow-events?limit=20{"\n"}
-                GET …/flow-events?limit=20&before={"{event_id}"}  // 向上加载更早
+                GET /api/rooms/:id/flow-events?graph_id=current&limit=20{"\n"}
+                GET …/flow-events?topic_id={"{topic_id}"}&limit=20&before={"{event_id}"}  // 展开压缩阶段
               </div>
-              <div>• 首次进入：取最新 20 条 → scrollIntoView(最后一条)</div>
+              <div>• 首次进入：取当前子图最新 20 条 → scrollIntoView(最后一条)</div>
               <div>• scrollTop ≤ 阈值：请求 before=最早可见 id → prepend → 保持滚动位置</div>
               <div>• WS room:flow_event / snapshot_updated：若在底部则 append + 自动滚底</div>
-              <div>• running 状态：同一 invocation 仅产生一条「思考中」，queued→running 不重复</div>
-              <div>• 非活跃话题：折叠为一行标题 + 事件计数，点击切换（不跳转聊天区）</div>
-              <div>• 点击事件 → 滚动并高亮对应 message_id（双向定位）</div>
+              <div>• running 状态：同一 invocation 折叠进消息节点；queued→running 不重复占行</div>
+              <div>• 非当前阶段：折叠为 TopicCard，点击展开原始事件子图（不跳转聊天区）</div>
+              <div>• 点击消息节点/控制节点 → 滚动并高亮对应 message_id（双向定位）</div>
             </div>
 
-            <Divider label="话题生命周期（Manager 统一管理）" />
+            <Divider label="Topic 压缩规则" />
             <div style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${C.border}`, fontSize: 12, lineHeight: 1.9, color: C.textMuted, marginBottom: 24 }}>
-              <div>• <strong style={{ color: C.text }}>状态机</strong>：open → in_progress → closing → closed（看板「活跃话题」展示 status，<strong style={{ color: C.red }}>不</strong>映射 Issue status）</div>
-              <div>• <strong style={{ color: C.text }}>创建</strong>：用户意图消息 + Manager 判定新语义 → topic_create + 首条 flow_event</div>
-              <div>• <strong style={{ color: C.text }}>续接</strong>：引用链强关联 或 Manager 语义相关 → 并入活跃话题</div>
-              <div>• <strong style={{ color: C.text }}>拆分</strong>：Manager 检测换题 → topic_split，旧话题保留完整时间轴</div>
-              <div>• <strong style={{ color: C.text }}>结束</strong>：须人工确认 或 授权高级 Agent 确认（可配置默认通过）→ manager_complete + human_confirm → topic_closed</div>
-              <div>• <strong style={{ color: C.text }}>切换话题</strong>：仅看板侧切换活跃话题，聊天区不自动跳转</div>
-              <div>• <strong style={{ color: C.text }}>交付物</strong>：Agent 产出保存在 RoomMessage 正文；需要长期跟踪时用户在<strong>工作区 Issue 模块</strong>另行创建，与群无自动同步</div>
+              <div>• <strong style={{ color: C.text }}>事实优先</strong>：消息节点、ControlStep、FlowEvent 先完整写入；没有 Topic 也必须能记录流程</div>
+              <div>• <strong style={{ color: C.text }}>压缩触发</strong>：仅人工确认接受、授权高级 Agent 结案、或用户手动归档阶段；禁止仅因事件过多自动压缩</div>
+              <div>• <strong style={{ color: C.text }}>压缩范围</strong>：覆盖一段已闭合子图的 event_range_start/end；默认不跨无关根消息</div>
+              <div>• <strong style={{ color: C.text }}>可展开</strong>：TopicCard 展开后按原始时间顺序恢复消息节点、ControlStep 与确认节点</div>
+              <div>• <strong style={{ color: C.text }}>不改聊天区</strong>：Topic 只影响看板展示密度，不隐藏、不移动、不过滤聊天消息</div>
             </div>
 
             <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>核心流程图</h3>
@@ -1487,21 +1496,21 @@ export default function RoomDesignSpec() {
               <FlowDiagram />
             </div>
 
-            <Divider label="WebSocket 事件（实现参考）" />
+            <Divider label="WebSocket 事件（契约）" />
             <div style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${C.border}` }}>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, fontSize: 12 }}>
                 {[
-                  { event: "room:message", action: "invalidate messages；同 id 状态更新", status: "✅" },
-                  { event: "room:flow_event", action: "append 流程动态；底部自动滚", status: "❌ 待实现" },
-                  { event: "room:invocation_updated", action: "更新 message state", status: "✅" },
-                  { event: "room:approval_requested", action: "消息轻卡 + 待处理 +1", status: "✅" },
-                  { event: "room:human_action_updated", action: "human_confirm_* 事件 + 待处理计数", status: "❌ 待实现" },
-                  { event: "room:snapshot_updated", action: "看板 pending/running", status: "❌ 未订阅" },
+                  { event: "room:message", action: "invalidate messages；同 id 状态更新" },
+                  { event: "room:flow_event", action: "append 流程动态；按 category 投影" },
+                  { event: "room:control_step_updated", action: "同 step_id patch ControlStepNode" },
+                  { event: "room:invocation_updated", action: "更新 message state" },
+                  { event: "room:approval_requested", action: "消息轻卡 + 待处理 +1" },
+                  { event: "room:human_action_updated", action: "human_confirm_* 事件 + 待处理计数" },
+                  { event: "room:snapshot_updated", action: "看板 pending/running/compressed_topics" },
                 ].map((e) => (
                   <div key={e.event} style={{ padding: 10, borderRadius: 8, border: `1px solid ${C.border}`, background: C.bg }}>
                     <div style={{ fontWeight: 600, color: C.text, fontSize: 11, fontFamily: "monospace" }}>{e.event}</div>
                     <div style={{ color: C.textMuted, marginTop: 4, fontSize: 11 }}>{e.action}</div>
-                    <div style={{ marginTop: 4, fontSize: 11, color: e.status.startsWith("✅") ? C.green : C.red }}>{e.status}</div>
                   </div>
                 ))}
               </div>
@@ -1514,8 +1523,8 @@ export default function RoomDesignSpec() {
           <div>
             <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>🧠 群管理 — 路由与监督模式</h2>
             <p style={{ fontSize: 13, color: C.textMuted, marginBottom: 20, lineHeight: 1.6, maxWidth: 700 }}>
-              群管理 Agent 不再是编排器（Orchestrator），而是轻量级的“路由 + 监督”角色。
-              核心原则：该出手时才出手，用户可直接 @具体 Agent，Manager 仅在需要路由、接力、升级时介入。
+              群管理 Agent 承担轻量「路由 + 监督」角色：该出手时才出手。
+              用户可直接 @具体 Agent；Manager 仅在需要路由、接力、升级时介入。
             </p>
 
             {/* Three Roles */}
@@ -1523,9 +1532,9 @@ export default function RoomDesignSpec() {
               <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Manager 的三种职责</h3>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
                 {[
-                  { icon: "📨", title: "路由", desc: "把消息送到对的人手上", detail: "分析用户消息意图，判断最合适的 Agent 角色，创建 Agent 消息并写入 attribution", when: "路由模式（用户消息无 @）", ui: "Agent 消息 attribution=「由群管理分配指定」；失败 Agent Picker", color: C.primary },
-                  { icon: "🔄", title: "接力", desc: "完成后决定是否交给下一个", detail: "当前 Agent 完成后，评估结果并结合群提示词判断是否需要触发下一个 Agent", when: "路由模式 · 消息 succeeded 后", ui: "flow_event manager_relay + 新 Agent 消息 quote 父消息", color: C.blue },
-                  { icon: "🚨", title: "升级", desc: "异常时引入更高角色或人工", detail: "Agent 失败、多轮无结论、超时等异常时，评估是否引入更高级 Agent 或通知人类裁决", when: "异常/僵局/超时", ui: "异常横幅 + 流程动态 + 待处理/通知", color: C.red },
+                  { icon: "📨", title: "路由", desc: "把消息送到对的人手上", detail: "分析用户消息意图，判断最合适的 Agent 角色。决策中与决策结果属于同一个 RouteStep，不拆成两行", when: "路由模式（用户消息无 @）", ui: "RouteStep 原子节点 + Agent 消息 attribution；失败挂 RouteFailurePicker", color: C.primary },
+                  { icon: "🔄", title: "接力", desc: "完成后决定是否交给下一个", detail: "当前 Agent 完成后，评估结果并结合群提示词判断是否需要触发下一个 Agent。running/result 共享 step_id", when: "路由模式 · 消息 succeeded 后", ui: "RelayStep 原子节点 + 新 Agent 消息 quote 父消息", color: C.blue },
+                  { icon: "🚨", title: "升级", desc: "异常时引入更高角色或人工", detail: "Agent 失败、多轮无结论、超时等异常时，评估是否引入更高级 Agent 或通知人类裁决", when: "异常/僵局/超时", ui: "EscalateStep + 异常横幅 + 待处理/通知", color: C.red },
                 ].map((r) => (
                   <div key={r.title} style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${r.color}30` }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
@@ -1574,9 +1583,9 @@ export default function RoomDesignSpec() {
                       <div style={{ flex: 1, background: C.primaryBg, borderRadius: 8, padding: 12, border: `1px solid ${C.primary}30` }}>
                         <div style={{ fontSize: 12, fontWeight: 600, color: C.primary, marginBottom: 4 }}>无 @ → 路由模式</div>
                         <div style={{ fontSize: 11, color: C.textMuted, lineHeight: 1.6 }}>
-                          Manager 分析意图<br />
-                          创建 Agent 消息并写入 attribution<br />
-                          <span style={{ color: C.textDim }}>用户看到：由群管理分配指定（无独立路由行）</span>
+                          RouteStep: running → succeeded<br />
+                          成功后创建 Agent 消息<br />
+                          <span style={{ color: C.textDim }}>用户看到：一个路由节点 + Agent attribution</span>
                         </div>
                       </div>
                     </div>
@@ -1586,7 +1595,7 @@ export default function RoomDesignSpec() {
                     <div style={{ width: 32, height: 32, borderRadius: "50%", background: C.blue, color: "#fff", fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>2</div>
                     <div>
                       <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Agent 执行完成</div>
-                      <div style={{ fontSize: 11, color: C.textMuted }}>Manager 评估结果，决定是否接力</div>
+                      <div style={{ fontSize: 11, color: C.textMuted }}>Manager 评估结果，决定是否接力或进入确认</div>
                     </div>
                   </div>
                   {/* Branch */}
@@ -1598,7 +1607,7 @@ export default function RoomDesignSpec() {
                       </div>
                       <div style={{ flex: 1, background: C.blueBg, borderRadius: 8, padding: 12, border: `1px solid ${C.blue}30` }}>
                         <div style={{ fontSize: 12, fontWeight: 600, color: C.blue, marginBottom: 4 }}>需要下一步 → 接力</div>
-                        <div style={{ fontSize: 11, color: C.textMuted }}>flow_event manager_relay（仅看板）</div>
+                        <div style={{ fontSize: 11, color: C.textMuted }}>RelayStep 原子节点（仅看板）</div>
                       </div>
                       <div style={{ flex: 1, background: C.redBg, borderRadius: 8, padding: 12, border: `1px solid ${C.red}30` }}>
                         <div style={{ fontSize: 12, fontWeight: 600, color: C.red, marginBottom: 4 }}>异常 → 升级</div>
@@ -1616,24 +1625,24 @@ export default function RoomDesignSpec() {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
                 {/* Attribution on message */}
                 <div style={{ background: C.bg, borderRadius: 10, padding: 12, border: `1px solid ${C.border}` }}>
-                  <div style={{ fontSize: 10, color: C.textDim, marginBottom: 8 }}>消息 attribution pill（v2.3）</div>
+                  <div style={{ fontSize: 10, color: C.textDim, marginBottom: 8 }}>消息 attribution pill</div>
                   <AttributionPill text="由群管理分配指定" />
                   <div style={{ marginTop: 6 }}><AttributionPill text="由 @需求分析师 指定" /></div>
                   <div style={{ fontSize: 10, color: C.textDim, marginTop: 8, lineHeight: 1.6 }}>
                     • 挂在 Agent 消息行，非独立模式提示行<br />
-                    • 路由/分配/@ 来源均通过 pill 表达<br />
+                    • Agent 消息上只表达最终来源；过程见 RouteStep<br />
                     • 路由失败：异常横幅 + RouteFailurePicker
                   </div>
                 </div>
                 {/* Relay → Workboard only */}
                 <div style={{ background: C.bg, borderRadius: 10, padding: 12, border: `1px solid ${C.border}` }}>
-                  <div style={{ fontSize: 10, color: C.textDim, marginBottom: 8 }}>接力链路（仅看板流程动态）</div>
+                  <div style={{ fontSize: 10, color: C.textDim, marginBottom: 8 }}>ControlStep 链路（仅看板）</div>
                   <div style={{ fontSize: 11, color: C.textMuted, lineHeight: 1.8 }}>
                     需求分析师 ✓ → <span style={{ color: C.amber }}>前端工程师 ●</span> → SQA 团队长 ○
                   </div>
                   <div style={{ fontSize: 10, color: C.textDim, marginTop: 8, lineHeight: 1.6 }}>
                     • 聊天区不出现接力 hint / 任务横幅<br />
-                    • 用户通过消息序列感知执行；通过看板感知话题进度
+                    • 用户通过消息序列感知执行；通过看板感知控制步骤与阶段进度
                   </div>
                 </div>
                 {/* Escalation */}
@@ -1661,7 +1670,7 @@ export default function RoomDesignSpec() {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
                 <div style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${C.border}`, fontSize: 12, lineHeight: 1.8 }}>
                   <div style={{ fontWeight: 600, marginBottom: 4, color: C.green }}>✅ Manager 应该做的</div>
-                  <div style={{ color: C.textMuted }}>• 快速分析意图，精准路由到目标 Agent</div>
+                  <div style={{ color: C.textMuted }}>• 快速分析意图，精准路由到目标 Agent，并以单个 ControlStep 呈现过程与结果</div>
                   <div style={{ color: C.textMuted }}>• Agent 完成后评估结果，决定是否接力</div>
                   <div style={{ color: C.textMuted }}>• 异常时升级并通知用户</div>
                   <div style={{ color: C.textMuted }}>• 观察 Agent 间的 @互动，仅在需要时介入</div>
@@ -1670,8 +1679,7 @@ export default function RoomDesignSpec() {
                 <div style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${C.border}`, fontSize: 12, lineHeight: 1.8 }}>
                   <div style={{ fontWeight: 600, marginBottom: 4, color: C.red }}>❌ Manager 不应该做的</div>
                   <div style={{ color: C.textMuted }}>• 不创建编排计划卡 / 居中系统长文</div>
-                  <div style={{ color: C.textMuted }}>• 不桥接工作区 Issue；交付由 Topic 生命周期跟踪</div>
-                  <div style={{ color: C.textMuted }}>• 不在群内引导 Agent 创建/更新 Issue</div>
+                  <div style={{ color: C.textMuted }}>• 不把路由决策中、决策结果、创建消息拆成多条聊天系统行</div>
                   <div style={{ color: C.textMuted }}>• 不在用户直接 @时抢先介入</div>
                   <div style={{ color: C.textMuted }}>• 路由模式下串行接力（一次一个 Agent）</div>
                   <div style={{ color: C.textMuted }}>• 用户多 @ 时并行，Manager 不 route、不 review</div>
@@ -1689,7 +1697,7 @@ export default function RoomDesignSpec() {
                   { case: "用户 @多个 Agent", solution: "并行指派：N 条消息并列 quote 用户消息，各独立 invocation", condition: "Manager 不 route；看板仍有完整流程动态" },
                   { case: "用户 @单个 Agent", solution: "直连模式：attribution=用户 @指定，默认无 review", condition: "仅失败/超时可建议升级" },
                   { case: "无 Manager Agent", solution: "有 @ 则直连；无 @ 则提示配置群管理", condition: "room.manager_agent_id 为空" },
-                  { case: "Manager 路由失败", solution: "异常横幅 RouteFailurePicker：选 Agent / 重试", condition: "见「消息与视图」线框" },
+                  { case: "Manager 路由失败", solution: "RouteStep=failed；节点内挂 RouteFailurePicker：选 Agent / 重试", condition: "同 step_id，不新增系统消息" },
                   { case: "A2A 链深度超限", solution: "线程根横幅暂停 + 管理员恢复", condition: "parent_invocation 链深度默认 5" },
                   { case: "Manager 接力循环", solution: "路由模式接力深度上限，超过暂停", condition: "与 A2A 深度分开计数" },
                   { case: "Agent 直接 @另一个", solution: "新消息 quote 父 Agent 消息，attribution=「由 @X 指定」", condition: "禁止消息子树；Manager 通常不介入" },
@@ -1711,7 +1719,7 @@ export default function RoomDesignSpec() {
           <div>
             <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>审批与人工确认</h2>
             <p style={{ fontSize: 13, color: C.textMuted, marginBottom: 20, lineHeight: 1.6, maxWidth: 700 }}>
-              高风险审批、话题结束确认、冲突处理等「待人工」事项：交互在<strong style={{ color: C.text }}>消息行内轻卡</strong>完成；
+              高风险审批、阶段压缩确认、冲突处理等「待人工」事项：交互在<strong style={{ color: C.text }}>消息行内轻卡</strong>完成；
               Composer 上方显示<strong style={{ color: C.text }}>待处理横幅</strong>（参考企微 @/未读提示）。流程动态与通知/待办同步记录。
             </p>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 24 }}>
@@ -1726,11 +1734,11 @@ export default function RoomDesignSpec() {
                 </div>
               </div>
               <div>
-                <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>话题/任务人工确认（消息轻卡）</h3>
+                <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>阶段人工确认（消息轻卡）</h3>
                 <HumanConfirmLightCard title="群管判定贪吃蛇任务完成，请确认是否结案" />
                 <div style={{ marginTop: 12, background: C.surface, borderRadius: 10, padding: 14, border: `1px solid ${C.border}`, fontSize: 12, lineHeight: 1.8 }}>
                   <div style={{ fontWeight: 600, marginBottom: 4 }}>确认规则</div>
-                  <div style={{ color: C.textMuted }}>• <strong>接受</strong>：自动完成确认事项，话题可结案</div>
+                  <div style={{ color: C.textMuted }}>• <strong>接受</strong>：自动完成确认事项，并压缩已闭合消息事件子图</div>
                   <div style={{ color: C.textMuted }}>• <strong>拒绝</strong>：必须填写拒绝原因（必填）</div>
                   <div style={{ color: C.textMuted }}>• 可同时推送通知/待办；看板「待处理」+1</div>
                 </div>
@@ -1747,10 +1755,10 @@ export default function RoomDesignSpec() {
 
             <Divider label="结案时序（接受路径）" />
             <div style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${C.border}`, fontSize: 12, lineHeight: 2, color: C.textMuted, maxWidth: 560 }}>
-              <div>1. manager_complete</div>
+              <div>1. manager_complete_succeeded（ControlStep）</div>
               <div>2. human_confirm_requested → 消息轻卡 pending + 待处理 +1 + 横幅</div>
               <div>3. 用户点「接受」→ human_confirm_accepted</div>
-              <div>4. topic_closed → 轻卡终态 + 待处理 -1 + 横幅消失</div>
+              <div>4. topic_compressed → 轻卡终态 + 待处理 -1 + 横幅消失 + 阶段折叠</div>
             </div>
             <div style={{ marginTop: 12, background: C.bg, borderRadius: 10, padding: 14, border: `1px solid ${C.border}`, maxWidth: 420 }}>
               {REJECT_FLOW_EVENTS.map((ev, i) => (
@@ -1873,7 +1881,7 @@ export default function RoomDesignSpec() {
                   </div>
                   <div style={{ fontWeight: 600, color: C.text, marginTop: 8, marginBottom: 4 }}>默认定制提示词</div>
                   <div style={{ color: C.textMuted, fontSize: 11, fontFamily: "monospace", background: C.bg, padding: 8, borderRadius: 6 }}>
-                    根据本群目标路由与监督 Agent 成员完成交付。交付进度写在 Topic 与流程动态中；你负责路由、接力评估与异常升级，不创建或同步工作区 Issue。
+                    根据本群目标路由与监督 Agent 成员完成交付。过程写入消息事件图；阶段完成后压缩为 TopicCard；你负责路由、接力评估与异常升级。
                   </div>
                 </div>
               </div>
@@ -1906,7 +1914,7 @@ export default function RoomDesignSpec() {
                   <div style={{ fontWeight: 700, padding: 6, textAlign: "center" }}>Cursor</div>
                   {[
                     ["消息 Hover 工具栏", "❌ 无", "✅ 复制/转发/回应", "✅ 复制/重新生成", "✅ 复制", "✅ 复制/插入"],
-                    ["停止生成按钮", "✅ Composer 居中（v2.3）", "—", "✅ 底部居中 ■", "✅ 底部居中 ■", "✅ 顶部停止"],
+                    ["停止生成按钮", "✅ Composer 居中", "—", "✅ 底部居中 ■", "✅ 底部居中 ■", "✅ 顶部停止"],
                     ["自动滚动控制", "❌ 无", "✅ ↓ 回到底部", "✅ ↓ 新消息", "✅ ↓ 回到底部", "✅ 手动滚动"],
                     ["消息分组", "❌ 每条独立", "✅ 同发送者合并", "—", "—", "—"],
                     ["时间分隔线", "❌ 无", "✅ 日期分隔", "✅ 时间标注", "—", "—"],
@@ -1982,7 +1990,7 @@ export default function RoomDesignSpec() {
                     <div style={{ color: C.textMuted }}>• 居中显示，■ 图标 + "停止生成" 文案</div>
                     <div style={{ color: C.textMuted }}>• 仅取消当前用户最近引用链内 running invocation</div>
                     <div style={{ color: C.textMuted }}>• 群级停止仅 admin；禁止误伤他人并行任务</div>
-                    <div style={{ color: C.textMuted }}>• 替代消息行内小链接式「停止」（v1 已废弃）</div>
+                    <div style={{ color: C.textMuted }}>• 禁止消息行内小链接式「停止」；统一使用 Composer 居中按钮</div>
                     <div style={{ color: C.textMuted }}>• ChatGPT/DeepSeek 都用底部居中大按钮</div>
                   </div>
                   <div style={{ marginTop: 8, background: C.bg, borderRadius: 10, padding: 12, border: `1px solid ${C.border}` }}>
@@ -2172,7 +2180,7 @@ export default function RoomDesignSpec() {
                   <div style={{ fontWeight: 600, marginBottom: 8 }}>气泡视觉差异化</div>
                   <div style={{ color: C.textMuted }}>• 用户消息：右对齐 + primary 背景色</div>
                   <div style={{ color: C.textMuted }}>• Agent 回复：左对齐 + surface 背景色</div>
-                  <div style={{ color: C.textMuted }}>• 禁止居中编排系统消息（v2.3 仍废弃）</div>
+                  <div style={{ color: C.textMuted }}>• 禁止居中编排系统消息</div>
                   <div style={{ color: C.textMuted }}>• 考虑用户消息右侧圆角特殊化（气泡尾巴）</div>
                   <div style={{ color: C.textMuted }}>• 与 ChatGPT 的 user/assistant 分区一致</div>
                 </div>
@@ -2189,13 +2197,13 @@ export default function RoomDesignSpec() {
                   <div style={{ fontWeight: 700 }}>工作量</div>
                   <div style={{ fontWeight: 700 }}>对标来源</div>
                   {[
-                    ["—", "RoomMessage + quote 双视图（设计层 P0）", "—", "本规范 v2.3"],
-                    ["—", "流程动态 + 话题生命周期（设计层 P0）", "—", "本规范 v2.3"],
-                    ["—", "移除 Issue 桥接（设计层 P0）", "—", "本规范 v2.3"],
+                    ["—", "RoomMessage + quote 双视图", "—", "设计宪法 §3"],
+                    ["—", "流程动态 + 话题生命周期", "—", "设计宪法 §6"],
+                    ["—", "消息事件图 + 阶段压缩", "—", "设计宪法 §6/§10"],
                     ["P0", "自动滚动控制 + FAB", "2-3h", "所有聊天应用"],
                     ["P0", "停止生成（仅本线程）", "1-2h", "ChatGPT / DeepSeek"],
                     ["P1", "消息 Hover 浮动工具栏", "2-3h", "ChatGPT / 钉钉"],
-                    ["P1", "消息折叠/展开 + 活跃聚焦", "2-3h", "本规范"],
+                    ["P1", "消息折叠/展开 + 活跃聚焦", "2-3h", "设计宪法 §3"],
                     ["P1", "时间分隔线", "1-2h", "钉钉 / 企微"],
                     ["P1", "可折叠思考段（消息内）", "2-3h", "DeepSeek / ChatGPT"],
                     ["P2", "消息分组（仅用户气泡）", "3-4h", "钉钉 / Slack"],
@@ -2297,7 +2305,7 @@ export default function RoomDesignSpec() {
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, fontSize: 11, color: C.textMuted, lineHeight: 1.8 }}>
                     <div>
                       <div style={{ fontWeight: 600, color: C.text, marginBottom: 4 }}>可见</div>
-                      消息列表（双视图）· 流程动态只读 · 活跃话题摘要 · 成员列表
+                      消息列表（双视图）· 流程动态只读 · 阶段摘要 · 成员列表
                     </div>
                     <div>
                       <div style={{ fontWeight: 600, color: C.text, marginBottom: 4 }}>不可见/禁用</div>
@@ -2415,145 +2423,132 @@ export default function RoomDesignSpec() {
           </div>
         )}
 
-        {/* Tab: Implementation Gaps (非设计规范) */}
-        {tab === "implementation" && (
+        {/* Tab: Acceptance Checklist */}
+        {tab === "acceptance" && (
           <div>
-            <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>实现差距（参考，非设计规范）</h2>
-            <p style={{ fontSize: 13, color: C.textMuted, marginBottom: 20, lineHeight: 1.6, maxWidth: 700 }}>
-              本 Tab 记录<strong style={{ color: C.amber }}>当前代码</strong>与 v2.3 设计规范的差距，供实施阶段对照。
-              设计决策以「📜 设计宪法」「🧵 消息与视图」为准，本页不构成设计指导。
+            <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>验收清单</h2>
+            <p style={{ fontSize: 13, color: C.textMuted, marginBottom: 20, lineHeight: 1.6, maxWidth: 720 }}>
+              工程实施与回归测试以本清单为准。每项均为<strong style={{ color: C.text }}>规范性要求</strong>，对应「📜 设计宪法」及各 Tab 线框；不存在平行方案或可选路径。
             </p>
-            <div style={{ background: C.amberBg, borderRadius: 10, padding: 14, border: `1px solid ${C.amber}30`, fontSize: 12, color: C.textMuted, marginBottom: 20, lineHeight: 1.7 }}>
-              <strong style={{ color: C.amber }}>v2.3 优先实施：</strong>
-              完全移除 Issue 桥接（linked_issue_id、promote-issue、RoomIssueCard、ListIssueRoomMessages 等）；
-              同步落实 v2.3 目标契约（RoomMessage + quote、flow_event、human_action、snapshot、双视图）
-            </div>
 
-            <div style={{ marginBottom: 24 }}>
-              <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: C.primaryLight }}>🟣 v2.3 契约收敛（待实施）</h3>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                {[
-                  { id: "I1", title: "删除 Issue 卡片 UI", file: "room-issue-card.tsx", fix: "移除组件及消息列表挂载；Agent 产出仅 message content" },
-                  { id: "I2", title: "删除 promote-issue", file: "room.go / mutations.ts", fix: "移除 API、usePromoteRoomMessageIssue、消息操作入口" },
-                  { id: "I3", title: "删除 linked_issue_id", file: "migrations / types", fix: "DROP 列或停止读写；room_delivery 同步移除" },
-                  { id: "I4", title: "删除跨模块泄露接口", file: "ListIssueRoomMessages", fix: "整段移除，不靠 membership 补丁保留" },
-                  { id: "I5", title: "删除 Issue 回贴逻辑", file: "room_completion.go", fix: "移除 NotifyRoomIssueCreated" },
-                  { id: "I6", title: "Daemon 去 Issue 引导", file: "daemon/prompt.go", fix: "room task 禁止 multica issue create/get" },
-                  { id: "I7", title: "@mention 去 @issue", file: "mention-suggestion.tsx", fix: "Room scope 仅 member/agent/squad/all" },
-                  { id: "I8", title: "看板改话题摘要", file: "room-workboard-panel.tsx", fix: "活跃话题列表 + 状态；移除 Issue 区块" },
-                  { id: "I9", title: "统一 Room API schema", file: "core/api/schema.ts", fix: "为 RoomMessage/Topic/FlowEvent/HumanAction/Snapshot 增加 zod parseWithFallback" },
-                  { id: "I10", title: "query key 加 workspace", file: "core/room/queries.ts", fix: "所有 roomKeys 使用 wsId + roomId，符合 workspace-scoped query 规则" },
-                  { id: "I11", title: "Delivery 产品概念下线", file: "room_workflow.sql / types", fix: "公有 API 不再暴露 delivery；旧表仅迁移期内部使用或并入 topic" },
-                  { id: "I12", title: "WS payload 同名化", file: "protocol/events.go / use-realtime-sync.ts", fix: "room:message_created/updated、flow_event_created、snapshot_updated 使用目标字段" },
-                ].map((g) => (
-                  <div key={g.id} style={{ background: C.surface, borderRadius: 10, padding: 14, border: `1px solid ${C.primary}30` }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                      <Badge color={C.primaryLight} bg={C.primaryBg}>{g.id}</Badge>
-                      <span style={{ fontSize: 13, fontWeight: 600 }}>{g.title}</span>
-                      <span style={{ fontSize: 10, color: C.textDim, fontFamily: "monospace", marginLeft: "auto" }}>{g.file}</span>
+            {[
+              {
+                title: "域边界与 API 契约",
+                color: C.primary,
+                items: [
+                  "RoomMessage / ControlStep / Topic / FlowEvent / HumanAction / Snapshot 字段与「🧩 后台方案」契约一致，snake_case",
+                  "FlowEvent 可独立写入，不依赖 Topic 预先存在；Topic 仅由压缩流程创建/更新",
+                  "公有 API 与 UI 不出现 Delivery 概念",
+                  "所有 room 响应经 zod parseWithFallback；query key 含 wsId + roomId",
+                  "所有控制步骤写入 step_id；同一 step_id 的 running/result/error 可幂等 patch",
+                ],
+              },
+              {
+                title: "消息模型与双视图",
+                color: C.blue,
+                items: [
+                  "思考中→完成是同一 message_id 的状态变迁；禁止拆成两条消息",
+                  "Agent 互@ = 新消息 + quote_message_id；禁止消息子树嵌套",
+                  "默认 ThreadBlock；可切换时间线；偏好存 room:{roomId}:chatView",
+                  "聊天区始终全量 RoomMessage；展开/折叠 Topic 不过滤聊天区",
+                  "Agent 产出仅 message content；无居中系统失败墙",
+                  "attribution pill 表达路由/@ 来源；禁止 route_hint 独立行",
+                ],
+              },
+              {
+                title: "三种协作模式",
+                color: C.green,
+                items: [
+                  "路由（无@）：RouteStep running → succeeded/failed；成功后 Agent message attribution「由群管理分配指定」",
+                  "直连（单@）：Manager 不 route；Agent 直接执行；仅异常时升级",
+                  "并行（多@）：每条 @ 独立 invocation；Manager 不 route、不 review",
+                  "并行模式：多 Agent 消息并列 quote 同一用户消息",
+                  "失败展示：消息行内 TerminalBody / 异常横幅 + RouteFailurePicker；禁止 ⚠️ XX 回答失败 系统消息墙",
+                ],
+              },
+              {
+                title: "流程动态与阶段压缩",
+                color: C.amber,
+                items: [
+                  "flow_event 含 category；message/control/confirm/phase/meta 投影规则固定",
+                  "message 类事件折叠进消息节点；不单独占流程行",
+                  "control/confirm 类事件按 step_id 合并为 ControlStep 原子节点；路由决策中与结果不得拆分",
+                  "agent_at / relay_hint 作为 ControlStep；聊天区不渲染对应卡片",
+                  "Topic 压缩仅在人工确认接受、授权结案或手动归档后发生；可展开还原原始子图",
+                  "结案：manager_complete_succeeded → human_confirm_requested → accepted → topic_compressed",
+                  "pending_count = 待人工确认事项数（非 invocation pending 数）",
+                  "流程动态分页：limit=20 + before 游标；点击节点滚动高亮 message",
+                ],
+              },
+              {
+                title: "Manager 路由与监督",
+                color: C.primary,
+                items: [
+                  "路由失败：RouteStep=failed，节点内挂 RouteFailurePicker；不写散文系统消息",
+                  "接力仅写 RelayStep；聊天区无 relay hint 卡",
+                  "升级：EscalateStep + 异常横幅；不生成 agent_at 聊天行",
+                  "直连/并行成功路径不 enqueueManagerReview",
+                  "Agent 互@深度超限 → paused + 恢复入口（admin）",
+                ],
+              },
+              {
+                title: "人工确认与审批",
+                color: C.red,
+                items: [
+                  "human_confirm：消息行内轻卡 + Composer 横幅；拒绝必填原因并写 flow_event",
+                  "接受 → human_confirm_accepted + topic_compressed；待处理 -1",
+                  "Approval：消息 footer 轻卡；AlertDialog 二次确认；guest 不可审批",
+                  "human_action sweeper：expires_at 到期 → expired",
+                ],
+              },
+              {
+                title: "Invocation 生命周期",
+                color: C.blue,
+                items: [
+                  "dispatch：queued → running；running 只更新预创建 Agent message",
+                  "completion：先落 content + invocation.status → message 类 flow_event → WS 广播",
+                  "sweeper：超时 → timed_out；drain 失败必须写 failed + 日志",
+                  "停止：仅当前用户最近引用链内 running；Composer 居中按钮",
+                  "Cancel：仅 author 或 admin；Retry 检查 max_retries",
+                ],
+              },
+              {
+                title: "WebSocket 与实时",
+                color: C.green,
+                items: [
+                  "订阅 room:message / flow_event / control_step_updated / invocation_updated / approval_requested / human_action_updated / snapshot_updated",
+                  "flow_event：append + 按 category 投影；control_step_updated：按 step_id patch；snapshot_updated：刷新看板 pending/running/compressed_topics",
+                  "优先 patch by id；失败再 invalidate",
+                ],
+              },
+              {
+                title: "工程约束",
+                color: C.textMuted,
+                items: [
+                  "packages/views/room 零 next/*、react-router-dom；路由用 NavigationAdapter",
+                  "packages/core/room 零 react-dom；状态：Query 管服务端、Zustand 管客户端 UI",
+                  "web + desktop 共用 RoomView；禁止重复实现",
+                  "Manager prompt 输出结构化 action/step，不写散文系统消息",
+                ],
+              },
+            ].map((section) => (
+              <div key={section.title} style={{ marginBottom: 24 }}>
+                <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: section.color }}>{section.title}</h3>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {section.items.map((item) => (
+                    <div key={item} style={{ display: "flex", gap: 10, alignItems: "flex-start", background: C.surface, borderRadius: 8, padding: "10px 14px", border: `1px solid ${C.border}`, fontSize: 12, lineHeight: 1.7, color: C.textMuted }}>
+                      <span style={{ color: C.green, flexShrink: 0, marginTop: 1 }}>☐</span>
+                      <span>{item}</span>
                     </div>
-                    <div style={{ fontSize: 11, color: C.green, lineHeight: 1.6 }}>→ {g.fix}</div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
+            ))}
 
-            <div style={{ marginBottom: 24 }}>
-              <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: C.red }}>🔴 阻塞性问题（走不通）</h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                {[
-                  { id: "G1", title: "跨 Room 消息泄露（随 I4 删除）", file: "room.go:ListIssueRoomMessages", problem: "Issue 桥接接口可读到私密群消息", flow: "用户 A 私密群讨论 → B 通过 Issue 侧接口读到 A 聊天", fix: "v2.3 整段删除 ListIssueRoomMessages，不保留桥接" },
-                  { id: "G2", title: "Invocation 永久 running", file: "room_completion.go", problem: "GetRoom 失败时提前 return，invocation 永远 running", flow: "Agent 成功 → 创建回复时 DB 抖动 → 永久显示「思考中」", fix: "重构为先更新 invocation 状态再创建回复" },
-                  { id: "G3", title: "Drain 静默失败", file: "room_invocation_worker.go", problem: "错误路径直接 return 不更新状态", flow: "Agent 排队 → drain 失败 → 永远排队 → 用户看到「一直排队」", fix: "每个 return 前更新状态为 failed + slog.Warn" },
-                  { id: "G4", title: "Agent 空输出误判", file: "room_completion.go", problem: "Daemon 流式上报 output 为空直接标 failed", flow: "Agent 成功执行 → output 为空 → 显示「未能完成回答」", fix: "确保 output 空时 fallback 到 task_message 提取" },
-                ].map((g) => (
-                  <div key={g.id} style={{ background: C.surface, borderRadius: 10, padding: 16, border: `1px solid ${C.red}30` }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                      <Badge color={C.red} bg={C.redBg}>{g.id}</Badge>
-                      <span style={{ fontSize: 14, fontWeight: 600 }}>{g.title}</span>
-                      <span style={{ fontSize: 11, color: C.textDim, fontFamily: "monospace", marginLeft: "auto" }}>{g.file}</span>
-                    </div>
-                    <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.7 }}>
-                      <div><strong style={{ color: C.text }}>问题：</strong>{g.problem}</div>
-                      <div><strong style={{ color: C.amber }}>用户感知：</strong>{g.flow}</div>
-                      <div><strong style={{ color: C.green }}>修复：</strong>{g.fix}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div style={{ marginBottom: 24 }}>
-              <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: C.amber }}>🟡 流程不顺畅</h3>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                {[
-                  { id: "G5", title: "Agent 回复位置错位", problem: "created_at 是完成时间非触发时间", fix: "用 quote_message_id 锚定引用链；思考/完成同 message_id", done: false },
-                  { id: "G6", title: "Approval 无确认对话框", problem: "点击直接触发 mutation", fix: "✅ 已添加 AlertDialog 确认 + onError toast", done: true },
-                  { id: "G7", title: "Approval 无超时", problem: "永远 pending", fix: "sweeper 增加 stale approval 清理 (4h)", done: false },
-                  { id: "G8", title: "Paused 无恢复按钮", problem: "后端 API 存在前端未接入", fix: "✅ 已添加 Resume 按钮 + useResumeInvocation hook", done: true },
-                  { id: "G9", title: "消息无分页", problem: "仅拉 50 条", fix: "前端添加无限滚动", done: false },
-                  { id: "G10", title: "@mention 范围未限制", problem: "members 加载前显示全员", fix: "✅ 加载完成前传递空 scope 禁止建议", done: true },
-                ].map((g) => (
-                  <div key={g.id} style={{ background: C.surface, borderRadius: 10, padding: 14, border: `1px solid ${g.done ? C.green : C.amber}30`, opacity: g.done ? 0.7 : 1 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                      <Badge color={g.done ? C.green : C.amber} bg={g.done ? C.greenBg : C.amberBg}>{g.id}{g.done ? " ✅" : ""}</Badge>
-                      <span style={{ fontSize: 13, fontWeight: 600, textDecoration: g.done ? "line-through" : "none" }}>{g.title}</span>
-                    </div>
-                    <div style={{ fontSize: 11, color: C.textMuted, lineHeight: 1.7 }}>
-                      {g.problem}
-                      <div style={{ color: C.green, marginTop: 4 }}>→ {g.fix}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div style={{ marginBottom: 24 }}>
-              <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: C.blue }}>🔵 功能遗漏</h3>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-                {[
-                  { id: "G11", title: "snapshot_updated 未订阅", desc: "后端定义但前端未处理", fix: "use-realtime-sync 订阅" },
-                  { id: "G12", title: "WS 事件类型缺失", desc: "room:updated/members 未声明", fix: "补全 WSEventType + PayloadMap" },
-                  { id: "G13", title: "CancelInvocation 无权限", desc: "任何成员可取消他人", fix: "检查 author OR admin" },
-                  { id: "G14", title: "DecideApproval 无角色限制", desc: "guest 也能审批", fix: "限制 role != guest" },
-                  { id: "G15", title: "Retry 无次数限制", desc: "不检查 max_retries", fix: "检查 retryCount < maxRetries" },
-                  { id: "G16", title: "Daemon 上下文质量低", desc: "30 条纯文本无结构", fix: "注入 sender/role/quote" },
-                ].map((g) => (
-                  <div key={g.id} style={{ background: C.surface, borderRadius: 10, padding: 14, border: `1px solid ${C.blue}30` }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                      <Badge color={C.blue} bg={C.blueBg}>{g.id}</Badge>
-                      <span style={{ fontSize: 12, fontWeight: 600 }}>{g.title}</span>
-                    </div>
-                    <div style={{ fontSize: 11, color: C.textMuted, lineHeight: 1.6 }}>{g.desc}<div style={{ color: C.green, marginTop: 4 }}>→ {g.fix}</div></div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>⚪ 体验细节</h3>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, fontSize: 11 }}>
-                {[
-                  { text: "添加成员 for+await 串行应改 Promise.all", done: false },
-                  { text: "ApprovalCard mutation 失败无 onError toast", done: true },
-                  { text: "room-topics-panel.tsx 死代码未使用", done: false },
-                  { text: "waitAnchors Map 无清理（内存泄漏）", done: true },
-                  { text: "@mention 不检查词边界", done: false },
-                  { text: "Settings 冗余 saving + isPending", done: false },
-                  { text: "SnapshotUpdated 定义未发布（死代码）", done: false },
-                  { text: "@member/@all 在 Room 内展示但后端需一致处理", done: false },
-                  { text: "Manager prompt Tabs 已有但字太小", done: true },
-                  { text: "Send debounce vs draft 竞态", done: false },
-                  { text: "Workboard 轮询 5s 无 visibility", done: false },
-                  { text: "Agent 截断 500 字符 detailed_explanation 未读", done: false },
-                  { text: "sendMessage onError 无 toast 提示", done: true },
-                  { text: "Paused invocation 无 Resume API 调用", done: true },
-                ].map((item, i) => (
-                  <div key={i} style={{ background: C.surface, borderRadius: 8, padding: "8px 10px", border: `1px solid ${item.done ? C.green : C.border}`, color: item.done ? C.green : C.textMuted, lineHeight: 1.5, textDecoration: item.done ? "line-through" : "none", opacity: item.done ? 0.7 : 1 }}>
-                    {item.done ? "✅ " : ""}{item.text}
-                  </div>
-                ))}
-              </div>
+            <div style={{ background: C.primaryBg, borderRadius: 10, padding: 14, border: `1px solid ${C.primary}30`, fontSize: 12, color: C.textMuted, lineHeight: 1.7 }}>
+              <strong style={{ color: C.primaryLight }}>使用方式：</strong>
+              从「域边界」→「消息模型」→「协作模式」顺序实施；每完成一组在 PR 描述中勾选对应条目。
+              争议以「📜 设计宪法」11 条为最终裁决，不得引用已删除的平行 spec。
             </div>
           </div>
         )}

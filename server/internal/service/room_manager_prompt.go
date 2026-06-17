@@ -36,7 +36,7 @@ const managerSystemInstructions = `你是 Multica 协作群的路由与监督系
 
 // DefaultManagerCustomPrompt is the placeholder for room-specific work instructions.
 func DefaultManagerCustomPrompt() string {
-	return "根据本群目标协调 Agent 成员完成交付。Issue 由角色成员创建与更新，你负责编排与推进，无需用户反复询问进展。"
+	return "根据本群目标协调 Agent 成员完成交付。Issue 由角色成员创建与更新，你负责路由与监督推进，无需用户反复询问进展。"
 }
 
 // DefaultManagerAgentName derives the manager agent display name from the room name.

@@ -23,7 +23,10 @@ export function shouldHideRoomMessage(
     kind === "system_dispatch" ||
     kind === "system_milestone" ||
     kind === "card" ||
-    kind === "route_hint"
+    kind === "route_hint" ||
+    kind === "relay_hint" ||
+    kind === "agent_at" ||
+    kind === "escalate_hint"
   ) {
     return true;
   }

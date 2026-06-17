@@ -1,9 +1,30 @@
 -- name: InsertRoomFlowEvent :one
 INSERT INTO room_flow_events (
-    room_id, topic_id, type, message_id, invocation_id, actor_type, actor_id, payload
+    room_id, topic_id, category, step_id, from_message_id, to_message_id,
+    type, message_id, invocation_id, actor_type, actor_id, payload
 )
-VALUES ($1, $2, $3, sqlc.narg('message_id'), sqlc.narg('invocation_id'), $4, sqlc.narg('actor_id'), COALESCE(sqlc.narg('payload')::jsonb, '{}'::jsonb))
+VALUES (
+    $1,
+    sqlc.narg('topic_id'),
+    COALESCE(sqlc.narg('category'), 'control'),
+    sqlc.narg('step_id'),
+    sqlc.narg('from_message_id'),
+    sqlc.narg('to_message_id'),
+    $2,
+    sqlc.narg('message_id'),
+    sqlc.narg('invocation_id'),
+    $3,
+    sqlc.narg('actor_id'),
+    COALESCE(sqlc.narg('payload')::jsonb, '{}'::jsonb)
+)
 RETURNING *;
+
+-- name: ListRoomFlowEventsByRoom :many
+SELECT * FROM room_flow_events
+WHERE room_id = $1
+  AND (sqlc.narg('before_created_at')::timestamptz IS NULL OR created_at < sqlc.narg('before_created_at')::timestamptz)
+ORDER BY created_at DESC
+LIMIT sqlc.arg('limit');
 
 -- name: ListRoomFlowEventsByTopic :many
 SELECT * FROM room_flow_events
@@ -21,6 +42,11 @@ VALUES (
     sqlc.narg('assignee_id'), $6, sqlc.narg('reason'), sqlc.narg('expires_at')
 )
 RETURNING *;
+
+-- name: CountPendingRoomHumanActions :one
+SELECT COUNT(*)::int AS count
+FROM room_human_actions
+WHERE room_id = $1 AND status = 'pending';
 
 -- name: GetRoomHumanActionInRoom :one
 SELECT * FROM room_human_actions WHERE id = $1 AND room_id = $2;

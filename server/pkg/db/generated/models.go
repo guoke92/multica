@@ -465,17 +465,17 @@ type MentionInvocation struct {
 }
 
 type RoomDelivery struct {
-	ID              pgtype.UUID        `json:"id"`
-	RoomID          pgtype.UUID        `json:"room_id"`
-	Title           string             `json:"title"`
-	Status          string             `json:"status"`
-	WorkflowTemplate string            `json:"workflow_template"`
-	CurrentPhase    string             `json:"current_phase"`
-	CardMessageID   pgtype.UUID        `json:"card_message_id"`
-	AnchorMessageID pgtype.UUID        `json:"anchor_message_id"`
-	CreatedBy       pgtype.UUID        `json:"created_by"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	ID               pgtype.UUID        `json:"id"`
+	RoomID           pgtype.UUID        `json:"room_id"`
+	Title            string             `json:"title"`
+	Status           string             `json:"status"`
+	WorkflowTemplate string             `json:"workflow_template"`
+	CurrentPhase     string             `json:"current_phase"`
+	CardMessageID    pgtype.UUID        `json:"card_message_id"`
+	AnchorMessageID  pgtype.UUID        `json:"anchor_message_id"`
+	CreatedBy        pgtype.UUID        `json:"created_by"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
 type RoomTopic struct {
@@ -497,16 +497,20 @@ type RoomTopic struct {
 }
 
 type RoomFlowEvent struct {
-	ID           pgtype.UUID        `json:"id"`
-	RoomID       pgtype.UUID        `json:"room_id"`
-	TopicID      pgtype.UUID        `json:"topic_id"`
-	Type         string             `json:"type"`
-	MessageID    pgtype.UUID        `json:"message_id"`
-	InvocationID pgtype.UUID        `json:"invocation_id"`
-	ActorType    string             `json:"actor_type"`
-	ActorID      pgtype.UUID        `json:"actor_id"`
-	Payload      []byte             `json:"payload"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ID            pgtype.UUID        `json:"id"`
+	RoomID        pgtype.UUID        `json:"room_id"`
+	TopicID       pgtype.UUID        `json:"topic_id"`
+	Category      string             `json:"category"`
+	StepID        pgtype.Text        `json:"step_id"`
+	FromMessageID pgtype.UUID        `json:"from_message_id"`
+	ToMessageID   pgtype.UUID        `json:"to_message_id"`
+	Type          string             `json:"type"`
+	MessageID     pgtype.UUID        `json:"message_id"`
+	InvocationID  pgtype.UUID        `json:"invocation_id"`
+	ActorType     string             `json:"actor_type"`
+	ActorID       pgtype.UUID        `json:"actor_id"`
+	Payload       []byte             `json:"payload"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
 type RoomHumanAction struct {

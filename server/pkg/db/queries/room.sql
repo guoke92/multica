@@ -95,6 +95,9 @@ SELECT * FROM room_message WHERE id = $1 AND room_id = $2;
 -- name: UpdateRoomMessageMetadata :exec
 UPDATE room_message SET metadata = $2 WHERE id = $1;
 
+-- name: UpdateRoomMessageTopicID :exec
+UPDATE room_message SET topic_id = $2 WHERE id = $1 AND room_id = $3;
+
 -- name: UpdateRoomMessageContent :one
 UPDATE room_message
 SET content = $2, edited_at = now()

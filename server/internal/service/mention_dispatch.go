@@ -166,6 +166,7 @@ func (s *TaskService) dispatchRoomAgentMention(
 		return db.MentionInvocation{}, err
 	}
 	if status == "paused" {
+		s.maybeEscalateManagerOnChainDepth(ctx, p.Room, inv)
 		return inv, nil
 	}
 	s.MaybeRecordInvocationStatusFlowEvent(ctx, p.Room, inv, "pending")
@@ -225,6 +226,14 @@ func (s *TaskService) ResolveRoomMentionAgent(ctx context.Context, workspaceID p
 		return squad.LeaderID, true, nil
 	}
 	return parseUUID(m.ID), false, nil
+}
+
+func (s *TaskService) maybeEscalateManagerOnChainDepth(ctx context.Context, room db.Room, inv db.MentionInvocation) {
+	policy := ParseRoomPolicy(room.Policy)
+	if policy.Routing.OnChainDepthLimit != "escalate_manager" || !room.ManagerAgentID.Valid {
+		return
+	}
+	s.enqueueManagerReview(ctx, room, inv)
 }
 
 func parseMentionTargetID(m util.Mention) pgtype.UUID {
@@ -357,6 +366,7 @@ func (s *TaskService) RefreshRoomSnapshot(ctx context.Context, roomID pgtype.UUI
 	room, roomErr := s.Queries.GetRoom(ctx, roomID)
 	var snap []byte
 	if roomErr == nil {
+		s.repairRoomTopicsIfEmpty(ctx, room)
 		snap = s.buildRoomSnapshotJSON(ctx, room, counts)
 	} else {
 		snap = jsonMarshalRoomSnapshot(counts)

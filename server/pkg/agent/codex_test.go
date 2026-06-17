@@ -15,6 +15,12 @@ import (
 	"time"
 )
 
+// codexExecuteTestBudget is the overall Execute timeout for fake-codex
+// integration tests. It must cover initialize + turn work when many tests
+// run in parallel under go test ./...; semantic/first-turn assertions use
+// tighter SemanticInactivityTimeout values.
+const codexExecuteTestBudget = 15 * time.Second
+
 func newTestCodexClient(t *testing.T) (*codexClient, *fakeStdin, []Message) {
 	t.Helper()
 	fs := &fakeStdin{}
@@ -1100,9 +1106,9 @@ func TestCodexExecuteSurfacesStderrWhenChildExitsEarly(t *testing.T) {
 		t.Fatalf("new codex backend: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: 5 * time.Second})
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: codexExecuteTestBudget})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -1126,7 +1132,7 @@ func TestCodexExecuteSurfacesStderrWhenChildExitsEarly(t *testing.T) {
 		if !strings.Contains(result.Error, "unexpected argument '-m' found") {
 			t.Fatalf("expected error to include stderr hint, got %q", result.Error)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(20 * time.Second):
 		t.Fatal("timeout waiting for result")
 	}
 }
@@ -1151,7 +1157,7 @@ func TestCodexExecuteTimesOutWhenTurnStopsAfterToolResult(t *testing.T) {
 		`sleep 5`+"\n")
 
 	result := executeFakeCodex(t, fakePath, ExecOptions{
-		Timeout:                   5 * time.Second,
+		Timeout:                   codexExecuteTestBudget,
 		SemanticInactivityTimeout: 100 * time.Millisecond,
 	})
 	if result.Status != "timeout" {
@@ -1184,7 +1190,7 @@ func TestCodexExecuteFirstTurnNoProgressSurfacesDiagnostics(t *testing.T) {
 		`sleep 5`+"\n")
 
 	result := executeFakeCodex(t, fakePath, ExecOptions{
-		Timeout:                   5 * time.Second,
+		Timeout:                   codexExecuteTestBudget,
 		SemanticInactivityTimeout: 100 * time.Millisecond,
 	})
 	if result.Status != "timeout" {
@@ -1225,7 +1231,7 @@ func TestCodexExecuteFirstTurnRetryErrorDoesNotSatisfyProgress(t *testing.T) {
 		`sleep 5`+"\n")
 
 	result := executeFakeCodex(t, fakePath, ExecOptions{
-		Timeout:                   5 * time.Second,
+		Timeout:                   codexExecuteTestBudget,
 		SemanticInactivityTimeout: 200 * time.Millisecond,
 	})
 	if result.Status != "timeout" {
@@ -1260,7 +1266,7 @@ func TestCodexExecuteLegacyFirstTurnMessageSatisfiesProgress(t *testing.T) {
 		`echo '{"jsonrpc":"2.0","method":"codex/event","params":{"msg":{"type":"task_complete"}}}'`+"\n")
 
 	result := executeFakeCodex(t, fakePath, ExecOptions{
-		Timeout:                   5 * time.Second,
+		Timeout:                   codexExecuteTestBudget,
 		SemanticInactivityTimeout: 100 * time.Millisecond,
 	})
 	if result.Status != "completed" {
@@ -1294,7 +1300,7 @@ func TestCodexExecuteSemanticInactivityAllowsContinuousMessages(t *testing.T) {
 		`echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-progress","turn":{"id":"turn-progress","status":"completed"}}}'`+"\n")
 
 	result := executeFakeCodex(t, fakePath, ExecOptions{
-		Timeout:                   5 * time.Second,
+		Timeout:                   codexExecuteTestBudget,
 		SemanticInactivityTimeout: 90 * time.Millisecond,
 	})
 	if result.Status != "completed" {
@@ -1331,7 +1337,7 @@ func TestCodexExecuteSemanticInactivityAllowsContinuousDeltaProgress(t *testing.
 		`echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-delta","turn":{"id":"turn-delta","status":"completed"}}}'`+"\n")
 
 	result := executeFakeCodex(t, fakePath, ExecOptions{
-		Timeout:                   5 * time.Second,
+		Timeout:                   codexExecuteTestBudget,
 		SemanticInactivityTimeout: 150 * time.Millisecond,
 	})
 	if result.Status != "completed" {
@@ -1358,7 +1364,7 @@ func TestCodexExecuteSemanticInactivityDoesNotAffectNormalTurnCompletion(t *test
 		`echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-normal","turn":{"id":"turn-normal","status":"completed"}}}'`+"\n")
 
 	result := executeFakeCodex(t, fakePath, ExecOptions{
-		Timeout:                   5 * time.Second,
+		Timeout:                   codexExecuteTestBudget,
 		SemanticInactivityTimeout: 100 * time.Millisecond,
 	})
 	if result.Status != "completed" {
@@ -1385,7 +1391,7 @@ func executeFakeCodex(t *testing.T, fakePath string, opts ExecOptions) Result {
 	if err != nil {
 		t.Fatalf("new codex backend: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	session, err := backend.Execute(ctx, "prompt", opts)
 	if err != nil {
@@ -1401,7 +1407,7 @@ func executeFakeCodex(t *testing.T, fakePath string, opts ExecOptions) Result {
 			t.Fatal("result channel closed without a value")
 		}
 		return result
-	case <-time.After(10 * time.Second):
+	case <-time.After(20 * time.Second):
 		t.Fatal("timeout waiting for result")
 		return Result{}
 	}

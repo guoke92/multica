@@ -90,8 +90,12 @@ test("onboarding v2 — rage-skip all 3 questions", async ({ page }) => {
 });
 
 test("onboarding v2 — zh-Hans renders Chinese labels", async ({ page, context }) => {
+  const appOrigin =
+    process.env.PLAYWRIGHT_BASE_URL ??
+    process.env.FRONTEND_ORIGIN ??
+    "http://localhost:3000";
   await context.addCookies([
-    { name: "multica-locale", value: "zh-Hans", url: "http://localhost:13442" },
+    { name: "multica-locale", value: "zh-Hans", url: appOrigin },
   ]);
   const api = new TestApiClient();
   await api.login(`zh-${Date.now()}@localhost`, "中文用户");

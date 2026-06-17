@@ -730,6 +730,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/invocations", h.ListRoomInvocations)
 					r.Get("/workboard", h.GetRoomWorkboard)
 					r.Get("/topics", h.ListRoomTopics)
+					r.Get("/flow-events", h.ListRoomFlowEvents)
 					r.Get("/topics/{topicId}/flow-events", h.ListRoomFlowEvents)
 					r.Post("/human-actions/{actionId}/decide", h.DecideRoomHumanAction)
 					r.Post("/invocations/{invocationId}/cancel", h.CancelRoomInvocation)

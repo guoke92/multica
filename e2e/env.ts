@@ -11,3 +11,7 @@ for (const filename of envCandidates) {
     break;
   }
 }
+
+const frontendPort = process.env.FRONTEND_PORT ?? "3000";
+process.env.FRONTEND_ORIGIN ??= `http://localhost:${frontendPort}`;
+process.env.PLAYWRIGHT_BASE_URL ??= process.env.FRONTEND_ORIGIN;

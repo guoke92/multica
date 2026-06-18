@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useDefaultLayout } from "react-resizable-panels";
 import {
   roomDetailOptions,
   roomGraphOptions,
@@ -15,6 +16,7 @@ import {
   useRegenerateRoomAgentMessage,
   useRetryRoomAssignment,
   useCancelRoomAssignment,
+  useAckRoomAssignmentFailure,
 } from "@multica/core/room/mutations";
 import { useWorkspaceId } from "@multica/core/hooks";
 import {
@@ -23,8 +25,11 @@ import {
 } from "@multica/core/workspace/queries";
 import { useAuthStore } from "@multica/core/auth";
 import type { RoomMessage } from "@multica/core/types/room";
-import { Button } from "@multica/ui/components/ui/button";
-import { Settings } from "lucide-react";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@multica/ui/components/ui/resizable";
 import { toast } from "sonner";
 import { RoomMessageList } from "./room-message-list";
 import { RoomMembersPanel } from "./room-members-panel";
@@ -50,6 +55,8 @@ export function RoomView({ roomId, onArchived }: Props) {
   const [editingMessage, setEditingMessage] = useState<RoomMessage | null>(null);
   const [quoteReply, setQuoteReply] = useState<QuoteReplyTarget | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [flowFailuresOnly, setFlowFailuresOnly] = useState(false);
+  const [scrollToMessageId, setScrollToMessageId] = useState<string | null>(null);
   const { data: room } = useQuery(roomDetailOptions(wsId, roomId));
   const { data: graph } = useQuery(roomGraphOptions(wsId, roomId));
   const {
@@ -80,6 +87,7 @@ export function RoomView({ roomId, onArchived }: Props) {
   const regenerateAgent = useRegenerateRoomAgentMessage(wsId, roomId);
   const retryAssignment = useRetryRoomAssignment(wsId, roomId);
   const cancelAssignment = useCancelRoomAssignment(wsId, roomId);
+  const ackAssignmentFailure = useAckRoomAssignmentFailure(wsId, roomId);
   const selfMember = useMemo(
     () =>
       members.find(
@@ -238,30 +246,45 @@ export function RoomView({ roomId, onArchived }: Props) {
     });
   };
 
+  const handleFlowNavigateToMessage = (messageId: string, _assignmentId?: string) => {
+    if (!messageId) return;
+    setScrollToMessageId(messageId);
+  };
+
+  const handleAckAssignmentFailure = (assignmentId: string) => {
+    ackAssignmentFailure.mutate(assignmentId, {
+      onError: (err) => {
+        toast.error(
+          err instanceof Error && err.message ? err.message : "确认失败",
+        );
+      },
+    });
+  };
+
   const isSending = sendMessage.isPending || updateMessage.isPending;
 
+  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
+    id: "multica_room_view_layout",
+  });
+
   return (
-    <div className="flex h-full min-h-0">
-      <div className="flex min-w-0 flex-1 flex-col">
+    <>
+    <ResizablePanelGroup
+      orientation="horizontal"
+      className="flex h-full min-h-0"
+      defaultLayout={defaultLayout}
+      onLayoutChanged={onLayoutChanged}
+    >
+      <ResizablePanel id="chat" minSize="45%">
+      <div className="flex h-full min-w-0 flex-col">
         <header className="border-border bg-background shrink-0 border-b px-4 py-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <h1 className="text-base font-semibold">{room?.name ?? "…"}</h1>
-              {room?.description ? (
-                <p className="text-muted-foreground mt-0.5 line-clamp-2 text-xs">
-                  {room.description}
-                </p>
-              ) : null}
-            </div>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="shrink-0"
-              onClick={() => setSettingsOpen(true)}
-              title="群管理"
-            >
-              <Settings className="size-4" />
-            </Button>
+          <div className="min-w-0">
+            <h1 className="text-base font-semibold">{room?.name ?? "…"}</h1>
+            {room?.description ? (
+              <p className="text-muted-foreground mt-0.5 line-clamp-2 text-xs">
+                {room.description}
+              </p>
+            ) : null}
           </div>
         </header>
         <RoomMessageList
@@ -270,6 +293,8 @@ export function RoomView({ roomId, onArchived }: Props) {
           managerAgentId={room?.manager_agent_id}
           assignments={assignments}
           invocations={invocations}
+          scrollToMessageId={scrollToMessageId}
+          onScrollToMessageDone={() => setScrollToMessageId(null)}
           onRetryAssignment={handleRetryAssignment}
           onCancelAssignment={handleCancelAssignment}
           retryingAssignmentId={
@@ -311,6 +336,15 @@ export function RoomView({ roomId, onArchived }: Props) {
           }}
         />
       </div>
+      </ResizablePanel>
+      <ResizableHandle />
+      <ResizablePanel
+        id="sidebar"
+        defaultSize={224}
+        minSize={180}
+        maxSize={420}
+        groupResizeBehavior="preserve-pixel-size"
+      >
       <RoomMembersPanel
         roomId={roomId}
         wsId={wsId}
@@ -322,6 +356,16 @@ export function RoomView({ roomId, onArchived }: Props) {
         assignmentDependencies={assignmentDependencies}
         invocations={invocations}
         invocationEvents={invocationEvents}
+        messages={messages}
+        flowFailuresOnly={flowFailuresOnly}
+        onFlowFailuresOnlyChange={setFlowFailuresOnly}
+        onFlowNavigateToMessage={handleFlowNavigateToMessage}
+        onAckAssignmentFailure={handleAckAssignmentFailure}
+        acknowledgingAssignmentId={
+          ackAssignmentFailure.isPending
+            ? (ackAssignmentFailure.variables ?? null)
+            : null
+        }
         onRetryAssignment={handleRetryAssignment}
         onCancelAssignment={handleCancelAssignment}
         retryingAssignmentId={
@@ -331,7 +375,10 @@ export function RoomView({ roomId, onArchived }: Props) {
           cancelAssignment.isPending ? (cancelAssignment.variables ?? null) : null
         }
         onLeft={onArchived}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
+      </ResizablePanel>
+    </ResizablePanelGroup>
 
       {room ? (
         <RoomSettingsSheet
@@ -345,6 +392,6 @@ export function RoomView({ roomId, onArchived }: Props) {
           onLeft={onArchived}
         />
       ) : null}
-    </div>
+    </>
   );
 }

@@ -199,6 +199,7 @@ func (s *TaskService) ApplyManagerDecision(
 			return err
 		}
 		createdAssignmentIDs = append(createdAssignmentIDs, a.ID)
+		s.recoverySupersedeForNewAssignment(ctx, room, a, parseEscalationFailedAssignmentID(assignment.Reason))
 		s.DrainQueuedRoomInvocations(ctx, newInv.AgentID)
 	case "complete", "wait", "skip":
 		// Terminal — no further auto_review until next message.
@@ -233,6 +234,7 @@ func (s *TaskService) ApplyManagerDecision(
 			return err
 		}
 		createdAssignmentIDs = append(createdAssignmentIDs, a.ID)
+		s.recoverySupersedeForNewAssignment(ctx, room, a, parseEscalationFailedAssignmentID(assignment.Reason))
 		s.DrainQueuedRoomInvocations(ctx, newInv.AgentID)
 	case "ask_user":
 		// No-op: manager already posted output if needed.

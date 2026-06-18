@@ -6,7 +6,7 @@ import type { InvocationChatItem } from "./room-flow-utils";
 import { UnicodeSpinner } from "@multica/ui/components/common/unicode-spinner";
 import { Button } from "@multica/ui/components/ui/button";
 import { cn } from "@multica/ui/lib/utils";
-import { ActorAvatar } from "../common/actor-avatar";
+import { RoomParticipantAvatar } from "./room-participant-avatar";
 import { RoomLiveStream } from "./room-live-stream";
 import { RefreshCw, Square } from "lucide-react";
 
@@ -89,7 +89,7 @@ function AgentInvocationBubble({
       aria-busy={phase !== "failed"}
     >
       <div className="flex flex-wrap items-center gap-2">
-        <ActorAvatar actorType="agent" actorId={agentId} size={24} showStatusDot />
+        <RoomParticipantAvatar actorType="agent" actorId={agentId} size={24} showStatusDot />
         <span className="text-muted-foreground text-xs font-medium">{agentName}</span>
         <PhaseBadge phase={phase} elapsed={elapsed} />
         <InvocationActionButtons

@@ -264,7 +264,8 @@ type createAssignmentParams struct {
 	AuthorType     string
 	AuthorID       string
 	WorkspaceID    string
-	Blocked        bool
+	Blocked                  bool
+	RecoveryFailedAssignmentID pgtype.UUID
 }
 
 func parseOptionalActorID(id string) pgtype.UUID {
@@ -308,6 +309,7 @@ func (s *TaskService) createAssignmentWithInvocation(
 	})
 
 	if status == "blocked" {
+		s.recoverySupersedeForNewAssignment(ctx, p.Room, assignment, p.RecoveryFailedAssignmentID)
 		return assignment, db.RoomInvocation{}, nil
 	}
 
@@ -315,6 +317,7 @@ func (s *TaskService) createAssignmentWithInvocation(
 	if err != nil {
 		return assignment, db.RoomInvocation{}, err
 	}
+	s.recoverySupersedeForNewAssignment(ctx, p.Room, assignment, p.RecoveryFailedAssignmentID)
 	return assignment, inv, nil
 }
 

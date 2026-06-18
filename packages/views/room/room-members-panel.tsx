@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useDefaultLayout } from "react-resizable-panels";
 import { roomMembersOptions } from "@multica/core/room/queries";
 import {
   useRemoveRoomMember,
@@ -29,6 +30,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@multica/ui/components/ui/resizable";
 import { MoreHorizontal, Plus, Users } from "lucide-react";
 import type {
   RoomAssignment,
@@ -36,10 +42,12 @@ import type {
   RoomInvocation,
   RoomInvocationEvent,
   RoomMember,
+  RoomMessage,
 } from "@multica/core/types/room";
 import { toast } from "sonner";
 import { RoomAddMemberDialog } from "./room-add-member-dialog";
 import { RoomWorkboardPanel } from "./room-workboard-panel";
+import { RoomParticipantAvatarTile } from "./room-participant-avatar";
 import { deriveAgentRunState } from "./room-flow-utils";
 
 type Props = {
@@ -57,6 +65,13 @@ type Props = {
   onCancelAssignment?: (assignmentId: string) => void;
   retryingAssignmentId?: string | null;
   cancellingAssignmentId?: string | null;
+  messages?: RoomMessage[];
+  flowFailuresOnly?: boolean;
+  onFlowFailuresOnlyChange?: (value: boolean) => void;
+  onFlowNavigateToMessage?: (messageId: string, assignmentId: string) => void;
+  onAckAssignmentFailure?: (assignmentId: string) => void;
+  acknowledgingAssignmentId?: string | null;
+  onOpenSettings?: () => void;
   onLeft?: () => void;
 };
 
@@ -86,10 +101,17 @@ export function RoomMembersPanel({
   assignmentDependencies = [],
   invocations = [],
   invocationEvents = [],
-  onRetryAssignment,
-  onCancelAssignment,
-  retryingAssignmentId,
-  cancellingAssignmentId,
+  onRetryAssignment: _onRetryAssignment,
+  onCancelAssignment: _onCancelAssignment,
+  retryingAssignmentId: _retryingAssignmentId,
+  cancellingAssignmentId: _cancellingAssignmentId,
+  messages = [],
+  flowFailuresOnly = false,
+  onFlowFailuresOnlyChange,
+  onFlowNavigateToMessage,
+  onAckAssignmentFailure,
+  acknowledgingAssignmentId,
+  onOpenSettings,
   onLeft,
 }: Props) {
   const { data: members = [] } = useQuery(roomMembersOptions(wsId, roomId));
@@ -122,6 +144,10 @@ export function RoomMembersPanel({
   const users = members.filter((m) => m.principal_type === "user");
   const roomAgents = members.filter((m) => m.principal_type === "agent");
   const squads = members.filter((m) => m.principal_type === "squad");
+
+  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
+    id: "multica_room_sidebar_layout",
+  });
 
   const resolveName = (m: RoomMember) => {
     if (m.principal_type === "user") {
@@ -260,96 +286,129 @@ export function RoomMembersPanel({
 
   return (
     <>
-      <aside className="border-border flex w-56 shrink-0 flex-col border-l bg-muted/20">
-        <div className="border-border flex items-center gap-2 border-b px-3 py-2.5">
-          <Users className="text-muted-foreground size-4" />
-          <span className="text-sm font-medium">群成员</span>
-          <span className="text-muted-foreground ml-auto text-xs">{members.length}</span>
-          {canManage ? (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-7"
-              onClick={() => setAddOpen(true)}
-              title="添加成员"
-            >
-              <Plus className="size-4" />
-            </Button>
-          ) : null}
-        </div>
-        <div className="flex-1 overflow-y-auto p-2 text-sm">
-          {users.length > 0 ? (
-            <MemberSection title="成员">
-              {users.map((m) => (
-                <MemberRow
-                  key={`user-${m.principal_id}`}
-                  name={resolveName(m)}
-                  sub={roleLabel(m.role)}
-                  isSelf={m.principal_id === currentUserId}
-                  action={renderMemberMenu(m)}
-                />
-              ))}
-            </MemberSection>
-          ) : null}
-          {roomAgents.length > 0 ? (
-            <MemberSection title="Agent">
-              {roomAgents.map((m) => {
-                const isManager =
-                  managerAgentId && m.principal_id === managerAgentId;
-                const status = statusByAgent.get(m.principal_id);
-                const presence = presenceMap.get(m.principal_id);
-                const availability = presence?.availability;
-                return (
-                  <MemberRow
-                    key={`agent-${m.principal_id}`}
-                    name={resolveName(m)}
-                    sub={
-                      status
-                        ? undefined
-                        : isManager
-                          ? "群管理"
-                          : "智能体"
-                    }
-                    status={status}
-                    availability={availability}
-                    accent
-                    action={
-                      canManage && !isManager ? renderMemberMenu(m) : null
-                    }
-                  />
-                );
-              })}
-            </MemberSection>
-          ) : null}
-          {squads.length > 0 ? (
-            <MemberSection title="小队">
-              {squads.map((m) => (
-                <MemberRow
-                  key={`squad-${m.principal_id}`}
-                  name={resolveName(m)}
-                  sub="小队"
-                  action={canManage ? renderMemberMenu(m) : null}
-                />
-              ))}
-            </MemberSection>
-          ) : null}
-          {members.length === 0 ? (
-            <p className="text-muted-foreground px-2 py-4 text-xs">暂无成员</p>
-          ) : null}
-        </div>
-        <RoomWorkboardPanel
-          assignments={assignments}
-          assignmentDependencies={assignmentDependencies}
-          invocations={invocations}
-          invocationEvents={invocationEvents}
-          managerAgentId={managerAgentId}
-          agentNameById={agentNames}
-          memberNameById={userNames}
-          onRetryAssignment={onRetryAssignment}
-          onCancelAssignment={onCancelAssignment}
-          retryingAssignmentId={retryingAssignmentId}
-          cancellingAssignmentId={cancellingAssignmentId}
-        />
+      <aside className="border-border flex h-full min-h-0 w-full flex-col border-l bg-muted/20">
+        <ResizablePanelGroup
+          orientation="vertical"
+          className="min-h-0 flex-1"
+          defaultLayout={defaultLayout}
+          onLayoutChanged={onLayoutChanged}
+        >
+          <ResizablePanel id="members" minSize="25%">
+            <div className="flex h-full min-h-0 flex-col">
+              <div className="border-border flex shrink-0 items-center gap-2 border-b px-3 py-2.5">
+                <Users className="text-muted-foreground size-4" />
+                <span className="text-sm font-medium">群成员</span>
+                <span className="text-muted-foreground ml-auto text-xs">{members.length}</span>
+                {canManage ? (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-7"
+                    onClick={() => setAddOpen(true)}
+                    title="添加成员"
+                  >
+                    <Plus className="size-4" />
+                  </Button>
+                ) : null}
+                {onOpenSettings ? (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-7"
+                    onClick={onOpenSettings}
+                    title="群管理"
+                  >
+                    <MoreHorizontal className="size-4" />
+                  </Button>
+                ) : null}
+              </div>
+              <div className="flex-1 overflow-y-auto p-2 text-sm">
+                {users.length > 0 ? (
+                  <MemberSection title="成员">
+                    {users.map((m) => (
+                      <MemberRow
+                        key={`user-${m.principal_id}`}
+                        name={resolveName(m)}
+                        sub={roleLabel(m.role)}
+                        isSelf={m.principal_id === currentUserId}
+                        action={renderMemberMenu(m)}
+                      />
+                    ))}
+                  </MemberSection>
+                ) : null}
+                {roomAgents.length > 0 ? (
+                  <MemberSection title="Agent">
+                    {roomAgents.map((m) => {
+                      const isManager =
+                        managerAgentId && m.principal_id === managerAgentId;
+                      const status = statusByAgent.get(m.principal_id);
+                      const presence = presenceMap.get(m.principal_id);
+                      const availability = presence?.availability;
+                      return (
+                        <MemberRow
+                          key={`agent-${m.principal_id}`}
+                          name={resolveName(m)}
+                          sub={
+                            status
+                              ? undefined
+                              : isManager
+                                ? "群管理"
+                                : "智能体"
+                          }
+                          status={status}
+                          availability={availability}
+                          accent
+                          action={
+                            canManage && !isManager ? renderMemberMenu(m) : null
+                          }
+                        />
+                      );
+                    })}
+                  </MemberSection>
+                ) : null}
+                {squads.length > 0 ? (
+                  <MemberSection title="小队">
+                    {squads.map((m) => (
+                      <MemberRow
+                        key={`squad-${m.principal_id}`}
+                        name={resolveName(m)}
+                        sub="小队"
+                        action={canManage ? renderMemberMenu(m) : null}
+                      />
+                    ))}
+                  </MemberSection>
+                ) : null}
+                {members.length === 0 ? (
+                  <p className="text-muted-foreground px-2 py-4 text-xs">暂无成员</p>
+                ) : null}
+              </div>
+            </div>
+          </ResizablePanel>
+          <ResizableHandle />
+          <ResizablePanel
+            id="workboard"
+            defaultSize={200}
+            minSize={120}
+            maxSize={480}
+            groupResizeBehavior="preserve-pixel-size"
+          >
+            <RoomWorkboardPanel
+              assignments={assignments}
+              assignmentDependencies={assignmentDependencies}
+              invocations={invocations}
+              invocationEvents={invocationEvents}
+              messages={messages}
+              managerAgentId={managerAgentId}
+              agentNameById={agentNames}
+              memberNameById={userNames}
+              failuresOnly={flowFailuresOnly}
+              onFailuresOnlyChange={onFlowFailuresOnlyChange}
+              onNavigateToMessage={onFlowNavigateToMessage}
+              onAckFailure={onAckAssignmentFailure}
+              acknowledgingAssignmentId={acknowledgingAssignmentId}
+            />
+          </ResizablePanel>
+        </ResizablePanelGroup>
       </aside>
 
       <RoomAddMemberDialog
@@ -448,13 +507,8 @@ function MemberRow({
 
   return (
     <li className="hover:bg-muted/60 group flex items-center gap-2 rounded-md px-2 py-1.5">
-      <div
-        className={cn(
-          "relative flex size-7 shrink-0 items-center justify-center rounded-md text-xs font-medium",
-          accent ? "bg-primary/15 text-primary" : "bg-muted",
-        )}
-      >
-        {name.slice(0, 1).toUpperCase()}
+      <span className="relative inline-flex shrink-0">
+        <RoomParticipantAvatarTile name={name} isAgent={accent} size={28} />
         {status?.tone === "running" ? (
           <span className="absolute -bottom-0.5 -right-0.5 size-2 rounded-full bg-green-500 ring-1 ring-background animate-pulse" />
         ) : avDot ? (
@@ -465,7 +519,7 @@ function MemberRow({
             )}
           />
         ) : null}
-      </div>
+      </span>
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm">
           {name}

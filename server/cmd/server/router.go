@@ -737,6 +737,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/invocations/{invocationId}/cancel", h.CancelRoomInvocation)
 					r.Post("/assignments", h.CreateRoomAssignment)
 					r.Post("/assignments/{assignmentId}/retry", h.RetryRoomAssignment)
+					r.Post("/assignments/{assignmentId}/ack-failure", h.AckRoomAssignmentFailure)
 					r.Post("/assignments/{assignmentId}/cancel", h.CancelRoomAssignment)
 					r.Get("/deliveries", h.ListRoomDeliveries)
 					r.Get("/deliveries/{deliveryId}/topics", h.ListRoomDeliveryTopics)

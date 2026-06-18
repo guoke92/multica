@@ -199,6 +199,7 @@ import {
   RoomTopicsResponseSchema,
   RoomWorkboardSchema,
   RoomInvocationSchema,
+  RoomAssignmentSchema,
 } from "./schemas";
 
 /** Identifies the calling client to the server.
@@ -1800,6 +1801,22 @@ export class ApiClient {
     await this.fetch(
       `/api/rooms/${roomId}/assignments/${assignmentId}/cancel`,
       { method: "POST" },
+    );
+  }
+
+  async ackRoomAssignmentFailure(
+    roomId: string,
+    assignmentId: string,
+  ): Promise<import("../types/room").RoomAssignment> {
+    const raw = await this.fetch(
+      `/api/rooms/${roomId}/assignments/${assignmentId}/ack-failure`,
+      { method: "POST" },
+    );
+    return parseWithFallback(
+      raw,
+      RoomAssignmentSchema,
+      { id: "", room_id: "", source_message_id: "", assignee_type: "agent", assignee_id: "", kind: "", status: "failed" },
+      { endpoint: "POST /api/rooms/:id/assignments/:id/ack-failure" },
     );
   }
 

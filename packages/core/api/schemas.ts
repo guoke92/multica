@@ -1007,7 +1007,7 @@ const RoomMessageMentionSchema = z.object({
   created_at: z.string().optional(),
 }).loose();
 
-const RoomAssignmentSchema = z.object({
+export const RoomAssignmentSchema = z.object({
   id: z.string(),
   room_id: z.string().default(""),
   source_message_id: z.string().default(""),
@@ -1021,6 +1021,9 @@ const RoomAssignmentSchema = z.object({
   created_by_id: z.string().optional(),
   created_at: z.string().optional(),
   updated_at: z.string().optional(),
+  failure_acknowledged_at: z.string().optional(),
+  failure_acknowledged_by: z.string().optional(),
+  superseded_by_assignment_id: z.string().optional(),
 }).loose();
 
 const RoomAssignmentDependencySchema = z.object({

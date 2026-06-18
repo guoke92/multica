@@ -190,6 +190,9 @@ export type RoomAssignment = {
   created_by_id?: string;
   created_at?: string;
   updated_at?: string;
+  failure_acknowledged_at?: string;
+  failure_acknowledged_by?: string;
+  superseded_by_assignment_id?: string;
 };
 
 export type RoomAssignmentDependency = {

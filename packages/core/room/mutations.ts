@@ -142,6 +142,19 @@ export function useCancelRoomAssignment(wsId: string, roomId: string) {
   });
 }
 
+export function useAckRoomAssignmentFailure(wsId: string, roomId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (assignmentId: string) =>
+      api.ackRoomAssignmentFailure(roomId, assignmentId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: roomKeys.graph(wsId, roomId) });
+      void qc.invalidateQueries({ queryKey: roomKeys.detail(wsId, roomId) });
+      void qc.invalidateQueries({ queryKey: roomKeys.list(wsId) });
+    },
+  });
+}
+
 export function useUpdateRoom(wsId: string, roomId: string) {
   const qc = useQueryClient();
   return useMutation({

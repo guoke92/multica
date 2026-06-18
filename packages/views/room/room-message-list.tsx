@@ -6,13 +6,14 @@ import { toast } from "sonner";
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import { useAutoScroll } from "@multica/ui/hooks/use-auto-scroll";
 import { Button } from "@multica/ui/components/ui/button";
+import { cn } from "@multica/ui/lib/utils";
 import {
   Tooltip,
   TooltipTrigger,
   TooltipContent,
 } from "@multica/ui/components/ui/tooltip";
-import { ActorAvatar } from "../common/actor-avatar";
 import { isTaskMessageTaskId, taskMessagesOptions } from "@multica/core/chat/queries";
+import { RoomParticipantAvatar } from "./room-participant-avatar";
 import { buildTimeline } from "../common/task-transcript";
 import { splitTimeline } from "../chat/lib/copy-text";
 import { copyMarkdown } from "../editor";
@@ -72,6 +73,8 @@ type Props = {
   onLoadOlderMessages?: () => void;
   agentNameById: Map<string, string>;
   memberNameById: Map<string, string>;
+  scrollToMessageId?: string | null;
+  onScrollToMessageDone?: () => void;
 };
 
 export function RoomMessageList({
@@ -93,6 +96,8 @@ export function RoomMessageList({
   onLoadOlderMessages,
   agentNameById,
   memberNameById,
+  scrollToMessageId,
+  onScrollToMessageDone,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const fadeStyle = useScrollFade(scrollRef);
@@ -163,6 +168,22 @@ export function RoomMessageList({
   useEffect(() => {
     scrollToBottom();
   }, [chatTailKey, scrollToBottom]);
+
+  useEffect(() => {
+    if (!scrollToMessageId) return;
+    const frame = requestAnimationFrame(() => {
+      const root = scrollRef.current;
+      if (!root) return;
+      const target = root.querySelector(
+        `[data-room-message-id="${scrollToMessageId}"]`,
+      );
+      if (target instanceof HTMLElement) {
+        target.scrollIntoView({ block: "center", behavior: "smooth" });
+      }
+      onScrollToMessageDone?.();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [scrollToMessageId, onScrollToMessageDone]);
 
   return (
     <div
@@ -261,14 +282,22 @@ function resolveSenderName(
 function QuoteBlock({
   senderName,
   preview,
+  align = "start",
 }: {
   senderName: string;
   preview: string;
+  align?: "start" | "end";
 }) {
   return (
-    <div className="border-border/80 bg-background/60 mb-2 rounded-md border-l-2 border-l-primary/40 px-2.5 py-1.5 text-xs">
-      <p className="text-muted-foreground font-medium">{senderName}</p>
-      <p className="text-foreground/80 mt-0.5 line-clamp-3">{preview}</p>
+    <div
+      className={cn(
+        "border-border/80 text-muted-foreground max-w-[80%] border-l-2 pl-2 text-[11px] leading-snug",
+        align === "end" ? "ml-auto text-right" : "",
+      )}
+    >
+      <p className="line-clamp-2">
+        回复 {senderName}：{preview}
+      </p>
     </div>
   );
 }
@@ -360,7 +389,7 @@ function RoomMessageRow({
 
   if (m.message_kind === "card") {
     return (
-      <div className="mx-auto max-w-[90%]">
+      <div className="mx-auto max-w-[90%]" data-room-message-id={m.id}>
         <RoomDeliveryCard message={m} />
       </div>
     );
@@ -370,7 +399,7 @@ function RoomMessageRow({
     const dispatchStyle =
       m.message_kind === "system_dispatch" || m.message_kind === "system_milestone";
     return (
-      <div className="space-y-2">
+      <div className="space-y-2" data-room-message-id={m.id}>
         <p className="text-muted-foreground text-center text-xs">
           {dispatchStyle ? "编排" : displayName}
         </p>
@@ -401,19 +430,20 @@ function RoomMessageRow({
 
   if (isSelf) {
     return (
-      <div className="group space-y-1">
-        <div className="flex items-start justify-end gap-1">
+      <div className="group space-y-1" data-room-message-id={m.id}>
+        <div className="flex flex-col items-end gap-1.5">
+          {quotedMessage && quotedSenderName ? (
+            <QuoteBlock
+              align="end"
+              senderName={quotedSenderName}
+              preview={truncatePreview(
+                quotedMessage.sender_type === "agent"
+                  ? extractRoomAgentCopyText(quotedMessage)
+                  : quotedMessage.content,
+              )}
+            />
+          ) : null}
           <div className="rounded-2xl bg-muted px-3.5 py-2 text-sm max-w-[80%] break-words">
-            {quotedMessage && quotedSenderName ? (
-              <QuoteBlock
-                senderName={quotedSenderName}
-                preview={truncatePreview(
-                  quotedMessage.sender_type === "agent"
-                    ? extractRoomAgentCopyText(quotedMessage)
-                    : quotedMessage.content,
-                )}
-              />
-            ) : null}
             <div className="prose prose-sm dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
               <Markdown>{m.content}</Markdown>
             </div>
@@ -438,9 +468,9 @@ function RoomMessageRow({
   }
 
   return (
-    <div className="group w-full space-y-1.5">
+    <div className="group w-full space-y-1.5" data-room-message-id={m.id}>
       <div className="flex items-center gap-2">
-        <ActorAvatar
+        <RoomParticipantAvatar
           actorType={isAgent ? "agent" : "member"}
           actorId={m.sender_id ?? ""}
           size={24}
@@ -448,6 +478,16 @@ function RoomMessageRow({
         />
         <span className="text-muted-foreground text-xs font-medium">{displayName}</span>
       </div>
+      {quotedMessage && quotedSenderName ? (
+        <QuoteBlock
+          senderName={quotedSenderName}
+          preview={truncatePreview(
+            quotedMessage.sender_type === "agent"
+              ? extractRoomAgentCopyText(quotedMessage)
+              : quotedMessage.content,
+          )}
+        />
+      ) : null}
       <div
         className={
           isAgent
@@ -455,16 +495,6 @@ function RoomMessageRow({
             : undefined
         }
       >
-        {quotedMessage && quotedSenderName ? (
-          <QuoteBlock
-            senderName={quotedSenderName}
-            preview={truncatePreview(
-              quotedMessage.sender_type === "agent"
-                ? extractRoomAgentCopyText(quotedMessage)
-                : quotedMessage.content,
-            )}
-          />
-        ) : null}
         {isAgent ? (
           <AgentMessageBody message={m} />
         ) : (

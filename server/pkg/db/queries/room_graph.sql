@@ -72,14 +72,60 @@ ORDER BY id ASC;
 
 -- name: CountRoomAssignmentStatusByRoom :one
 SELECT
-    COUNT(*) FILTER (WHERE status = 'pending')::int AS pending_count,
-    COUNT(*) FILTER (WHERE status = 'blocked')::int AS blocked_count,
-    COUNT(*) FILTER (WHERE status = 'running')::int AS running_count,
-    COUNT(*) FILTER (WHERE status = 'failed')::int AS failed_count,
-    COUNT(*) FILTER (WHERE status = 'completed')::int AS completed_count
-FROM room_assignment
-WHERE room_id = $1
-  AND status NOT IN ('cancelled', 'skipped');
+    COUNT(*) FILTER (WHERE ra.status = 'pending')::int AS pending_count,
+    COUNT(*) FILTER (WHERE ra.status = 'blocked')::int AS blocked_count,
+    COUNT(*) FILTER (WHERE ra.status = 'running')::int AS running_count,
+    COUNT(*) FILTER (
+        WHERE ra.status = 'failed'
+          AND ra.failure_acknowledged_at IS NULL
+          AND ra.superseded_by_assignment_id IS NULL
+          AND ra.id = (
+              SELECT MAX(sub.id)
+              FROM room_assignment sub
+              WHERE sub.room_id = ra.room_id
+                AND sub.assignee_id = ra.assignee_id
+                AND sub.source_message_id = ra.source_message_id
+          )
+    )::int AS failed_count,
+    COUNT(*) FILTER (WHERE ra.status = 'completed')::int AS completed_count
+FROM room_assignment ra
+WHERE ra.room_id = $1
+  AND ra.status NOT IN ('cancelled', 'skipped');
+
+-- name: AcknowledgeRoomAssignmentFailure :one
+UPDATE room_assignment
+SET failure_acknowledged_at = now(),
+    failure_acknowledged_by = sqlc.narg('failure_acknowledged_by'),
+    updated_at = now()
+WHERE id = sqlc.arg('id')
+  AND room_id = sqlc.arg('room_id')
+  AND status = 'failed'
+  AND failure_acknowledged_at IS NULL
+RETURNING *;
+
+-- name: MarkRoomAssignmentSuperseded :one
+UPDATE room_assignment
+SET superseded_by_assignment_id = sqlc.arg('superseded_by_assignment_id'),
+    failure_acknowledged_at = COALESCE(failure_acknowledged_at, now()),
+    updated_at = now()
+WHERE id = sqlc.arg('id')
+  AND room_id = sqlc.arg('room_id')
+  AND status = 'failed'
+  AND superseded_by_assignment_id IS NULL
+RETURNING *;
+
+-- name: SupersedeEarlierFailedAssignmentsOnTrack :execrows
+UPDATE room_assignment AS older
+SET superseded_by_assignment_id = sqlc.arg('new_assignment_id'),
+    failure_acknowledged_at = COALESCE(older.failure_acknowledged_at, now()),
+    updated_at = now()
+WHERE older.room_id = sqlc.arg('room_id')
+  AND older.source_message_id = sqlc.arg('source_message_id')
+  AND older.assignee_id = sqlc.arg('assignee_id')
+  AND older.status = 'failed'
+  AND older.id <> sqlc.arg('new_assignment_id')
+  AND older.id < sqlc.arg('new_assignment_id')
+  AND older.superseded_by_assignment_id IS NULL;
 
 -- name: CreateRoomAssignmentDependency :one
 INSERT INTO room_assignment_dependency (assignment_id, depends_on_assignment_id)

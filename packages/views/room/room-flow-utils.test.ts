@@ -19,7 +19,9 @@ import {
   groupFlowTracks,
   listActiveInvocationSlots,
   managerStatusByMessageId,
+  needsAttentionFailure,
   projectFlowEvents,
+  resolveFlowScrollMessageId,
 } from "./room-flow-utils";
 
 function ev(
@@ -283,11 +285,11 @@ describe("groupFlowTracks", () => {
 
 describe("graph helpers", () => {
   const assignments: RoomAssignment[] = [
-    assignment({ id: "a1", kind: "mention", status: "pending" }),
-    assignment({ id: "a2", kind: "mention", status: "blocked" }),
-    assignment({ id: "a3", kind: "mention", status: "running" }),
-    assignment({ id: "a4", kind: "mention", status: "failed" }),
-    assignment({ id: "a5", kind: "mention", status: "completed" }),
+    assignment({ id: "a1", kind: "mention", status: "pending", source_message_id: "msg-1" }),
+    assignment({ id: "a2", kind: "mention", status: "blocked", source_message_id: "msg-2" }),
+    assignment({ id: "a3", kind: "mention", status: "running", source_message_id: "msg-3" }),
+    assignment({ id: "a4", kind: "mention", status: "failed", source_message_id: "msg-4" }),
+    assignment({ id: "a5", kind: "mention", status: "completed", source_message_id: "msg-5" }),
   ];
   const invocations: RoomInvocation[] = [
     {
@@ -310,12 +312,107 @@ describe("graph helpers", () => {
     });
   });
 
+  it("ignores superseded failed assignments in status counts", () => {
+    const superseded: RoomAssignment[] = [
+      assignment({
+        id: "100",
+        kind: "manager_route",
+        status: "failed",
+        assignee_id: "arch",
+        source_message_id: "msg-1",
+      }),
+      assignment({
+        id: "200",
+        kind: "manager_route",
+        status: "completed",
+        assignee_id: "arch",
+        source_message_id: "msg-1",
+      }),
+    ];
+    expect(computeGraphStatusCounts(superseded, [])).toMatchObject({
+      failed: 0,
+      completed: 1,
+    });
+  });
+
   it("derives agent run state from graph rows", () => {
     expect(deriveAgentRunState("req", assignments, invocations)).toEqual({
       label: "排队中",
       tone: "queued",
     });
     expect(deriveAgentRunState("arch", assignments, invocations)).toBeUndefined();
+  });
+
+  it("clears failed badge after retry succeeds on same assignment", () => {
+    const agentAssignments: RoomAssignment[] = [
+      assignment({
+        id: "200",
+        kind: "manager_route",
+        status: "completed",
+        assignee_id: "arch",
+      }),
+    ];
+    const agentInvocations: RoomInvocation[] = [
+      {
+        id: "100",
+        assignment_id: "200",
+        source_message_id: "msg-1",
+        agent_id: "arch",
+        status: "failed",
+      },
+      {
+        id: "300",
+        assignment_id: "200",
+        source_message_id: "msg-1",
+        agent_id: "arch",
+        status: "succeeded",
+      },
+    ];
+    expect(
+      deriveAgentRunState("arch", agentAssignments, agentInvocations),
+    ).toBeUndefined();
+  });
+
+  it("clears failed badge when a newer assignment completes", () => {
+    const agentAssignments: RoomAssignment[] = [
+      assignment({
+        id: "100",
+        kind: "manager_route",
+        status: "failed",
+        assignee_id: "arch",
+      }),
+      assignment({
+        id: "200",
+        kind: "manager_route",
+        status: "completed",
+        assignee_id: "arch",
+      }),
+    ];
+    expect(deriveAgentRunState("arch", agentAssignments, [])).toBeUndefined();
+  });
+
+  it("shows failed only when latest assignment or invocation is terminal failure", () => {
+    const agentAssignments: RoomAssignment[] = [
+      assignment({
+        id: "200",
+        kind: "mention",
+        status: "failed",
+        assignee_id: "fe",
+      }),
+    ];
+    const agentInvocations: RoomInvocation[] = [
+      {
+        id: "100",
+        assignment_id: "200",
+        source_message_id: "msg-1",
+        agent_id: "fe",
+        status: "failed",
+      },
+    ];
+    expect(deriveAgentRunState("fe", agentAssignments, agentInvocations)).toEqual({
+      label: "失败",
+      tone: "failed",
+    });
   });
 
   it("compareMonotonicId matches snowflake lexicographic order", () => {
@@ -476,11 +573,11 @@ describe("graph helpers", () => {
 
   it("collapseRedundantFlowSteps drops duplicate assignment lifecycle events", () => {
     const steps = [
-      { token: "已创建", event: ev({ id: "1", type: "assignment_created", created_at: "2026-06-18T10:00:00Z", assignment_id: "a1" }) },
-      { token: "已创建", event: ev({ id: "2", type: "invocation_created", created_at: "2026-06-18T10:00:00Z", assignment_id: "a1", invocation_id: "i1" }) },
-      { token: "思考中", event: ev({ id: "3", type: "invocation_running", created_at: "2026-06-18T10:01:00Z", assignment_id: "a1", invocation_id: "i1" }) },
-      { token: "完成", event: ev({ id: "4", type: "assignment_completed", created_at: "2026-06-18T10:02:00Z", assignment_id: "a1" }) },
-      { token: "完成", event: ev({ id: "5", type: "invocation_succeeded", created_at: "2026-06-18T10:02:00Z", assignment_id: "a1", invocation_id: "i1" }) },
+      { token: "已创建", createdAt: "2026-06-18T10:00:00Z", actorId: "req", actorName: "Agent", event: ev({ id: "1", type: "assignment_created", created_at: "2026-06-18T10:00:00Z", assignment_id: "a1" }) },
+      { token: "已创建", createdAt: "2026-06-18T10:00:00Z", actorId: "req", actorName: "Agent", event: ev({ id: "2", type: "invocation_created", created_at: "2026-06-18T10:00:00Z", assignment_id: "a1", invocation_id: "i1" }) },
+      { token: "思考中", createdAt: "2026-06-18T10:01:00Z", actorId: "req", actorName: "Agent", event: ev({ id: "3", type: "invocation_running", created_at: "2026-06-18T10:01:00Z", assignment_id: "a1", invocation_id: "i1" }) },
+      { token: "完成", createdAt: "2026-06-18T10:02:00Z", actorId: "req", actorName: "Agent", event: ev({ id: "4", type: "assignment_completed", created_at: "2026-06-18T10:02:00Z", assignment_id: "a1" }) },
+      { token: "完成", createdAt: "2026-06-18T10:02:00Z", actorId: "req", actorName: "Agent", event: ev({ id: "5", type: "invocation_succeeded", created_at: "2026-06-18T10:02:00Z", assignment_id: "a1", invocation_id: "i1" }) },
     ];
     const collapsed = collapseRedundantFlowSteps(steps);
     expect(collapsed.map((s) => s.token)).toEqual(["已创建", "思考中", "完成"]);
@@ -543,5 +640,67 @@ describe("graph helpers", () => {
       }),
     ]);
     expect(events.map((e) => e.id)).toEqual(["100", "300"]);
+  });
+});
+
+describe("needsAttentionFailure", () => {
+  it("counts only unacked unsuperseded latest failures", () => {
+    const assignments: RoomAssignment[] = [
+      assignment({ id: "a1", kind: "mention", status: "failed", assignee_id: "agent-a" }),
+      assignment({
+        id: "a2",
+        kind: "mention",
+        status: "failed",
+        assignee_id: "agent-b",
+        failure_acknowledged_at: "2026-06-18T10:00:00Z",
+      }),
+      assignment({
+        id: "a3",
+        kind: "mention",
+        status: "failed",
+        assignee_id: "agent-c",
+        superseded_by_assignment_id: "a4",
+      }),
+      assignment({ id: "300", kind: "mention", status: "failed", assignee_id: "req" }),
+      assignment({ id: "400", kind: "mention", status: "completed", assignee_id: "req" }),
+    ];
+    expect(needsAttentionFailure(assignments[0]!, assignments)).toBe(true);
+    expect(needsAttentionFailure(assignments[1]!, assignments)).toBe(false);
+    expect(needsAttentionFailure(assignments[2]!, assignments)).toBe(false);
+    expect(needsAttentionFailure(assignments[3]!, assignments)).toBe(false);
+  });
+});
+
+describe("resolveFlowScrollMessageId", () => {
+  const messages: RoomMessage[] = [
+    { id: "100", sender_type: "user", content: "a", created_at: "2026-06-18T10:00:00Z" },
+    { id: "200", sender_type: "user", content: "b", created_at: "2026-06-18T10:01:00Z" },
+    { id: "300", sender_type: "user", content: "c", created_at: "2026-06-18T10:02:00Z" },
+  ];
+
+  it("prefers the assignment source message when present", () => {
+    const track = {
+      key: "asgn:1",
+      assignmentId: "asgn-1",
+      sourceMessageId: "200",
+      kind: "mention",
+      steps: [],
+      startedAt: "",
+      updatedAt: "",
+    };
+    expect(resolveFlowScrollMessageId(track, messages)).toBe("200");
+  });
+
+  it("falls back to nearest message when source is missing from list", () => {
+    const track = {
+      key: "asgn:1",
+      assignmentId: "asgn-1",
+      sourceMessageId: "250",
+      kind: "auto_review",
+      steps: [],
+      startedAt: "",
+      updatedAt: "",
+    };
+    expect(resolveFlowScrollMessageId(track, messages)).toBe("200");
   });
 });

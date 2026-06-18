@@ -87,9 +87,12 @@ type AssignmentResponse struct {
 	Reason          *string `json:"reason,omitempty"`
 	OutputMessageID *string `json:"output_message_id,omitempty"`
 	CreatedByType   string  `json:"created_by_type,omitempty"`
-	CreatedByID     *string `json:"created_by_id,omitempty"`
-	CreatedAt       string  `json:"created_at,omitempty"`
-	UpdatedAt       string  `json:"updated_at,omitempty"`
+	CreatedByID              *string `json:"created_by_id,omitempty"`
+	CreatedAt                string  `json:"created_at,omitempty"`
+	UpdatedAt                string  `json:"updated_at,omitempty"`
+	FailureAcknowledgedAt    *string `json:"failure_acknowledged_at,omitempty"`
+	FailureAcknowledgedBy    *string `json:"failure_acknowledged_by,omitempty"`
+	SupersededByAssignmentID *string `json:"superseded_by_assignment_id,omitempty"`
 }
 
 type InvocationResponse struct {
@@ -387,20 +390,38 @@ func assignmentToResponse(a db.RoomAssignment) AssignmentResponse {
 		s := uuidToString(a.CreatedByID)
 		createdByID = &s
 	}
+	var failureAcknowledgedAt *string
+	if a.FailureAcknowledgedAt.Valid {
+		s := timestampToString(a.FailureAcknowledgedAt)
+		failureAcknowledgedAt = &s
+	}
+	var failureAcknowledgedBy *string
+	if a.FailureAcknowledgedBy.Valid {
+		s := uuidToString(a.FailureAcknowledgedBy)
+		failureAcknowledgedBy = &s
+	}
+	var supersededByAssignmentID *string
+	if a.SupersededByAssignmentID.Valid {
+		s := uuidToString(a.SupersededByAssignmentID)
+		supersededByAssignmentID = &s
+	}
 	return AssignmentResponse{
-		ID:              uuidToString(a.ID),
-		RoomID:          uuidToString(a.RoomID),
-		SourceMessageID: uuidToString(a.SourceMessageID),
-		AssigneeType:    a.AssigneeType,
-		AssigneeID:      uuidToString(a.AssigneeID),
-		Kind:            a.Kind,
-		Status:          a.Status,
-		Reason:          reason,
-		OutputMessageID: outputMessageID,
-		CreatedByType:   a.CreatedByType,
-		CreatedByID:     createdByID,
-		CreatedAt:       timestampToString(a.CreatedAt),
-		UpdatedAt:       timestampToString(a.UpdatedAt),
+		ID:                       uuidToString(a.ID),
+		RoomID:                     uuidToString(a.RoomID),
+		SourceMessageID:            uuidToString(a.SourceMessageID),
+		AssigneeType:               a.AssigneeType,
+		AssigneeID:                 uuidToString(a.AssigneeID),
+		Kind:                       a.Kind,
+		Status:                     a.Status,
+		Reason:                     reason,
+		OutputMessageID:            outputMessageID,
+		CreatedByType:              a.CreatedByType,
+		CreatedByID:                createdByID,
+		CreatedAt:                  timestampToString(a.CreatedAt),
+		UpdatedAt:                  timestampToString(a.UpdatedAt),
+		FailureAcknowledgedAt:      failureAcknowledgedAt,
+		FailureAcknowledgedBy:      failureAcknowledgedBy,
+		SupersededByAssignmentID:   supersededByAssignmentID,
 	}
 }
 
@@ -2115,6 +2136,38 @@ func (h *Handler) CreateRoomAssignment(w http.ResponseWriter, r *http.Request) {
 		resp["invocation"] = invocationToResponse(inv)
 	}
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (h *Handler) AckRoomAssignmentFailure(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := ctxWorkspaceID(r.Context())
+	roomID := chi.URLParam(r, "roomId")
+	assignmentID := chi.URLParam(r, "assignmentId")
+	room, _, ok := h.loadRoomMember(w, r, userID, workspaceID, roomID)
+	if !ok {
+		return
+	}
+	assignmentUUID, ok := parseUUIDOrBadRequest(w, assignmentID, "assignment id")
+	if !ok {
+		return
+	}
+	updated, err := h.TaskService.AcknowledgeRoomAssignmentFailure(
+		r.Context(),
+		room,
+		assignmentUUID,
+		parseUUID(userID),
+	)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "assignment failure cannot be acknowledged")
+		return
+	}
+	h.publishRoom(protocol.EventRoomAssignmentUpdated, workspaceID, "member", userID, map[string]string{
+		"room_id": uuidToString(room.ID),
+	})
+	writeJSON(w, http.StatusOK, assignmentToResponse(updated))
 }
 
 func (h *Handler) RetryRoomAssignment(w http.ResponseWriter, r *http.Request) {

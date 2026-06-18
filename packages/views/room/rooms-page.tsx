@@ -2,9 +2,15 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
+import { useDefaultLayout } from "react-resizable-panels";
 import { roomsListOptions } from "@multica/core/room/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { Button } from "@multica/ui/components/ui/button";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@multica/ui/components/ui/resizable";
 import { cn } from "@multica/ui/lib/utils";
 import { MessageSquare, Plus } from "lucide-react";
 import { RoomView } from "./room-view";
@@ -49,9 +55,25 @@ export function RoomsPage({ roomId }: Props) {
     });
   }, [rooms]);
 
+  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
+    id: "multica_rooms_list_layout",
+  });
+
   return (
-    <div className="flex h-full min-h-0 bg-background">
-      <aside className="border-border flex w-72 shrink-0 flex-col border-r">
+    <ResizablePanelGroup
+      orientation="horizontal"
+      className="h-full min-h-0 bg-background"
+      defaultLayout={defaultLayout}
+      onLayoutChanged={onLayoutChanged}
+    >
+      <ResizablePanel
+        id="list"
+        defaultSize={288}
+        minSize={200}
+        maxSize={420}
+        groupResizeBehavior="preserve-pixel-size"
+      >
+        <aside className="border-border flex h-full flex-col border-r">
         <div className="border-border flex items-center justify-between border-b px-3 py-3">
           <div className="flex items-center gap-2">
             <MessageSquare className="text-muted-foreground size-4" />
@@ -111,8 +133,11 @@ export function RoomsPage({ roomId }: Props) {
             </li>
           ) : null}
         </ul>
-      </aside>
-      <main className="min-w-0 flex-1">
+        </aside>
+      </ResizablePanel>
+      <ResizableHandle />
+      <ResizablePanel id="detail" minSize="45%">
+        <main className="flex h-full min-h-0 min-w-0 flex-col">
         {activeId ? (
           <RoomView
             roomId={activeId}
@@ -130,13 +155,14 @@ export function RoomsPage({ roomId }: Props) {
             </Button>
           </div>
         )}
-      </main>
+        </main>
+      </ResizablePanel>
       <CreateRoomDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
         onCreated={openRoom}
       />
-    </div>
+    </ResizablePanelGroup>
   );
 }
 

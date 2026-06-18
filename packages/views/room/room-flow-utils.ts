@@ -106,6 +106,42 @@ export function projectFlowEvents(events: RoomInvocationEvent[]): RoomInvocation
   return [...events].sort((a, b) => compareMonotonicId(a.id, b.id));
 }
 
+/** Failed assignment still actionable — latest row for assignee + source message. */
+export function isUnresolvedFailedAssignment(
+  assignment: RoomAssignment,
+  assignments: RoomAssignment[],
+): boolean {
+  if (assignment.status !== "failed") return false;
+  const related = assignments.filter(
+    (a) =>
+      a.assignee_id === assignment.assignee_id &&
+      a.source_message_id === assignment.source_message_id,
+  );
+  const latest = latestByMonotonicId(related);
+  return latest?.id === assignment.id;
+}
+
+/** Failed assignment that still needs human attention (not ack'd or superseded). */
+export function needsAttentionFailure(
+  assignment: RoomAssignment,
+  assignments: RoomAssignment[],
+): boolean {
+  if (!isUnresolvedFailedAssignment(assignment, assignments)) return false;
+  if (assignment.failure_acknowledged_at) return false;
+  if (assignment.superseded_by_assignment_id) return false;
+  return true;
+}
+
+export function countAttentionFailures(assignments: RoomAssignment[]): number {
+  let count = 0;
+  for (const assignment of assignments) {
+    if (needsAttentionFailure(assignment, assignments)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 export function computeGraphStatusCounts(
   assignments: RoomAssignment[],
   invocations: RoomInvocation[] = [],
@@ -128,7 +164,9 @@ export function computeGraphStatusCounts(
         running += 1;
         break;
       case "failed":
-        failed += 1;
+        if (needsAttentionFailure(assignment, assignments)) {
+          failed += 1;
+        }
         break;
       case "completed":
         completed += 1;
@@ -152,7 +190,11 @@ export function deriveAgentRunState(
   assignments: RoomAssignment[],
   invocations: RoomInvocation[],
 ): AgentRunState | undefined {
+  const agentAssignments = assignments.filter(
+    (a) => a.assignee_type === "agent" && a.assignee_id === agentId,
+  );
   const agentInvocations = invocations.filter((inv) => inv.agent_id === agentId);
+
   const activeInvocation = agentInvocations.find((inv) =>
     ["running", "delivered"].includes(inv.status),
   );
@@ -167,11 +209,8 @@ export function deriveAgentRunState(
     return { label: "排队中", tone: "queued" };
   }
 
-  const activeAssignment = assignments.find(
-    (a) =>
-      a.assignee_type === "agent" &&
-      a.assignee_id === agentId &&
-      ["running", "pending", "blocked"].includes(a.status),
+  const activeAssignment = agentAssignments.find((a) =>
+    ["running", "pending", "blocked"].includes(a.status),
   );
   if (activeAssignment) {
     if (activeAssignment.status === "blocked") {
@@ -183,32 +222,45 @@ export function deriveAgentRunState(
     return { label: "排队中", tone: "queued" };
   }
 
-  const failedAssignment = assignments.find(
-    (a) =>
-      a.assignee_type === "agent" &&
-      a.assignee_id === agentId &&
-      a.status === "failed",
-  );
-  if (failedAssignment) {
-    return { label: "失败", tone: "failed" };
-  }
-
-  const failedInvocation = agentInvocations.find((inv) =>
-    ["failed", "timed_out"].includes(inv.status),
-  );
-  if (failedInvocation) {
-    return {
-      label: failedInvocation.status === "timed_out" ? "已超时" : "失败",
-      tone: "failed",
-    };
-  }
-
   const pausedInvocation = agentInvocations.find((inv) => inv.status === "paused");
   if (pausedInvocation) {
     return { label: "已暂停", tone: "paused" };
   }
 
+  // Member badge reflects latest terminal state, not historical failures.
+  const latestAssignment = latestByMonotonicId(agentAssignments);
+  const latestInvocation = latestByMonotonicId(agentInvocations);
+
+  if (latestAssignment?.status === "completed") {
+    return undefined;
+  }
+
+  if (latestAssignment?.status === "failed") {
+    if (needsAttentionFailure(latestAssignment, agentAssignments)) {
+      return { label: "失败", tone: "failed" };
+    }
+    return undefined;
+  }
+
+  if (latestInvocation?.status === "succeeded") {
+    return undefined;
+  }
+
+  if (latestInvocation && ["failed", "timed_out"].includes(latestInvocation.status)) {
+    return {
+      label: latestInvocation.status === "timed_out" ? "已超时" : "失败",
+      tone: "failed",
+    };
+  }
+
   return undefined;
+}
+
+function latestByMonotonicId<T extends { id: string }>(items: T[]): T | undefined {
+  if (items.length === 0) return undefined;
+  return items.reduce((latest, item) =>
+    compareMonotonicId(item.id, latest.id) > 0 ? item : latest,
+  );
 }
 
 export type InvocationChatPresentation = "manager_status" | "agent_bubble";
@@ -948,4 +1000,49 @@ export function buildInvocationAgentMap(
   invocations: RoomInvocation[],
 ): Map<string, string> {
   return new Map(invocations.map((inv) => [inv.id, inv.agent_id]));
+}
+
+export function isFlowTrackAttentionFailure(
+  track: FlowTrack,
+  graph?: FlowGraphContext,
+): boolean {
+  const assignment = assignmentById(graph, track.assignmentId);
+  if (!assignment || !graph) return false;
+  return needsAttentionFailure(assignment, graph.assignments);
+}
+
+/** Resolve the chat message to scroll to for a flow track. */
+export function resolveFlowScrollMessageId(
+  track: FlowTrack,
+  messages: RoomMessage[],
+  graph?: FlowGraphContext,
+): string | undefined {
+  const assignment = assignmentById(graph, track.assignmentId);
+  const candidates = [
+    track.sourceMessageId,
+    assignment?.source_message_id,
+  ].filter((id): id is string => Boolean(id));
+
+  const messageIds = new Set(messages.map((m) => m.id));
+  for (const id of candidates) {
+    if (messageIds.has(id)) return id;
+  }
+
+  const anchor = candidates[0];
+  if (!anchor || messages.length === 0) {
+    return messages[messages.length - 1]?.id;
+  }
+
+  let before: RoomMessage | undefined;
+  let after: RoomMessage | undefined;
+  for (const message of messages) {
+    if (compareMonotonicId(message.id, anchor) <= 0) {
+      if (!before || compareMonotonicId(message.id, before.id) > 0) {
+        before = message;
+      }
+    } else if (!after) {
+      after = message;
+    }
+  }
+  return before?.id ?? after?.id ?? messages[messages.length - 1]?.id;
 }

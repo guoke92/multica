@@ -46,8 +46,6 @@ export function RoomComposer({
     isFetched: membersFetched,
   } = useQuery(roomMembersOptions(wsId, roomId));
   const roomMentionScope = useMemo((): RoomMentionScope | undefined => {
-    // Until members are loaded, return an empty scope (no suggestions)
-    // to prevent showing non-room-members in @ suggestions
     if (!membersFetched) return { memberUserIds: [], agentIds: [], squadIds: [] };
     if (roomMembers.length === 0) return undefined;
     const memberUserIds: string[] = [];
@@ -59,8 +57,7 @@ export function RoomComposer({
         if (!managerAgentId || m.principal_id !== managerAgentId) {
           agentIds.push(m.principal_id);
         }
-      }
-      else if (m.principal_type === "squad") squadIds.push(m.principal_id);
+      } else if (m.principal_type === "squad") squadIds.push(m.principal_id);
     }
     return { memberUserIds, agentIds, squadIds };
   }, [roomMembers, managerAgentId, membersFetched]);
@@ -72,80 +69,77 @@ export function RoomComposer({
   };
 
   return (
-    <div className="border-border bg-background shrink-0 border-t px-4 py-3">
-      {editingMessageId ? (
-        <div className="text-muted-foreground mb-2 flex items-center justify-between gap-2 text-xs">
-          <span>正在编辑消息，保存后将重新触发 @ 回复</span>
-          {onCancelEdit ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-xs"
-              onClick={onCancelEdit}
-              aria-label="取消编辑"
-            >
-              <X className="size-3.5" />
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
-      {quoteReply ? (
-        <div className="border-border bg-muted/40 mb-2 flex items-start gap-2 rounded-lg border px-3 py-2 text-xs">
-          <div className="min-w-0 flex-1">
-            <p className="text-muted-foreground font-medium">
-              回复 {quoteReply.senderName}
-            </p>
-            <p className="text-foreground/80 mt-0.5 line-clamp-2">
-              {quoteReply.preview}
-            </p>
+    <div className="border-border shrink-0 border-t px-5 pb-3 pt-2">
+      <div className="mx-auto w-full max-w-3xl space-y-2">
+        {editingMessageId ? (
+          <div className="text-muted-foreground flex items-center justify-between gap-2 text-xs">
+            <span>正在编辑消息，保存后将重新触发 @ 回复</span>
+            {onCancelEdit ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                onClick={onCancelEdit}
+                aria-label="取消编辑"
+              >
+                <X className="size-3.5" />
+              </Button>
+            ) : null}
           </div>
-          {onCancelQuote ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-xs"
-              className="shrink-0"
-              onClick={onCancelQuote}
-              aria-label="取消引用"
-            >
-              <X className="size-3.5" />
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
-      <div
-        className={cn(
-          "border-border bg-muted/30 focus-within:ring-ring/30 rounded-xl border shadow-sm focus-within:ring-2",
-          disabled && "opacity-60",
-        )}
-      >
-        <div className="px-3 pt-3">
-          <ContentEditor
-            ref={editorRef}
-            defaultValue={value}
-            onUpdate={onChange}
-            placeholder={
-              editingMessageId
-                ? "修改消息内容…"
-                : "输入消息，@ 提及本群成员或 Agent…"
-            }
-            onSubmit={handleSend}
-            submitOnEnter
-            roomMentionScope={roomMentionScope}
-          />
-        </div>
-        <div className="flex items-center justify-end gap-2 px-3 pb-2.5 pt-1">
-          <SubmitButton
-            onClick={handleSend}
-            disabled={disabled || isSending || !value.trim()}
-            loading={isSending}
-            tooltip={editingMessageId ? "保存并重新生成" : undefined}
-          />
+        ) : null}
+        {quoteReply ? (
+          <div className="flex items-start gap-2">
+            <div className="border-border/80 text-muted-foreground min-w-0 flex-1 border-l-2 pl-2 text-[11px] leading-snug">
+              <p className="line-clamp-2">
+                回复 {quoteReply.senderName}：{quoteReply.preview}
+              </p>
+            </div>
+            {onCancelQuote ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                className="shrink-0"
+                onClick={onCancelQuote}
+                aria-label="取消引用"
+              >
+                <X className="size-3.5" />
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+        <div
+          className={cn(
+            "relative flex min-h-14 max-h-40 flex-col rounded-lg border border-border bg-card pb-9 transition-colors focus-within:border-primary/40",
+            disabled && "opacity-60",
+          )}
+        >
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
+            <ContentEditor
+              ref={editorRef}
+              defaultValue={value}
+              onUpdate={onChange}
+              placeholder={
+                editingMessageId
+                  ? "修改消息内容…"
+                  : "输入消息，@ 提及本群成员或 Agent…"
+              }
+              onSubmit={handleSend}
+              submitOnEnter
+              showBubbleMenu={false}
+              roomMentionScope={roomMentionScope}
+            />
+          </div>
+          <div className="absolute bottom-1 right-1.5">
+            <SubmitButton
+              onClick={handleSend}
+              disabled={disabled || isSending || !value.trim()}
+              loading={isSending}
+              tooltip={editingMessageId ? "保存并重新生成" : undefined}
+            />
+          </div>
         </div>
       </div>
-      <p className="text-muted-foreground mt-1.5 text-center text-[11px]">
-        Enter 发送 · Shift+Enter 换行
-      </p>
     </div>
   );
 }

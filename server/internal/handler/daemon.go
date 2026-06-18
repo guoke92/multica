@@ -1400,9 +1400,6 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 				if msg.QuoteMessageID.Valid {
 					resp.RoomQuoteMessageID = uuidToString(msg.QuoteMessageID)
 				}
-				if msg.TopicID.Valid {
-					resp.RoomTopicID = uuidToString(msg.TopicID)
-				}
 			}
 			if msgs, err := h.Queries.ListRoomMessages(r.Context(), db.ListRoomMessagesParams{
 				RoomID: room.ID,
@@ -1447,20 +1444,14 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if len(task.Context) > 0 {
-				var wf struct {
-					Type       string `json:"type"`
-					Intent     string `json:"intent"`
-					DeliveryID string `json:"delivery_id"`
-					TopicID    string `json:"topic_id"`
-					RoleKey    string `json:"role_key"`
-					PhaseKey   string `json:"phase_key"`
+				var graph struct {
+					Type         string `json:"type"`
+					AssignmentID string `json:"assignment_id"`
+					Intent       string `json:"intent"`
+					Kind         string `json:"kind"`
 				}
-				if json.Unmarshal(task.Context, &wf) == nil && wf.Type == service.RoomWorkflowContextType {
-					resp.RoomWorkflowIntent = wf.Intent
-					resp.RoomDeliveryID = wf.DeliveryID
-					resp.RoomTopicID = wf.TopicID
-					resp.RoomRoleKey = wf.RoleKey
-					resp.RoomPhaseKey = wf.PhaseKey
+				if json.Unmarshal(task.Context, &graph) == nil && graph.Type == "room_graph" {
+					resp.RoomWorkflowIntent = graph.Intent
 				}
 			}
 		}

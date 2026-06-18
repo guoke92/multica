@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   roomDetailOptions,
-  roomInvocationsOptions,
+  roomGraphOptions,
   roomMessagesInfiniteOptions,
   roomMembersOptions,
   roomKeys,
@@ -13,19 +13,16 @@ import {
   useSendRoomMessage,
   useUpdateRoomMessage,
   useRegenerateRoomAgentMessage,
-  useRetryInvocation,
-  useCancelInvocation,
-  useResumeInvocation,
+  useRetryRoomAssignment,
+  useCancelRoomAssignment,
 } from "@multica/core/room/mutations";
 import { useWorkspaceId } from "@multica/core/hooks";
 import {
   memberListOptions,
   agentListOptions,
-  squadListOptions,
 } from "@multica/core/workspace/queries";
 import { useAuthStore } from "@multica/core/auth";
-import { api } from "@multica/core/api";
-import type { MentionInvocation, RoomMessage } from "@multica/core/types/room";
+import type { RoomMessage } from "@multica/core/types/room";
 import { Button } from "@multica/ui/components/ui/button";
 import { Settings } from "lucide-react";
 import { toast } from "sonner";
@@ -54,6 +51,7 @@ export function RoomView({ roomId, onArchived }: Props) {
   const [quoteReply, setQuoteReply] = useState<QuoteReplyTarget | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { data: room } = useQuery(roomDetailOptions(wsId, roomId));
+  const { data: graph } = useQuery(roomGraphOptions(wsId, roomId));
   const {
     data: messagePages,
     fetchNextPage,
@@ -68,18 +66,20 @@ export function RoomView({ roomId, onArchived }: Props) {
         .flat() ?? [],
     [messagePages?.pages],
   );
-  const { data: invocations = [] } = useQuery(roomInvocationsOptions(wsId, roomId));
   const { data: members = [] } = useQuery(roomMembersOptions(wsId, roomId));
   const { data: workspaceMembers = [] } = useQuery(memberListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
-  const { data: squads = [] } = useQuery(squadListOptions(wsId));
+
+  const assignments = graph?.assignments ?? [];
+  const assignmentDependencies = graph?.assignment_dependencies ?? [];
+  const invocations = graph?.invocations ?? [];
+  const invocationEvents = graph?.invocation_events ?? [];
 
   const sendMessage = useSendRoomMessage(wsId, roomId);
   const updateMessage = useUpdateRoomMessage(wsId, roomId);
   const regenerateAgent = useRegenerateRoomAgentMessage(wsId, roomId);
-  const retryInvocation = useRetryInvocation(wsId, roomId);
-  const cancelInvocation = useCancelInvocation(wsId, roomId);
-  const resumeInvocation = useResumeInvocation(wsId, roomId);
+  const retryAssignment = useRetryRoomAssignment(wsId, roomId);
+  const cancelAssignment = useCancelRoomAssignment(wsId, roomId);
   const selfMember = useMemo(
     () =>
       members.find(
@@ -98,14 +98,15 @@ export function RoomView({ roomId, onArchived }: Props) {
     () => new Map(workspaceMembers.map((m) => [m.user_id, m.name || m.email])),
     [workspaceMembers],
   );
-  const squadNameById = useMemo(
-    () => new Map(squads.map((s) => [s.id, s.name])),
-    [squads],
-  );
 
   const clearComposerContext = () => {
     setEditingMessage(null);
     setQuoteReply(null);
+  };
+
+  const invalidateRoomGraph = () => {
+    void qc.invalidateQueries({ queryKey: roomKeys.graph(wsId, roomId) });
+    void qc.invalidateQueries({ queryKey: roomKeys.detail(wsId, roomId) });
   };
 
   const handleSend = () => {
@@ -124,8 +125,7 @@ export function RoomView({ roomId, onArchived }: Props) {
             setDraft("");
             clearComposerContext();
             void qc.invalidateQueries({ queryKey: roomKeys.messages(wsId, roomId) });
-            void qc.invalidateQueries({ queryKey: roomKeys.invocations(wsId, roomId) });
-            void qc.invalidateQueries({ queryKey: roomKeys.detail(wsId, roomId) });
+            invalidateRoomGraph();
           },
           onError: (err) => {
             toast.error(
@@ -158,19 +158,18 @@ export function RoomView({ roomId, onArchived }: Props) {
         onSuccess: (resp) => {
           setDraft("");
           clearComposerContext();
-          // Warn when no agent was dispatched (no manager + no @-mention).
           if (
             !room?.manager_agent_id &&
             (!resp?.invocations || resp.invocations.length === 0) &&
             !content.includes("@")
           ) {
-            toast.message("消息已发送，但没有 Agent 响应",
-              { description: "此群未配置群管理，未 @Agent 的消息不会被自动处理。请 @具体的 Agent 或在群设置中启用群管理。" },
-            );
+            toast.message("消息已发送，但没有 Agent 响应", {
+              description:
+                "此群未配置群管理，未 @Agent 的消息不会被自动处理。请 @具体的 Agent 或在群设置中启用群管理。",
+            });
           }
           void qc.invalidateQueries({ queryKey: roomKeys.messages(wsId, roomId) });
-          void qc.invalidateQueries({ queryKey: roomKeys.invocations(wsId, roomId) });
-          void qc.invalidateQueries({ queryKey: roomKeys.detail(wsId, roomId) });
+          invalidateRoomGraph();
         },
         onError: (err) => {
           toast.error(
@@ -219,23 +218,19 @@ export function RoomView({ roomId, onArchived }: Props) {
     });
   };
 
-  const handleCancelInvocation = (invocationId: string) => {
-    const inv = invocations.find((i) => i.id === invocationId);
-    qc.setQueryData<MentionInvocation[]>(
-      roomKeys.invocations(wsId, roomId),
-      (old) =>
-        old?.map((i) =>
-          i.id === invocationId ? { ...i, status: "cancelled" } : i,
-        ),
-    );
-    if (inv?.task_id) {
-      void api.cancelTaskById(inv.task_id).catch(() => {
-        void qc.invalidateQueries({ queryKey: roomKeys.invocations(wsId, roomId) });
-      });
-    }
-    cancelInvocation.mutate(invocationId, {
+  const handleRetryAssignment = (assignmentId: string) => {
+    retryAssignment.mutate(assignmentId, {
       onError: (err) => {
-        void qc.invalidateQueries({ queryKey: roomKeys.invocations(wsId, roomId) });
+        toast.error(
+          err instanceof Error && err.message ? err.message : "重试失败",
+        );
+      },
+    });
+  };
+
+  const handleCancelAssignment = (assignmentId: string) => {
+    cancelAssignment.mutate(assignmentId, {
+      onError: (err) => {
         toast.error(
           err instanceof Error && err.message ? err.message : "取消失败",
         );
@@ -271,12 +266,18 @@ export function RoomView({ roomId, onArchived }: Props) {
         </header>
         <RoomMessageList
           messages={messages}
-          invocations={invocations}
           roomId={roomId}
           managerAgentId={room?.manager_agent_id}
-          onRetryInvocation={(id) => retryInvocation.mutate(id)}
-          onCancelInvocation={handleCancelInvocation}
-          onResumeInvocation={(id) => resumeInvocation.mutate(id)}
+          assignments={assignments}
+          invocations={invocations}
+          onRetryAssignment={handleRetryAssignment}
+          onCancelAssignment={handleCancelAssignment}
+          retryingAssignmentId={
+            retryAssignment.isPending ? (retryAssignment.variables ?? null) : null
+          }
+          cancellingAssignmentId={
+            cancelAssignment.isPending ? (cancelAssignment.variables ?? null) : null
+          }
           onEditMessage={handleEditMessage}
           onReplyToMessage={handleReplyToMessage}
           onRegenerateAgentMessage={handleRegenerateAgentMessage}
@@ -285,24 +286,8 @@ export function RoomView({ roomId, onArchived }: Props) {
               ? (regenerateAgent.variables ?? null)
               : null
           }
-          cancellingInvocationId={
-            cancelInvocation.isPending
-              ? (cancelInvocation.variables ?? null)
-              : null
-          }
-          retryingInvocationId={
-            retryInvocation.isPending
-              ? (retryInvocation.variables ?? null)
-              : null
-          }
-          resumingInvocationId={
-            resumeInvocation.isPending
-              ? (resumeInvocation.variables ?? null)
-              : null
-          }
           agentNameById={agentNameById}
           memberNameById={memberNameById}
-          squadNameById={squadNameById}
           hasOlderMessages={hasNextPage === true}
           isLoadingOlderMessages={isFetchingNextPage}
           onLoadOlderMessages={() => {
@@ -333,7 +318,18 @@ export function RoomView({ roomId, onArchived }: Props) {
         currentUserId={userId}
         canManage={canManage}
         isOwner={isOwner}
+        assignments={assignments}
+        assignmentDependencies={assignmentDependencies}
         invocations={invocations}
+        invocationEvents={invocationEvents}
+        onRetryAssignment={handleRetryAssignment}
+        onCancelAssignment={handleCancelAssignment}
+        retryingAssignmentId={
+          retryAssignment.isPending ? (retryAssignment.variables ?? null) : null
+        }
+        cancellingAssignmentId={
+          cancelAssignment.isPending ? (cancelAssignment.variables ?? null) : null
+        }
         onLeft={onArchived}
       />
 

@@ -1,3 +1,4 @@
+/** @deprecated Topic product concept removed in room graph refactor. */
 export type TopicSummary = {
   id: string;
   title: string;
@@ -10,13 +11,20 @@ export type TopicSummary = {
 
 export type RoomSnapshot = {
   pending_count?: number;
+  blocked_count?: number;
   queued_count?: number;
   running_count?: number;
   failed_count?: number;
+  completed_count?: number;
+  /** @deprecated */
   timed_out_count?: number;
+  /** @deprecated */
   active_graph_id?: string;
+  /** @deprecated */
   compressed_topics?: TopicSummary[];
+  /** @deprecated */
   active_topic_id?: string;
+  /** @deprecated */
   topic_summaries?: TopicSummary[];
   latest_event_id?: string;
 };
@@ -50,7 +58,7 @@ export type Room = {
   updated_at: string;
 };
 
-/** @deprecated Delivery product concept — use RoomTopic. */
+/** @deprecated Delivery product concept removed in room graph refactor. */
 export type RoomDelivery = {
   id: string;
   room_id: string;
@@ -64,6 +72,7 @@ export type RoomDelivery = {
   updated_at: string;
 };
 
+/** @deprecated Topic product concept removed in room graph refactor. */
 export type RoomTopic = {
   id: string;
   room_id: string;
@@ -80,22 +89,20 @@ export type RoomTopic = {
   updated_at: string;
 };
 
-export type RoomFlowEvent = {
+export type RoomInvocationEvent = {
   id: string;
   room_id: string;
-  topic_id?: string;
-  category?: "message" | "control" | "confirm" | "phase" | "meta" | string;
-  step_id?: string;
-  from_message_id?: string;
-  to_message_id?: string;
-  type: string;
-  message_id?: string;
+  assignment_id: string;
   invocation_id?: string;
+  type: string;
   actor_type: string;
   actor_id?: string;
   payload: Record<string, unknown>;
   created_at: string;
 };
+
+/** @deprecated Use RoomInvocationEvent */
+export type RoomFlowEvent = RoomInvocationEvent;
 
 export type RoomHumanAction = {
   id: string;
@@ -120,13 +127,20 @@ export type RoomProgressItem = {
 
 export type RoomWorkboard = {
   pending_count: number;
+  blocked_count?: number;
   queued_count?: number;
   running_count: number;
   failed_count?: number;
+  completed_count?: number;
+  /** @deprecated */
   timed_out_count?: number;
+  /** @deprecated */
   active_graph_id?: string;
+  /** @deprecated */
   compressed_topics?: TopicSummary[];
+  /** @deprecated */
   active_topic_id?: string;
+  /** @deprecated */
   topic_summaries?: TopicSummary[];
   latest_event_id?: string;
   progress_items?: RoomProgressItem[];
@@ -140,7 +154,9 @@ export type RoomMessage = {
   sender_id?: string;
   content: string;
   quote_message_id?: string;
+  /** @deprecated */
   delivery_id?: string;
+  /** @deprecated */
   topic_id?: string;
   message_kind?: string;
   metadata?: Record<string, unknown>;
@@ -149,12 +165,93 @@ export type RoomMessage = {
   edited_at?: string;
 };
 
+export type RoomMessageMention = {
+  id: string;
+  message_id: string;
+  target_type: string;
+  target_id: string;
+  label?: string;
+  span_start?: number;
+  span_end?: number;
+  created_at?: string;
+};
+
+export type RoomAssignment = {
+  id: string;
+  room_id: string;
+  source_message_id: string;
+  assignee_type: string;
+  assignee_id: string;
+  kind: string;
+  status: string;
+  reason?: string;
+  output_message_id?: string;
+  created_by_type?: string;
+  created_by_id?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type RoomAssignmentDependency = {
+  id: string;
+  assignment_id: string;
+  depends_on_assignment_id: string;
+  created_at?: string;
+};
+
+export type RoomInvocation = {
+  id: string;
+  room_id?: string;
+  assignment_id: string;
+  source_message_id: string;
+  agent_id: string;
+  intent?: string;
+  status: string;
+  priority?: string;
+  retry_count?: number;
+  max_retries?: number;
+  task_id?: string;
+  output_message_id?: string;
+  failure_reason?: string;
+  timeout_at?: string;
+  started_at?: string;
+  completed_at?: string;
+  cancelled_by?: string;
+  cancelled_at?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type RoomManagerDecision = {
+  id: string;
+  room_id: string;
+  source_message_id: string;
+  invocation_id?: string;
+  action: string;
+  payload?: Record<string, unknown>;
+  created_assignment_ids?: string[];
+  created_by_type?: string;
+  created_by_id?: string;
+  created_at?: string;
+};
+
+export type RoomGraphSnapshot = {
+  messages: RoomMessage[];
+  mentions: RoomMessageMention[];
+  assignments: RoomAssignment[];
+  assignment_dependencies: RoomAssignmentDependency[];
+  invocations: RoomInvocation[];
+  decisions: RoomManagerDecision[];
+  invocation_events: RoomInvocationEvent[];
+};
+
 export type RoomMember = {
   principal_type: string;
   principal_id: string;
   role: string;
 };
 
+/** @deprecated Legacy mention-invocation list shape; prefer RoomInvocation. */
 export type MentionInvocation = {
   id: string;
   message_id?: string;
@@ -173,5 +270,5 @@ export type MentionInvocation = {
 export type SendRoomMessageResponse = {
   message_id: string;
   created_at: string;
-  invocations?: MentionInvocation[];
+  invocations?: RoomInvocation[];
 };

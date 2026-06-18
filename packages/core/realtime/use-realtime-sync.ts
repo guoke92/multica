@@ -31,7 +31,7 @@ import {
 import { onInboxNew, onInboxInvalidate, onInboxIssueStatusChanged, onInboxIssueDeleted } from "../inbox/ws-updaters";
 import { inboxKeys } from "../inbox/queries";
 import { roomKeys } from "../room/queries";
-import type { MentionInvocation } from "../types/room";
+import type { MentionInvocation, RoomGraphSnapshot, RoomInvocationEvent } from "../types/room";
 import { notificationPreferenceOptions } from "../notification-preferences/queries";
 import { workspaceKeys, workspaceListOptions } from "../workspace/queries";
 import type { Workspace } from "../types/workspace";
@@ -720,6 +720,7 @@ export function useRealtimeSync(
       qc.invalidateQueries({ queryKey: roomKeys.messages(wsId, roomId) });
       qc.invalidateQueries({ queryKey: roomKeys.invocations(wsId, roomId) });
       qc.invalidateQueries({ queryKey: roomKeys.workboard(wsId, roomId) });
+      qc.invalidateQueries({ queryKey: roomKeys.graph(wsId, roomId) });
       qc.invalidateQueries({ queryKey: roomKeys.topics(wsId, roomId) });
       qc.invalidateQueries({ queryKey: roomKeys.detail(wsId, roomId) });
     };
@@ -768,50 +769,103 @@ export function useRealtimeSync(
       }
     });
 
-    const unsubRoomFlowEventCreated = ws.on("room:flow_event_created", (p) => {
+    const unsubRoomInvocationEventCreated = ws.on("room:invocation_event_created", (p) => {
       const wsId = getCurrentWsId();
       const payload = p as {
         room_id?: string;
-        topic_id?: string;
         event_id?: string;
-        category?: string;
-        step_id?: string;
-        from_message_id?: string;
-        to_message_id?: string;
+        assignment_id?: string;
         type?: string;
-        created_at?: string;
-        message_id?: string;
-        invocation_id?: string;
       };
       if (!wsId || !payload.room_id || !payload.event_id) return;
-      const next: import("../types/room").RoomFlowEvent = {
-        id: payload.event_id!,
-        room_id: payload.room_id!,
-        topic_id: payload.topic_id,
-        category: payload.category,
-        step_id: payload.step_id,
-        from_message_id: payload.from_message_id,
-        to_message_id: payload.to_message_id,
+      const next: RoomInvocationEvent = {
+        id: payload.event_id,
+        room_id: payload.room_id,
+        assignment_id: payload.assignment_id ?? "",
         type: payload.type ?? "unknown",
-        message_id: payload.message_id,
-        invocation_id: payload.invocation_id,
         actor_type: "system",
         payload: {},
-        created_at: payload.created_at ?? new Date().toISOString(),
+        created_at: new Date().toISOString(),
       };
-      const patchFlowEvents = (scope: string) => {
-        qc.setQueryData<import("../types/room").RoomFlowEvent[] | undefined>(
-          roomKeys.flowEvents(wsId, payload.room_id!, scope),
+      const patchInvocationEvents = (scope: string) => {
+        qc.setQueryData<RoomInvocationEvent[] | undefined>(
+          roomKeys.invocationEvents(wsId, payload.room_id!, scope),
           (old) => {
             if (old?.some((e) => e.id === next.id)) return old;
             return [next, ...(old ?? [])];
           },
         );
       };
-      patchFlowEvents("room");
-      if (payload.topic_id) {
-        patchFlowEvents(`topic:${payload.topic_id}`);
+      patchInvocationEvents("room");
+      if (payload.assignment_id) {
+        patchInvocationEvents(`assignment:${payload.assignment_id}`);
       }
+      const graphKey = roomKeys.graph(wsId, payload.room_id);
+      qc.setQueryData<RoomGraphSnapshot | undefined>(
+        graphKey,
+        (old) => {
+          if (!old) return old;
+          if (old.invocation_events.some((e) => e.id === next.id)) return old;
+          return {
+            ...old,
+            invocation_events: [next, ...old.invocation_events],
+          };
+        },
+      );
+      void qc.invalidateQueries({ queryKey: roomKeys.workboard(wsId, payload.room_id) });
+      void qc.invalidateQueries({ queryKey: graphKey });
+    });
+
+    const unsubRoomAssignmentUpdated = ws.on("room:assignment_updated", (p) => {
+      const wsId = getCurrentWsId();
+      const payload = p as {
+        room_id?: string;
+        assignment_id?: string;
+        status?: string;
+        kind?: string;
+      };
+      if (!wsId || !payload.room_id || !payload.assignment_id) return;
+      const graphKey = roomKeys.graph(wsId, payload.room_id);
+      qc.setQueryData<RoomGraphSnapshot | undefined>(
+        graphKey,
+        (old) => {
+          if (!old) return old;
+          const idx = old.assignments.findIndex((a) => a.id === payload.assignment_id);
+          if (idx < 0) return old;
+          const assignments = [...old.assignments];
+          assignments[idx] = {
+            ...assignments[idx]!,
+            ...(payload.status ? { status: payload.status } : {}),
+            ...(payload.kind ? { kind: payload.kind } : {}),
+          };
+          return { ...old, assignments };
+        },
+      );
+      void qc.invalidateQueries({ queryKey: roomKeys.workboard(wsId, payload.room_id) });
+      void qc.invalidateQueries({ queryKey: roomKeys.invocations(wsId, payload.room_id) });
+      void qc.invalidateQueries({ queryKey: graphKey });
+    });
+
+    const unsubRoomAssignmentDependencyUpdated = ws.on(
+      "room:assignment_dependency_updated",
+      (p) => {
+        const wsId = getCurrentWsId();
+        const payload = p as {
+          room_id?: string;
+          assignment_id?: string;
+          depends_on_assignment_id?: string;
+        };
+        if (!wsId || !payload.room_id) return;
+        void qc.invalidateQueries({ queryKey: roomKeys.graph(wsId, payload.room_id) });
+        void qc.invalidateQueries({ queryKey: roomKeys.workboard(wsId, payload.room_id) });
+      },
+    );
+
+    const unsubRoomManagerDecisionCreated = ws.on("room:manager_decision_created", (p) => {
+      const wsId = getCurrentWsId();
+      const payload = p as { room_id?: string };
+      if (!wsId || !payload.room_id) return;
+      void qc.invalidateQueries({ queryKey: roomKeys.graph(wsId, payload.room_id) });
       void qc.invalidateQueries({ queryKey: roomKeys.workboard(wsId, payload.room_id) });
     });
 
@@ -1135,7 +1189,10 @@ export function useRealtimeSync(
       unsubRoomMessageCreated();
       unsubRoomMessageUpdated();
       unsubRoomSnapshotUpdated();
-      unsubRoomFlowEventCreated();
+      unsubRoomInvocationEventCreated();
+      unsubRoomAssignmentUpdated();
+      unsubRoomAssignmentDependencyUpdated();
+      unsubRoomManagerDecisionCreated();
       unsubRoomHumanActionUpdated();
       unsubRoomApproval();
       unsubRoomInvocation();

@@ -67,16 +67,40 @@ type SendRoomMessageResponse struct {
 	Invocations []InvocationResponse `json:"invocations,omitempty"`
 }
 
+type CreateRoomAssignmentRequest struct {
+	SourceMessageID        string   `json:"source_message_id"`
+	AssigneeType           string   `json:"assignee_type"`
+	AssigneeID             string   `json:"assignee_id"`
+	Kind                   string   `json:"kind,omitempty"`
+	Reason                 string   `json:"reason,omitempty"`
+	DependsOnAssignmentIDs []string `json:"depends_on_assignment_ids,omitempty"`
+}
+
+type AssignmentResponse struct {
+	ID              string  `json:"id"`
+	RoomID          string  `json:"room_id"`
+	SourceMessageID string  `json:"source_message_id"`
+	AssigneeType    string  `json:"assignee_type"`
+	AssigneeID      string  `json:"assignee_id"`
+	Kind            string  `json:"kind"`
+	Status          string  `json:"status"`
+	Reason          *string `json:"reason,omitempty"`
+	OutputMessageID *string `json:"output_message_id,omitempty"`
+	CreatedByType   string  `json:"created_by_type,omitempty"`
+	CreatedByID     *string `json:"created_by_id,omitempty"`
+	CreatedAt       string  `json:"created_at,omitempty"`
+	UpdatedAt       string  `json:"updated_at,omitempty"`
+}
+
 type InvocationResponse struct {
-	ID                string  `json:"id"`
-	MessageID         string  `json:"message_id,omitempty"`
-	TargetType        string  `json:"target_type"`
-	TargetID          string  `json:"target_id"`
-	Intent            string  `json:"intent,omitempty"`
-	Status            string  `json:"status"`
-	TaskID            *string `json:"task_id,omitempty"`
-	ResponseMessageID *string `json:"response_message_id,omitempty"`
-	CreatedAt         string  `json:"created_at"`
+	ID              string  `json:"id"`
+	AssignmentID    string  `json:"assignment_id"`
+	SourceMessageID string  `json:"source_message_id"`
+	AgentID         string  `json:"agent_id"`
+	Intent          string  `json:"intent,omitempty"`
+	Status          string  `json:"status"`
+	TaskID          *string `json:"task_id,omitempty"`
+	OutputMessageID *string `json:"output_message_id,omitempty"`
 }
 
 type RoomMemberResponse struct {
@@ -85,27 +109,298 @@ type RoomMemberResponse struct {
 	Role          string `json:"role"`
 }
 
-func invocationToResponse(inv db.MentionInvocation) InvocationResponse {
+func invocationToResponse(inv db.RoomInvocation) InvocationResponse {
 	var taskID *string
 	if inv.TaskID.Valid {
 		s := uuidToString(inv.TaskID)
 		taskID = &s
 	}
-	var responseMessageID *string
-	if inv.ResponseMessageID.Valid {
-		s := uuidToString(inv.ResponseMessageID)
-		responseMessageID = &s
+	var outputMessageID *string
+	if inv.OutputMessageID.Valid {
+		s := uuidToString(inv.OutputMessageID)
+		outputMessageID = &s
 	}
 	return InvocationResponse{
-		ID:                uuidToString(inv.ID),
-		MessageID:         uuidToString(inv.MessageID),
-		TargetType:        inv.TargetType,
-		TargetID:          uuidToString(inv.TargetID),
-		Intent:            inv.Intent,
-		Status:            inv.Status,
-		TaskID:            taskID,
-		ResponseMessageID: responseMessageID,
-		CreatedAt:         timestampToString(inv.CreatedAt),
+		ID:              uuidToString(inv.ID),
+		AssignmentID:    uuidToString(inv.AssignmentID),
+		SourceMessageID: uuidToString(inv.SourceMessageID),
+		AgentID:         uuidToString(inv.AgentID),
+		Intent:          inv.Intent,
+		Status:          inv.Status,
+		TaskID:          taskID,
+		OutputMessageID: outputMessageID,
+	}
+}
+
+type roomGraphMessageResponse struct {
+	ID             string          `json:"id"`
+	SenderType     string          `json:"sender_type"`
+	SenderID       *string         `json:"sender_id,omitempty"`
+	Content        string          `json:"content"`
+	QuoteMessageID *string         `json:"quote_message_id,omitempty"`
+	Metadata       json.RawMessage `json:"metadata,omitempty"`
+	CreatedAt      string          `json:"created_at"`
+	EditedAt       *string         `json:"edited_at,omitempty"`
+}
+
+type roomGraphMentionResponse struct {
+	ID         string  `json:"id"`
+	MessageID  string  `json:"message_id"`
+	TargetType string  `json:"target_type"`
+	TargetID   *string `json:"target_id,omitempty"`
+	Label      *string `json:"label,omitempty"`
+	SpanStart  *int32  `json:"span_start,omitempty"`
+	SpanEnd    *int32  `json:"span_end,omitempty"`
+	CreatedAt  string  `json:"created_at,omitempty"`
+}
+
+type roomGraphDependencyResponse struct {
+	ID                    string `json:"id"`
+	AssignmentID          string `json:"assignment_id"`
+	DependsOnAssignmentID string `json:"depends_on_assignment_id"`
+	CreatedAt             string `json:"created_at,omitempty"`
+}
+
+type roomGraphInvocationResponse struct {
+	ID              string  `json:"id"`
+	RoomID          string  `json:"room_id,omitempty"`
+	AssignmentID    string  `json:"assignment_id"`
+	SourceMessageID string  `json:"source_message_id"`
+	AgentID         string  `json:"agent_id"`
+	Intent          string  `json:"intent,omitempty"`
+	Status          string  `json:"status"`
+	TaskID          *string `json:"task_id,omitempty"`
+	OutputMessageID *string `json:"output_message_id,omitempty"`
+	CreatedAt       string  `json:"created_at,omitempty"`
+	UpdatedAt       string  `json:"updated_at,omitempty"`
+}
+
+type roomGraphInvocationEventResponse struct {
+	ID           string          `json:"id"`
+	RoomID       string          `json:"room_id"`
+	AssignmentID string          `json:"assignment_id"`
+	InvocationID *string         `json:"invocation_id,omitempty"`
+	Type         string          `json:"type"`
+	ActorType    string          `json:"actor_type"`
+	ActorID      *string         `json:"actor_id,omitempty"`
+	Payload      json.RawMessage `json:"payload"`
+	CreatedAt    string          `json:"created_at"`
+}
+
+type roomGraphManagerDecisionResponse struct {
+	ID                   string          `json:"id"`
+	RoomID               string          `json:"room_id"`
+	SourceMessageID      string          `json:"source_message_id"`
+	InvocationID         *string         `json:"invocation_id,omitempty"`
+	Action               string          `json:"action"`
+	Payload              json.RawMessage `json:"payload,omitempty"`
+	CreatedAssignmentIDs []string        `json:"created_assignment_ids,omitempty"`
+	CreatedByType        string          `json:"created_by_type,omitempty"`
+	CreatedByID          *string         `json:"created_by_id,omitempty"`
+	CreatedAt            string          `json:"created_at,omitempty"`
+}
+
+func roomMessagesToGraphResponse(rows []db.RoomMessage) []roomGraphMessageResponse {
+	out := make([]roomGraphMessageResponse, 0, len(rows))
+	for _, m := range rows {
+		var senderID, quoteID *string
+		if m.SenderID.Valid {
+			s := uuidToString(m.SenderID)
+			senderID = &s
+		}
+		if m.QuoteMessageID.Valid {
+			s := uuidToString(m.QuoteMessageID)
+			quoteID = &s
+		}
+		meta := m.Metadata
+		if len(meta) == 0 {
+			meta = []byte("{}")
+		}
+		var editedAt *string
+		if m.EditedAt.Valid {
+			s := timestampToString(m.EditedAt)
+			editedAt = &s
+		}
+		out = append(out, roomGraphMessageResponse{
+			ID:             uuidToString(m.ID),
+			SenderType:     m.SenderType,
+			SenderID:       senderID,
+			Content:        m.Content,
+			QuoteMessageID: quoteID,
+			Metadata:       meta,
+			CreatedAt:      timestampToString(m.CreatedAt),
+			EditedAt:       editedAt,
+		})
+	}
+	return out
+}
+
+func roomMentionsToGraphResponse(rows []db.RoomMessageMention) []roomGraphMentionResponse {
+	out := make([]roomGraphMentionResponse, 0, len(rows))
+	for _, m := range rows {
+		item := roomGraphMentionResponse{
+			ID:         uuidToString(m.ID),
+			MessageID:  uuidToString(m.MessageID),
+			TargetType: m.TargetType,
+			CreatedAt:  timestampToString(m.CreatedAt),
+		}
+		if m.TargetID.Valid {
+			s := uuidToString(m.TargetID)
+			item.TargetID = &s
+		}
+		if m.Label != "" {
+			label := m.Label
+			item.Label = &label
+		}
+		if m.SpanStart.Valid {
+			v := m.SpanStart.Int32
+			item.SpanStart = &v
+		}
+		if m.SpanEnd.Valid {
+			v := m.SpanEnd.Int32
+			item.SpanEnd = &v
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func roomDependenciesToGraphResponse(rows []db.RoomAssignmentDependency) []roomGraphDependencyResponse {
+	out := make([]roomGraphDependencyResponse, 0, len(rows))
+	for _, d := range rows {
+		out = append(out, roomGraphDependencyResponse{
+			ID:                    uuidToString(d.ID),
+			AssignmentID:          uuidToString(d.AssignmentID),
+			DependsOnAssignmentID: uuidToString(d.DependsOnAssignmentID),
+			CreatedAt:             timestampToString(d.CreatedAt),
+		})
+	}
+	return out
+}
+
+func roomInvocationsToGraphResponse(rows []db.RoomInvocation) []roomGraphInvocationResponse {
+	out := make([]roomGraphInvocationResponse, 0, len(rows))
+	for _, inv := range rows {
+		item := roomGraphInvocationResponse{
+			ID:              uuidToString(inv.ID),
+			RoomID:          uuidToString(inv.RoomID),
+			AssignmentID:    uuidToString(inv.AssignmentID),
+			SourceMessageID: uuidToString(inv.SourceMessageID),
+			AgentID:         uuidToString(inv.AgentID),
+			Intent:          inv.Intent,
+			Status:          inv.Status,
+			CreatedAt:       timestampToString(inv.CreatedAt),
+			UpdatedAt:       timestampToString(inv.UpdatedAt),
+		}
+		if inv.TaskID.Valid {
+			s := uuidToString(inv.TaskID)
+			item.TaskID = &s
+		}
+		if inv.OutputMessageID.Valid {
+			s := uuidToString(inv.OutputMessageID)
+			item.OutputMessageID = &s
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func roomInvocationEventsToGraphResponse(rows []db.RoomInvocationEvent) []roomGraphInvocationEventResponse {
+	out := make([]roomGraphInvocationEventResponse, 0, len(rows))
+	for _, e := range rows {
+		payload := e.Payload
+		if len(payload) == 0 {
+			payload = []byte("{}")
+		}
+		item := roomGraphInvocationEventResponse{
+			ID:           uuidToString(e.ID),
+			RoomID:       uuidToString(e.RoomID),
+			AssignmentID: uuidToString(e.AssignmentID),
+			Type:         e.Type,
+			ActorType:    e.ActorType,
+			Payload:      payload,
+			CreatedAt:    timestampToString(e.CreatedAt),
+		}
+		if e.InvocationID.Valid {
+			s := uuidToString(e.InvocationID)
+			item.InvocationID = &s
+		}
+		if e.ActorID.Valid {
+			s := uuidToString(e.ActorID)
+			item.ActorID = &s
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func roomManagerDecisionsToGraphResponse(rows []db.RoomManagerDecision) []roomGraphManagerDecisionResponse {
+	out := make([]roomGraphManagerDecisionResponse, 0, len(rows))
+	for _, d := range rows {
+		item := roomGraphManagerDecisionResponse{
+			ID:              uuidToString(d.ID),
+			RoomID:          uuidToString(d.RoomID),
+			SourceMessageID: uuidToString(d.SourceMessageID),
+			Action:          d.Action,
+			CreatedByType:   d.CreatedByType,
+			CreatedAt:       timestampToString(d.CreatedAt),
+		}
+		if d.InvocationID.Valid {
+			s := uuidToString(d.InvocationID)
+			item.InvocationID = &s
+		}
+		if len(d.Payload) > 0 {
+			item.Payload = d.Payload
+		}
+		if d.CreatedByID.Valid {
+			s := uuidToString(d.CreatedByID)
+			item.CreatedByID = &s
+		}
+		if len(d.CreatedAssignmentIds) > 0 {
+			ids := make([]string, 0, len(d.CreatedAssignmentIds))
+			for _, id := range d.CreatedAssignmentIds {
+				if id.Valid {
+					ids = append(ids, uuidToString(id))
+				}
+			}
+			if len(ids) > 0 {
+				item.CreatedAssignmentIDs = ids
+			}
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func assignmentToResponse(a db.RoomAssignment) AssignmentResponse {
+	var reason *string
+	if a.Reason.Valid {
+		reason = &a.Reason.String
+	}
+	var outputMessageID *string
+	if a.OutputMessageID.Valid {
+		s := uuidToString(a.OutputMessageID)
+		outputMessageID = &s
+	}
+	var createdByID *string
+	if a.CreatedByID.Valid {
+		s := uuidToString(a.CreatedByID)
+		createdByID = &s
+	}
+	return AssignmentResponse{
+		ID:              uuidToString(a.ID),
+		RoomID:          uuidToString(a.RoomID),
+		SourceMessageID: uuidToString(a.SourceMessageID),
+		AssigneeType:    a.AssigneeType,
+		AssigneeID:      uuidToString(a.AssigneeID),
+		Kind:            a.Kind,
+		Status:          a.Status,
+		Reason:          reason,
+		OutputMessageID: outputMessageID,
+		CreatedByType:   a.CreatedByType,
+		CreatedByID:     createdByID,
+		CreatedAt:       timestampToString(a.CreatedAt),
+		UpdatedAt:       timestampToString(a.UpdatedAt),
 	}
 }
 
@@ -203,65 +498,22 @@ func (h *Handler) validateRoomQuoteMessage(ctx context.Context, roomID, quoteID 
 // supersedeMessageInvocations cancels in-flight work and hides prior agent
 // replies when a user message is edited and mentions are re-dispatched.
 func (h *Handler) supersedeMessageInvocations(ctx context.Context, room db.Room, messageID pgtype.UUID, userID string) {
-	invocations, err := h.Queries.ListMentionInvocationsByMessage(ctx, messageID)
+	assignments, err := h.Queries.ListRoomAssignmentsBySourceMessage(ctx, messageID)
 	if err != nil {
 		return
 	}
 	userUUID := parseUUID(userID)
-	for _, inv := range invocations {
-		if inv.Status != "succeeded" && inv.Status != "cancelled" {
-			cancelled, cancelErr := h.Queries.CancelMentionInvocation(ctx, db.CancelMentionInvocationParams{
-				ID:          inv.ID,
-				CancelledBy: userUUID,
-			})
-			if cancelErr == nil && cancelled.TaskID.Valid {
-				_, _ = h.TaskService.CancelTask(ctx, cancelled.TaskID)
-			}
+	for _, assignment := range assignments {
+		if assignment.Status != "completed" && assignment.Status != "cancelled" {
+			_ = h.TaskService.CancelAssignment(ctx, room, assignment.ID, userUUID)
 		}
-		if inv.ResponseMessageID.Valid {
+		if assignment.OutputMessageID.Valid {
 			_ = h.Queries.SoftDeleteRoomMessage(ctx, db.SoftDeleteRoomMessageParams{
-				ID:     inv.ResponseMessageID,
+				ID:     assignment.OutputMessageID,
 				RoomID: room.ID,
 			})
 		}
 	}
-}
-
-func (h *Handler) enqueueRoomInvocation(
-	ctx context.Context,
-	room db.Room,
-	msg db.RoomMessage,
-	inv db.MentionInvocation,
-) (db.MentionInvocation, error) {
-	agentID, isLeader, err := h.TaskService.ResolveRoomMentionAgent(ctx, room.WorkspaceID, util.Mention{
-		Type: inv.TargetType,
-		ID:   uuidToString(inv.TargetID),
-	})
-	if err != nil {
-		return inv, err
-	}
-	task, err := h.TaskService.EnqueueRoomInvocationTask(ctx, service.EnqueueRoomInvocationParams{
-		Room:       room,
-		Message:    msg,
-		Invocation: inv,
-		AgentID:    agentID,
-		IsLeader:   isLeader,
-	})
-	if err != nil {
-		return inv, err
-	}
-	now := time.Now()
-	inv, err = h.Queries.UpdateMentionInvocationStatus(ctx, db.UpdateMentionInvocationStatusParams{
-		ID:          inv.ID,
-		Status:      "queued",
-		TaskID:      task.ID,
-		DeliveredAt: pgtype.Timestamptz{Time: now, Valid: true},
-	})
-	if err != nil {
-		return inv, err
-	}
-	h.TaskService.DrainQueuedRoomInvocations(ctx, agentID)
-	return inv, nil
 }
 
 func (h *Handler) CreateRoom(w http.ResponseWriter, r *http.Request) {
@@ -563,20 +815,11 @@ func (h *Handler) ArchiveRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	active, err := h.Queries.ListActiveMentionInvocationsByRoom(r.Context(), room.ID)
+	active, err := h.Queries.ListActiveRoomAssignmentsByRoom(r.Context(), room.ID)
 	if err == nil {
 		userUUID := parseUUID(userID)
-		for _, inv := range active {
-			cancelled, cancelErr := h.Queries.CancelMentionInvocation(r.Context(), db.CancelMentionInvocationParams{
-				ID:          inv.ID,
-				CancelledBy: userUUID,
-			})
-			if cancelErr != nil {
-				continue
-			}
-			if cancelled.TaskID.Valid {
-				_, _ = h.TaskService.CancelTask(r.Context(), cancelled.TaskID)
-			}
+		for _, assignment := range active {
+			_ = h.TaskService.CancelAssignment(r.Context(), room, assignment.ID, userUUID)
 		}
 		h.TaskService.RefreshRoomSnapshot(r.Context(), room.ID)
 	}
@@ -1207,7 +1450,7 @@ func (h *Handler) SendRoomMessage(w http.ResponseWriter, r *http.Request) {
 	_ = h.Queries.TouchRoom(r.Context(), room.ID)
 
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
-	invocations, err := h.TaskService.RouteRoomMessage(r.Context(), service.RoomMentionDispatchParams{
+	result, err := h.TaskService.RouteRoomMessage(r.Context(), service.RoomMentionDispatchParams{
 		Room:        room,
 		Message:     msg,
 		AuthorType:  actorType,
@@ -1238,8 +1481,8 @@ func (h *Handler) SendRoomMessage(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: timestampToString(msg.CreatedAt),
 	})
 
-	invResp := make([]InvocationResponse, 0, len(invocations))
-	for _, inv := range invocations {
+	invResp := make([]InvocationResponse, 0, len(result.Invocations))
+	for _, inv := range result.Invocations {
 		invResp = append(invResp, invocationToResponse(inv))
 	}
 
@@ -1298,7 +1541,7 @@ func (h *Handler) UpdateRoomMessage(w http.ResponseWriter, r *http.Request) {
 	_ = h.Queries.TouchRoom(r.Context(), room.ID)
 
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
-	invocations, err := h.TaskService.RouteRoomMessage(r.Context(), service.RoomMentionDispatchParams{
+	result, err := h.TaskService.RouteRoomMessage(r.Context(), service.RoomMentionDispatchParams{
 		Room:        room,
 		Message:     msg,
 		AuthorType:  actorType,
@@ -1329,8 +1572,8 @@ func (h *Handler) UpdateRoomMessage(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: timestampToString(msg.CreatedAt),
 	})
 
-	invResp := make([]InvocationResponse, 0, len(invocations))
-	for _, inv := range invocations {
+	invResp := make([]InvocationResponse, 0, len(result.Invocations))
+	for _, inv := range result.Invocations {
 		invResp = append(invResp, invocationToResponse(inv))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1371,15 +1614,14 @@ func (h *Handler) RegenerateRoomAgentMessage(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	inv, err := h.Queries.GetMentionInvocationByResponseMessage(r.Context(), db.GetMentionInvocationByResponseMessageParams{
-		ResponseMessageID: agentMsg.ID,
-		RoomID:            room.ID,
+	inv, err := h.Queries.GetRoomInvocationByOutputMessage(r.Context(), db.GetRoomInvocationByOutputMessageParams{
+		OutputMessageID: agentMsg.ID,
+		RoomID:          room.ID,
 	})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "invocation not found for this message")
 		return
 	}
-	// G15: enforce max_retries limit on regenerate (same as RetryInvocation).
 	if inv.RetryCount >= inv.MaxRetries {
 		writeError(w, http.StatusBadRequest, "max retries exceeded")
 		return
@@ -1390,24 +1632,13 @@ func (h *Handler) RegenerateRoomAgentMessage(w http.ResponseWriter, r *http.Requ
 		RoomID: room.ID,
 	})
 
-	inv, err = h.Queries.ResetMentionInvocationForRegenerate(r.Context(), inv.ID)
+	_, _ = h.Queries.UpdateRoomAssignmentStatus(r.Context(), db.UpdateRoomAssignmentStatusParams{
+		ID:     inv.AssignmentID,
+		Status: "failed",
+	})
+	inv, err = h.TaskService.RetryRoomAssignment(r.Context(), room, inv.AssignmentID, parseUUID(userID))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invocation cannot be regenerated")
-		return
-	}
-
-	sourceMsg, err := h.Queries.GetRoomMessageInRoom(r.Context(), db.GetRoomMessageInRoomParams{
-		ID:     inv.MessageID,
-		RoomID: room.ID,
-	})
-	if err != nil {
-		writeError(w, http.StatusNotFound, "source message not found")
-		return
-	}
-
-	inv, err = h.enqueueRoomInvocation(r.Context(), room, sourceMsg, inv)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to enqueue task")
 		return
 	}
 
@@ -1451,10 +1682,7 @@ func (h *Handler) ListRoomMessages(w http.ResponseWriter, r *http.Request) {
 		BeforeID: before,
 		Limit:    int32(limit),
 	}
-	rows, err := h.Queries.ListRoomMessagesExtended(r.Context(), db.ListRoomMessagesExtendedParams(listParams))
-	if err != nil {
-		rows, err = h.Queries.ListRoomMessages(r.Context(), listParams)
-	}
+	rows, err := h.Queries.ListRoomMessages(r.Context(), listParams)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list messages")
 		return
@@ -1469,11 +1697,7 @@ func (h *Handler) ListRoomMessages(w http.ResponseWriter, r *http.Request) {
 		SenderID       *string         `json:"sender_id,omitempty"`
 		Content        string          `json:"content"`
 		QuoteMessageID *string         `json:"quote_message_id,omitempty"`
-		DeliveryID     *string         `json:"delivery_id,omitempty"`
-		TopicID        *string         `json:"topic_id,omitempty"`
-		MessageKind    string          `json:"message_kind,omitempty"`
 		Metadata       json.RawMessage `json:"metadata,omitempty"`
-		RelayMetadata  json.RawMessage `json:"relay_metadata,omitempty"`
 		CreatedAt      string          `json:"created_at"`
 		EditedAt       *string         `json:"edited_at,omitempty"`
 	}
@@ -1488,22 +1712,9 @@ func (h *Handler) ListRoomMessages(w http.ResponseWriter, r *http.Request) {
 			s := uuidToString(m.QuoteMessageID)
 			quoteID = &s
 		}
-		var deliveryID, topicID *string
-		if m.DeliveryID.Valid {
-			s := uuidToString(m.DeliveryID)
-			deliveryID = &s
-		}
-		if m.TopicID.Valid {
-			s := uuidToString(m.TopicID)
-			topicID = &s
-		}
 		meta := m.Metadata
 		if len(meta) == 0 {
 			meta = []byte("{}")
-		}
-		var relayMeta json.RawMessage
-		if len(m.RelayMetadata) > 0 {
-			relayMeta = m.RelayMetadata
 		}
 		var editedAt *string
 		if m.EditedAt.Valid {
@@ -1516,11 +1727,7 @@ func (h *Handler) ListRoomMessages(w http.ResponseWriter, r *http.Request) {
 			SenderID:       senderID,
 			Content:        m.Content,
 			QuoteMessageID: quoteID,
-			DeliveryID:     deliveryID,
-			TopicID:        topicID,
-			MessageKind:    m.MessageKind,
 			Metadata:       meta,
-			RelayMetadata:  relayMeta,
 			CreatedAt:      timestampToString(m.CreatedAt),
 			EditedAt:       editedAt,
 		})
@@ -1539,7 +1746,7 @@ func (h *Handler) ListRoomInvocations(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := h.Queries.ListRoomMentionInvocations(r.Context(), room.ID)
+	rows, err := h.Queries.ListRoomInvocationsByRoom(r.Context(), room.ID)
 	if err != nil {
 		slog.Warn("list room invocations failed",
 			"room_id", uuidToString(room.ID),
@@ -1566,70 +1773,23 @@ func (h *Handler) RetryInvocation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	inv, err := h.Queries.GetMentionInvocation(r.Context(), invUUID)
+	inv, err := h.Queries.GetRoomInvocation(r.Context(), invUUID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "invocation not found")
 		return
 	}
-	room, member, ok := h.loadRoomMember(w, r, userID, workspaceID, uuidToString(inv.RoomID))
+	room, _, ok := h.loadRoomMember(w, r, userID, workspaceID, uuidToString(inv.RoomID))
 	if !ok {
 		return
 	}
-	_ = member
-	if inv.Status != "failed" && inv.Status != "timed_out" && inv.Status != "cancelled" {
+	inv, err = h.TaskService.RetryRoomAssignment(r.Context(), room, inv.AssignmentID, parseUUID(userID))
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invocation cannot be retried")
 		return
 	}
-	msg, err := h.Queries.GetRoomMessageInRoom(r.Context(), db.GetRoomMessageInRoomParams{
-		ID:     inv.MessageID,
-		RoomID: room.ID,
+	h.publishRoom(protocol.EventRoomInvocationUpdated, workspaceID, "member", userID, map[string]string{
+		"room_id": uuidToString(inv.RoomID),
 	})
-	if err != nil {
-		writeError(w, http.StatusNotFound, "source message not found")
-		return
-	}
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
-	agentID, isLeader, err := h.TaskService.ResolveRoomMentionAgent(r.Context(), room.WorkspaceID, util.Mention{
-		Type: inv.TargetType,
-		ID:   uuidToString(inv.TargetID),
-	})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid invocation target")
-		return
-	}
-	inv, err = h.Queries.UpdateMentionInvocationStatus(r.Context(), db.UpdateMentionInvocationStatusParams{
-		ID:     inv.ID,
-		Status: "pending",
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to reset invocation")
-		return
-	}
-	userUUID := parseUUID(userID)
-	h.TaskService.RecordManualInvocationRetryFlowEvent(r.Context(), room, inv, userUUID)
-	h.TaskService.MaybeRecordInvocationStatusFlowEvent(r.Context(), room, inv, "pending")
-	task, err := h.TaskService.EnqueueRoomInvocationTask(r.Context(), service.EnqueueRoomInvocationParams{
-		Room:       room,
-		Message:    msg,
-		Invocation: inv,
-		AgentID:    agentID,
-		IsLeader:   isLeader,
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to enqueue task")
-		return
-	}
-	now := time.Now()
-	inv, _ = h.Queries.UpdateMentionInvocationStatus(r.Context(), db.UpdateMentionInvocationStatusParams{
-		ID:          inv.ID,
-		Status:      "queued",
-		TaskID:      task.ID,
-		DeliveredAt: pgtype.Timestamptz{Time: now, Valid: true},
-	})
-	h.TaskService.MaybeRecordInvocationStatusFlowEvent(r.Context(), room, inv, "queued")
-	h.TaskService.DrainQueuedRoomInvocations(r.Context(), agentID)
-	_ = actorType
-	_ = actorID
 	writeJSON(w, http.StatusOK, invocationToResponse(inv))
 }
 
@@ -1649,7 +1809,7 @@ func (h *Handler) CancelRoomInvocation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	inv, err := h.Queries.GetMentionInvocationInRoom(r.Context(), db.GetMentionInvocationInRoomParams{
+	inv, err := h.Queries.GetRoomInvocationInRoom(r.Context(), db.GetRoomInvocationInRoomParams{
 		ID: invUUID, RoomID: room.ID,
 	})
 	if err != nil {
@@ -1660,37 +1820,27 @@ func (h *Handler) CancelRoomInvocation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "forbidden")
 		return
 	}
-	inv, err = h.Queries.CancelMentionInvocation(r.Context(), db.CancelMentionInvocationParams{
-		ID:          inv.ID,
-		CancelledBy: parseUUID(userID),
-	})
-	if err != nil {
+	if err := h.TaskService.CancelAssignment(r.Context(), room, inv.AssignmentID, parseUUID(userID)); err != nil {
 		writeError(w, http.StatusNotFound, "invocation not found or already finished")
 		return
 	}
-	var agentID pgtype.UUID
-	if inv.TaskID.Valid {
-		if task, cancelErr := h.TaskService.CancelTask(r.Context(), inv.TaskID); cancelErr == nil && task != nil {
-			agentID = task.AgentID
-		}
+	inv, err = h.Queries.GetRoomInvocation(r.Context(), inv.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load invocation")
+		return
 	}
-	if agentID.Valid {
-		h.TaskService.DrainQueuedRoomInvocations(r.Context(), agentID)
-	}
-	h.TaskService.RefreshRoomSnapshot(r.Context(), inv.RoomID)
-	h.TaskService.RecordManualInvocationCancelFlowEvent(r.Context(), room, inv, parseUUID(userID))
 	h.publishRoom(protocol.EventRoomInvocationUpdated, workspaceID, "member", userID, map[string]string{
 		"room_id": uuidToString(inv.RoomID),
 	})
 	writeJSON(w, http.StatusOK, invocationToResponse(inv))
 }
 
-func (h *Handler) canCancelRoomInvocation(ctx context.Context, room db.Room, member db.RoomMember, userID string, inv db.MentionInvocation) bool {
+func (h *Handler) canCancelRoomInvocation(ctx context.Context, room db.Room, member db.RoomMember, userID string, inv db.RoomInvocation) bool {
 	if member.Role == "owner" || member.Role == "admin" {
 		return true
 	}
 	msg, err := h.Queries.GetRoomMessageInRoom(ctx, db.GetRoomMessageInRoomParams{
-		ID: inv.MessageID, RoomID: room.ID,
+		ID: inv.SourceMessageID, RoomID: room.ID,
 	})
 	if err != nil {
 		return false
@@ -1712,7 +1862,7 @@ func (h *Handler) CancelInvocation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	inv, err := h.Queries.GetMentionInvocation(r.Context(), invUUID)
+	inv, err := h.Queries.GetRoomInvocation(r.Context(), invUUID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "invocation not found")
 		return
@@ -1725,36 +1875,15 @@ func (h *Handler) CancelInvocation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "forbidden")
 		return
 	}
-	inv, err = h.Queries.CancelMentionInvocation(r.Context(), db.CancelMentionInvocationParams{
-		ID:          inv.ID,
-		CancelledBy: parseUUID(userID),
-	})
-	if err != nil {
+	if err := h.TaskService.CancelAssignment(r.Context(), room, inv.AssignmentID, parseUUID(userID)); err != nil {
 		writeError(w, http.StatusNotFound, "invocation not found or already finished")
 		return
 	}
-	var agentID pgtype.UUID
-	if inv.TaskID.Valid {
-		if task, cancelErr := h.TaskService.CancelTask(r.Context(), inv.TaskID); cancelErr == nil && task != nil {
-			agentID = task.AgentID
-		}
+	inv, err = h.Queries.GetRoomInvocation(r.Context(), inv.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load invocation")
+		return
 	}
-	if !agentID.Valid {
-		room, roomErr := h.Queries.GetRoom(r.Context(), inv.RoomID)
-		if roomErr == nil {
-			if resolved, _, resolveErr := h.TaskService.ResolveRoomMentionAgent(r.Context(), room.WorkspaceID, util.Mention{
-				Type: inv.TargetType,
-				ID:   uuidToString(inv.TargetID),
-			}); resolveErr == nil {
-				agentID = resolved
-			}
-		}
-	}
-	if agentID.Valid {
-		h.TaskService.DrainQueuedRoomInvocations(r.Context(), agentID)
-	}
-	h.TaskService.RefreshRoomSnapshot(r.Context(), inv.RoomID)
-	h.TaskService.RecordManualInvocationCancelFlowEvent(r.Context(), room, inv, parseUUID(userID))
 	h.publishRoom(protocol.EventRoomInvocationUpdated, workspaceID, "member", userID, map[string]string{
 		"room_id": uuidToString(inv.RoomID),
 	})
@@ -1776,13 +1905,9 @@ func (h *Handler) ResumeInvocation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	inv, err := h.Queries.GetMentionInvocation(r.Context(), invUUID)
+	inv, err := h.Queries.GetRoomInvocation(r.Context(), invUUID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "invocation not found")
-		return
-	}
-	if inv.Status != "paused" {
-		writeError(w, http.StatusBadRequest, "invocation is not paused")
 		return
 	}
 	room, member, ok := h.loadRoomMember(w, r, userID, workspaceID, uuidToString(inv.RoomID))
@@ -1793,49 +1918,11 @@ func (h *Handler) ResumeInvocation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "admin required to resume chain")
 		return
 	}
-	msg, err := h.Queries.GetRoomMessageInRoom(r.Context(), db.GetRoomMessageInRoomParams{
-		ID:     inv.MessageID,
-		RoomID: room.ID,
-	})
+	inv, err = h.TaskService.RetryRoomAssignment(r.Context(), room, inv.AssignmentID, parseUUID(userID))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "source message not found")
+		writeError(w, http.StatusBadRequest, "invocation cannot be resumed")
 		return
 	}
-	agentID, isLeader, err := h.TaskService.ResolveRoomMentionAgent(r.Context(), room.WorkspaceID, util.Mention{
-		Type: inv.TargetType,
-		ID:   uuidToString(inv.TargetID),
-	})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid invocation target")
-		return
-	}
-	inv, err = h.Queries.UpdateMentionInvocationStatus(r.Context(), db.UpdateMentionInvocationStatusParams{
-		ID:     inv.ID,
-		Status: "pending",
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to resume invocation")
-		return
-	}
-	task, err := h.TaskService.EnqueueRoomInvocationTask(r.Context(), service.EnqueueRoomInvocationParams{
-		Room:       room,
-		Message:    msg,
-		Invocation: inv,
-		AgentID:    agentID,
-		IsLeader:   isLeader,
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to enqueue task")
-		return
-	}
-	now := time.Now()
-	inv, _ = h.Queries.UpdateMentionInvocationStatus(r.Context(), db.UpdateMentionInvocationStatusParams{
-		ID:          inv.ID,
-		Status:      "queued",
-		TaskID:      task.ID,
-		DeliveredAt: pgtype.Timestamptz{Time: now, Valid: true},
-	})
-	h.TaskService.DrainQueuedRoomInvocations(r.Context(), agentID)
 	h.TaskService.RefreshRoomSnapshot(r.Context(), inv.RoomID)
 	h.logRoomAudit(r.Context(), workspaceID, "member", userID, "invocation_resumed", map[string]string{
 		"invocation_id": uuidToString(inv.ID),
@@ -1897,35 +1984,19 @@ func (h *Handler) DecideApproval(w http.ResponseWriter, r *http.Request) {
 		"decision":    decision,
 		"room_id":     uuidToString(approval.RoomID),
 	})
-	if approval.InvocationID.Valid {
+	if approval.RoomInvocationID.Valid {
 		if decision == "approved" {
-			inv, invErr := h.Queries.GetMentionInvocation(r.Context(), approval.InvocationID)
-			if invErr == nil && inv.Status == "pending" {
-				room, roomErr := h.Queries.GetRoom(r.Context(), approval.RoomID)
-				msg, msgErr := h.Queries.GetRoomMessageInRoom(r.Context(), db.GetRoomMessageInRoomParams{
-					ID:     inv.MessageID,
-					RoomID: approval.RoomID,
-				})
-				if roomErr == nil && msgErr == nil {
-					agentID, isLeader, _ := h.TaskService.ResolveRoomMentionAgent(r.Context(), room.WorkspaceID, util.Mention{
-						Type: inv.TargetType,
-						ID:   uuidToString(inv.TargetID),
-					})
-					if task, enqueueErr := h.TaskService.EnqueueRoomInvocationTask(r.Context(), service.EnqueueRoomInvocationParams{
-						Room: room, Message: msg, Invocation: inv, AgentID: agentID, IsLeader: isLeader,
-					}); enqueueErr == nil {
-						now := time.Now()
-						_, _ = h.Queries.UpdateMentionInvocationStatus(r.Context(), db.UpdateMentionInvocationStatusParams{
-							ID: inv.ID, Status: "queued", TaskID: task.ID,
-							DeliveredAt: pgtype.Timestamptz{Time: now, Valid: true},
-						})
-					}
+			if inv, invErr := h.Queries.GetRoomInvocation(r.Context(), approval.RoomInvocationID); invErr == nil {
+				if room, roomErr := h.Queries.GetRoom(r.Context(), approval.RoomID); roomErr == nil {
+					_, _ = h.TaskService.RetryRoomAssignment(r.Context(), room, inv.AssignmentID, parseUUID(userID))
 				}
 			}
 		} else if decision == "rejected" {
-			_, _ = h.Queries.CancelMentionInvocation(r.Context(), db.CancelMentionInvocationParams{
-				ID: approval.InvocationID, CancelledBy: parseUUID(userID),
-			})
+			if inv, invErr := h.Queries.GetRoomInvocation(r.Context(), approval.RoomInvocationID); invErr == nil {
+				if room, roomErr := h.Queries.GetRoom(r.Context(), approval.RoomID); roomErr == nil {
+					_ = h.TaskService.CancelAssignment(r.Context(), room, inv.AssignmentID, parseUUID(userID))
+				}
+			}
 		}
 		h.TaskService.RefreshRoomSnapshot(r.Context(), approval.RoomID)
 	}
@@ -1933,4 +2004,173 @@ func (h *Handler) DecideApproval(w http.ResponseWriter, r *http.Request) {
 		"id":     uuidToString(approval.ID),
 		"status": approval.Status,
 	})
+}
+
+func roomGraphSnapshotResponse(snap service.RoomGraphSnapshot) map[string]any {
+	assignments := make([]AssignmentResponse, 0, len(snap.Assignments))
+	for _, a := range snap.Assignments {
+		assignments = append(assignments, assignmentToResponse(a))
+	}
+	return map[string]any{
+		"messages":                roomMessagesToGraphResponse(snap.Messages),
+		"mentions":                roomMentionsToGraphResponse(snap.Mentions),
+		"assignments":             assignments,
+		"assignment_dependencies": roomDependenciesToGraphResponse(snap.AssignmentDependencies),
+		"invocations":             roomInvocationsToGraphResponse(snap.Invocations),
+		"decisions":               roomManagerDecisionsToGraphResponse(snap.Decisions),
+		"invocation_events":       roomInvocationEventsToGraphResponse(snap.InvocationEvents),
+	}
+}
+
+func (h *Handler) GetRoomGraph(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := ctxWorkspaceID(r.Context())
+	roomID := chi.URLParam(r, "roomId")
+	room, _, ok := h.loadRoomMember(w, r, userID, workspaceID, roomID)
+	if !ok {
+		return
+	}
+	snap, err := h.TaskService.BuildRoomGraphSnapshot(r.Context(), room.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load room graph")
+		return
+	}
+	writeJSON(w, http.StatusOK, roomGraphSnapshotResponse(snap))
+}
+
+func (h *Handler) CreateRoomAssignment(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := ctxWorkspaceID(r.Context())
+	roomID := chi.URLParam(r, "roomId")
+	room, member, ok := h.loadRoomMember(w, r, userID, workspaceID, roomID)
+	if !ok {
+		return
+	}
+	if !roomMemberCanManage(member) {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+
+	var req CreateRoomAssignmentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	sourceMessageID, ok := parseUUIDOrBadRequest(w, req.SourceMessageID, "source_message_id")
+	if !ok {
+		return
+	}
+	assigneeID, ok := parseUUIDOrBadRequest(w, req.AssigneeID, "assignee_id")
+	if !ok {
+		return
+	}
+	assigneeType := strings.TrimSpace(req.AssigneeType)
+	if assigneeType == "" {
+		assigneeType = "agent"
+	}
+	kind := strings.TrimSpace(req.Kind)
+	if kind == "" {
+		kind = "manager_route"
+	}
+	depIDs := make([]pgtype.UUID, 0, len(req.DependsOnAssignmentIDs))
+	for _, raw := range req.DependsOnAssignmentIDs {
+		depID, ok := parseUUIDOrBadRequest(w, raw, "depends_on_assignment_ids")
+		if !ok {
+			return
+		}
+		depIDs = append(depIDs, depID)
+	}
+
+	assignment, inv, err := h.TaskService.CreateRoomAssignment(r.Context(), service.CreateRoomAssignmentParams{
+		Room:                   room,
+		SourceMessageID:        sourceMessageID,
+		AssigneeType:           assigneeType,
+		AssigneeID:             assigneeID,
+		Kind:                   kind,
+		Reason:                 req.Reason,
+		CreatedByType:          "user",
+		CreatedByID:            parseUUID(userID),
+		DependsOnAssignmentIDs: depIDs,
+		CanAccessAgent: func(ctx context.Context, agent db.Agent, authorType, authorID, wsID string) bool {
+			return h.canAccessPrivateAgent(ctx, agent, authorType, authorID, wsID)
+		},
+		AuthorType:  "user",
+		AuthorID:    userID,
+		WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to create assignment")
+		return
+	}
+	resp := map[string]any{
+		"assignment": assignmentToResponse(assignment),
+	}
+	if inv.ID.Valid {
+		resp["invocation"] = invocationToResponse(inv)
+	}
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (h *Handler) RetryRoomAssignment(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := ctxWorkspaceID(r.Context())
+	roomID := chi.URLParam(r, "roomId")
+	assignmentID := chi.URLParam(r, "assignmentId")
+	room, _, ok := h.loadRoomMember(w, r, userID, workspaceID, roomID)
+	if !ok {
+		return
+	}
+	assignmentUUID, ok := parseUUIDOrBadRequest(w, assignmentID, "assignment id")
+	if !ok {
+		return
+	}
+	inv, err := h.TaskService.RetryRoomAssignment(r.Context(), room, assignmentUUID, parseUUID(userID))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "assignment cannot be retried")
+		return
+	}
+	h.publishRoom(protocol.EventRoomInvocationUpdated, workspaceID, "member", userID, map[string]string{
+		"room_id": uuidToString(room.ID),
+	})
+	writeJSON(w, http.StatusOK, invocationToResponse(inv))
+}
+
+func (h *Handler) CancelRoomAssignment(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := ctxWorkspaceID(r.Context())
+	roomID := chi.URLParam(r, "roomId")
+	assignmentID := chi.URLParam(r, "assignmentId")
+	room, member, ok := h.loadRoomMember(w, r, userID, workspaceID, roomID)
+	if !ok {
+		return
+	}
+	if !roomMemberCanManage(member) {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	assignmentUUID, ok := parseUUIDOrBadRequest(w, assignmentID, "assignment id")
+	if !ok {
+		return
+	}
+	if err := h.TaskService.CancelAssignment(r.Context(), room, assignmentUUID, parseUUID(userID)); err != nil {
+		writeError(w, http.StatusNotFound, "assignment not found or already finished")
+		return
+	}
+	h.publishRoom(protocol.EventRoomAssignmentUpdated, workspaceID, "member", userID, map[string]string{
+		"room_id":       uuidToString(room.ID),
+		"assignment_id": assignmentID,
+	})
+	w.WriteHeader(http.StatusNoContent)
 }

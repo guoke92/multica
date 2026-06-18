@@ -1,28 +1,55 @@
-import type { MentionInvocation, RoomFlowEvent } from "@multica/core/types/room";
+import type {
+  RoomAssignment,
+  RoomAssignmentDependency,
+  RoomInvocation,
+  RoomInvocationEvent,
+  RoomMessage,
+} from "@multica/core/types/room";
 
 export type FlowStep = {
   token: string;
   createdAt: string;
-  event: RoomFlowEvent;
+  event: RoomInvocationEvent;
   actorId: string;
   actorName: string;
 };
 
-/** One track = one agent invocation lifecycle (queued → … → terminal), or one user message. */
+/** One track = one assignment lifecycle. */
 export type FlowTrack = {
   key: string;
-  invocationId?: string;
-  messageId?: string;
+  assignmentId: string;
+  sourceMessageId?: string;
+  kind: string;
   steps: FlowStep[];
   startedAt: string;
   updatedAt: string;
+};
+
+export type FlowGraphContext = {
+  assignments: RoomAssignment[];
+  assignment_dependencies: RoomAssignmentDependency[];
+  invocations: RoomInvocation[];
 };
 
 export type FlowDisplayOpts = {
   managerAgentId?: string;
   memberNameById?: Map<string, string>;
   agentNameById?: Map<string, string>;
-  invocationTargetById?: Map<string, string>;
+  graph?: FlowGraphContext;
+};
+
+export type GraphStatusCounts = {
+  pending: number;
+  blocked: number;
+  queued: number;
+  running: number;
+  failed: number;
+  completed: number;
+};
+
+export type AgentRunState = {
+  label: string;
+  tone: "running" | "queued" | "failed" | "paused";
 };
 
 const invocationStatusToken: Record<string, string> = {
@@ -33,21 +60,41 @@ const invocationStatusToken: Record<string, string> = {
   invocation_failed: "失败",
   invocation_timed_out: "超时",
   invocation_cancelled: "已取消",
-  invocation_retried: "手动重试",
+  invocation_created: "已创建",
 };
 
-const humanInvocationEventTypes = new Set([
-  "invocation_manual_cancel",
-  "invocation_manual_retry",
-  "invocation_retried",
-]);
+const assignmentStatusToken: Record<string, string> = {
+  assignment_created: "已创建",
+  assignment_completed: "完成",
+  assignment_failed: "失败",
+  assignment_cancelled: "已取消",
+  assignment_retry: "手动重试",
+};
 
-const invocationStatusFromInvocation: Record<string, string> = {
+const invocationStatusFromRow: Record<string, string> = {
   pending: "待调度",
   queued: "排队中",
   running: "思考中",
   delivered: "思考中",
+  succeeded: "完成",
+  failed: "失败",
+  timed_out: "超时",
+  cancelled: "已取消",
 };
+
+const assignmentStatusFromRow: Record<string, string> = {
+  pending: "待处理",
+  blocked: "等待汇合",
+  running: "执行中",
+  completed: "完成",
+  failed: "失败",
+  cancelled: "已取消",
+};
+
+const humanInvocationEventTypes = new Set([
+  "assignment_retry",
+  "assignment_cancelled",
+]);
 
 /** Snowflake / UUIDv7 ids are monotonic — lexicographic order matches issuance order. */
 export function compareMonotonicId(a: string, b: string): number {
@@ -55,25 +102,398 @@ export function compareMonotonicId(a: string, b: string): number {
   return a < b ? -1 : 1;
 }
 
-export function resolveEventMessageId(event: RoomFlowEvent): string | null {
-  return event.message_id ?? event.from_message_id ?? null;
+export function projectFlowEvents(events: RoomInvocationEvent[]): RoomInvocationEvent[] {
+  return [...events].sort((a, b) => compareMonotonicId(a.id, b.id));
 }
 
-export function projectFlowEvents(events: RoomFlowEvent[]): RoomFlowEvent[] {
-  return [...events].sort((a, b) => compareMonotonicId(a.id, b.id));
+export function computeGraphStatusCounts(
+  assignments: RoomAssignment[],
+  invocations: RoomInvocation[] = [],
+): GraphStatusCounts {
+  let pending = 0;
+  let blocked = 0;
+  let running = 0;
+  let failed = 0;
+  let completed = 0;
+
+  for (const assignment of assignments) {
+    switch (assignment.status) {
+      case "pending":
+        pending += 1;
+        break;
+      case "blocked":
+        blocked += 1;
+        break;
+      case "running":
+        running += 1;
+        break;
+      case "failed":
+        failed += 1;
+        break;
+      case "completed":
+        completed += 1;
+        break;
+      default:
+        break;
+    }
+  }
+
+  const queued = invocations.filter((inv) => inv.status === "queued").length;
+  const activeInvocations = invocations.filter((inv) =>
+    ["running", "delivered"].includes(inv.status),
+  ).length;
+  running = Math.max(running, activeInvocations);
+
+  return { pending, blocked, queued, running, failed, completed };
+}
+
+export function deriveAgentRunState(
+  agentId: string,
+  assignments: RoomAssignment[],
+  invocations: RoomInvocation[],
+): AgentRunState | undefined {
+  const agentInvocations = invocations.filter((inv) => inv.agent_id === agentId);
+  const activeInvocation = agentInvocations.find((inv) =>
+    ["running", "delivered"].includes(inv.status),
+  );
+  if (activeInvocation) {
+    return { label: "正在处理", tone: "running" };
+  }
+
+  const queuedInvocation = agentInvocations.find((inv) =>
+    ["pending", "queued"].includes(inv.status),
+  );
+  if (queuedInvocation) {
+    return { label: "排队中", tone: "queued" };
+  }
+
+  const activeAssignment = assignments.find(
+    (a) =>
+      a.assignee_type === "agent" &&
+      a.assignee_id === agentId &&
+      ["running", "pending", "blocked"].includes(a.status),
+  );
+  if (activeAssignment) {
+    if (activeAssignment.status === "blocked") {
+      return { label: "等待汇合", tone: "queued" };
+    }
+    if (activeAssignment.status === "running") {
+      return { label: "正在处理", tone: "running" };
+    }
+    return { label: "排队中", tone: "queued" };
+  }
+
+  const failedAssignment = assignments.find(
+    (a) =>
+      a.assignee_type === "agent" &&
+      a.assignee_id === agentId &&
+      a.status === "failed",
+  );
+  if (failedAssignment) {
+    return { label: "失败", tone: "failed" };
+  }
+
+  const failedInvocation = agentInvocations.find((inv) =>
+    ["failed", "timed_out"].includes(inv.status),
+  );
+  if (failedInvocation) {
+    return {
+      label: failedInvocation.status === "timed_out" ? "已超时" : "失败",
+      tone: "failed",
+    };
+  }
+
+  const pausedInvocation = agentInvocations.find((inv) => inv.status === "paused");
+  if (pausedInvocation) {
+    return { label: "已暂停", tone: "paused" };
+  }
+
+  return undefined;
+}
+
+export type InvocationChatPresentation = "manager_status" | "agent_bubble";
+export type InvocationChatPhase = "running" | "queued" | "failed";
+
+export type InvocationChatItem = {
+  invocation: RoomInvocation;
+  assignment: RoomAssignment;
+  agentId: string;
+  agentName: string;
+  sourceMessageId: string;
+  presentation: InvocationChatPresentation;
+  phase: InvocationChatPhase;
+  failureReason?: string;
+};
+
+export type ChatTimelineEntry =
+  | { kind: "message"; message: RoomMessage }
+  | { kind: "invocation"; item: InvocationChatItem };
+
+/** @deprecated Prefer InvocationChatItem */
+export type ActiveInvocationSlot = {
+  invocation: RoomInvocation;
+  agentId: string;
+  agentName: string;
+  phase: "running" | "queued";
+};
+
+const activeInvocationStatuses = new Set(["running", "delivered", "queued", "pending"]);
+const failedInvocationStatuses = new Set(["failed", "timed_out", "cancelled"]);
+
+function assignmentMap(assignments: RoomAssignment[]): Map<string, RoomAssignment> {
+  return new Map(assignments.map((a) => [a.id, a]));
+}
+
+function resolveInvocationPresentation(
+  assignment: RoomAssignment,
+  managerAgentId?: string,
+): InvocationChatPresentation {
+  if (assignment.kind === "auto_review") {
+    return "manager_status";
+  }
+  if (
+    managerAgentId &&
+    assignment.assignee_type === "agent" &&
+    assignment.assignee_id === managerAgentId
+  ) {
+    return "manager_status";
+  }
+  return "agent_bubble";
+}
+
+function resolveInvocationPhase(
+  inv: RoomInvocation,
+  assignment: RoomAssignment,
+): InvocationChatPhase | null {
+  if (["running", "delivered"].includes(inv.status)) return "running";
+  if (["queued", "pending"].includes(inv.status)) return "queued";
+  if (failedInvocationStatuses.has(inv.status)) return "failed";
+  if (assignment.status === "failed") return "failed";
+  if (activeInvocationStatuses.has(inv.status)) {
+    return assignment.status === "running" ? "running" : "queued";
+  }
+  return null;
+}
+
+/** Active + failed invocations rendered in the chat timeline. */
+export function buildInvocationChatItems(
+  invocations: RoomInvocation[],
+  assignments: RoomAssignment[],
+  messages: RoomMessage[],
+  agentNameById: Map<string, string>,
+  managerAgentId?: string,
+): InvocationChatItem[] {
+  const messageIds = new Set(messages.map((m) => m.id));
+  const byAssignment = assignmentMap(assignments);
+  const latestByAssignment = new Map<string, RoomInvocation>();
+
+  for (const inv of invocations) {
+    const prev = latestByAssignment.get(inv.assignment_id);
+    if (!prev || compareMonotonicId(inv.id, prev.id) > 0) {
+      latestByAssignment.set(inv.assignment_id, inv);
+    }
+  }
+
+  const items: InvocationChatItem[] = [];
+  for (const inv of latestByAssignment.values()) {
+    const assignment = byAssignment.get(inv.assignment_id);
+    if (!assignment) continue;
+    if (inv.output_message_id && messageIds.has(inv.output_message_id)) continue;
+    if (assignment.output_message_id && messageIds.has(assignment.output_message_id)) {
+      continue;
+    }
+
+    const phase = resolveInvocationPhase(inv, assignment);
+    if (!phase) continue;
+
+    const agentId =
+      assignment.assignee_type === "agent" ? assignment.assignee_id : inv.agent_id;
+    items.push({
+      invocation: inv,
+      assignment,
+      agentId,
+      agentName:
+        agentNameById.get(agentId) ??
+        agentNameById.get(inv.agent_id) ??
+        "Agent",
+      sourceMessageId: assignment.source_message_id || inv.source_message_id,
+      presentation: resolveInvocationPresentation(assignment, managerAgentId),
+      phase,
+      failureReason: inv.failure_reason ?? assignment.reason,
+    });
+  }
+
+  return items.sort((a, b) => compareMonotonicId(a.invocation.id, b.invocation.id));
+}
+
+/** Interleave messages with agent invocation placeholders anchored on source messages. */
+export function buildChatTimeline(
+  messages: RoomMessage[],
+  items: InvocationChatItem[],
+): ChatTimelineEntry[] {
+  const agentItems = items.filter((item) => item.presentation === "agent_bubble");
+  const bySource = new Map<string, InvocationChatItem[]>();
+  for (const item of agentItems) {
+    if (!item.sourceMessageId) continue;
+    const list = bySource.get(item.sourceMessageId) ?? [];
+    list.push(item);
+    bySource.set(item.sourceMessageId, list);
+  }
+
+  const entries: ChatTimelineEntry[] = [];
+  const attached = new Set<string>();
+
+  for (const message of messages) {
+    entries.push({ kind: "message", message });
+    const related = bySource.get(message.id) ?? [];
+    for (const item of related) {
+      entries.push({ kind: "invocation", item });
+      attached.add(item.invocation.id);
+    }
+  }
+
+  for (const item of agentItems) {
+    if (attached.has(item.invocation.id)) continue;
+    entries.push({ kind: "invocation", item });
+  }
+
+  return entries;
+}
+
+/** Latest manager status chip per triggering message (not a separate chat row). */
+export function managerStatusByMessageId(
+  items: InvocationChatItem[],
+): Map<string, InvocationChatItem> {
+  const map = new Map<string, InvocationChatItem>();
+  for (const item of items) {
+    if (item.presentation !== "manager_status" || !item.sourceMessageId) continue;
+    const prev = map.get(item.sourceMessageId);
+    if (!prev || compareMonotonicId(item.invocation.id, prev.invocation.id) > 0) {
+      map.set(item.sourceMessageId, item);
+    }
+  }
+  return map;
+}
+
+/** Drop assignment-level lifecycle duplicates when invocation events carry the same signal. */
+export function collapseRedundantFlowSteps(steps: FlowStep[]): FlowStep[] {
+  const types = new Set(steps.map((step) => step.event.type));
+  const skipAssignment = new Set<string>();
+  if (types.has("invocation_created")) {
+    skipAssignment.add("assignment_created");
+  }
+  if (types.has("invocation_succeeded")) {
+    skipAssignment.add("assignment_completed");
+  }
+  if (
+    types.has("invocation_failed") ||
+    types.has("invocation_timed_out") ||
+    types.has("invocation_cancelled")
+  ) {
+    skipAssignment.add("assignment_failed");
+  }
+
+  const filtered = steps.filter(
+    (step) => !skipAssignment.has(step.event.type),
+  );
+
+  const result: FlowStep[] = [];
+  for (const step of filtered) {
+    const prev = result[result.length - 1];
+    if (prev && prev.token === step.token) continue;
+    result.push(step);
+  }
+  return result;
+}
+
+/** @deprecated Prefer buildInvocationChatItems */
+export function listActiveInvocationSlots(
+  invocations: RoomInvocation[],
+  messages: RoomMessage[],
+  agentNameById: Map<string, string>,
+): ActiveInvocationSlot[] {
+  const messageIds = new Set(messages.map((m) => m.id));
+
+  return invocations
+    .filter((inv) => {
+      if (!activeInvocationStatuses.has(inv.status)) return false;
+      if (inv.output_message_id && messageIds.has(inv.output_message_id)) {
+        return false;
+      }
+      return true;
+    })
+    .sort((a, b) => compareMonotonicId(a.id, b.id))
+    .map((inv) => ({
+      invocation: inv,
+      agentId: inv.agent_id,
+      agentName: agentNameById.get(inv.agent_id) ?? "Agent",
+      phase: ["running", "delivered"].includes(inv.status) ? "running" : "queued",
+    }));
 }
 
 function sortStepsByEventId(steps: FlowStep[]): FlowStep[] {
   return [...steps].sort((a, b) => compareMonotonicId(a.event.id, b.event.id));
 }
 
+function assignmentById(
+  graph: FlowGraphContext | undefined,
+  assignmentId: string,
+): RoomAssignment | undefined {
+  return graph?.assignments.find((a) => a.id === assignmentId);
+}
+
+function invocationForAssignment(
+  graph: FlowGraphContext | undefined,
+  assignmentId: string,
+): RoomInvocation | undefined {
+  if (!graph) return undefined;
+  const active = graph.invocations.filter((inv) => inv.assignment_id === assignmentId);
+  if (active.length === 0) return undefined;
+  return [...active].sort((a, b) =>
+    compareMonotonicId(b.created_at ?? b.id, a.created_at ?? a.id),
+  )[0];
+}
+
+export function resolveAssignmentAgentId(
+  assignmentId: string,
+  graph?: FlowGraphContext,
+): string | undefined {
+  const inv = invocationForAssignment(graph, assignmentId);
+  if (inv?.agent_id) return inv.agent_id;
+  const assignment = assignmentById(graph, assignmentId);
+  if (assignment?.assignee_type === "agent") {
+    return assignment.assignee_id;
+  }
+  return undefined;
+}
+
+export function computeJoinProgress(
+  assignmentId: string,
+  graph: FlowGraphContext,
+): { completed: number; total: number } {
+  const deps = graph.assignment_dependencies.filter(
+    (d) => d.assignment_id === assignmentId,
+  );
+  const total = deps.length;
+  let completed = 0;
+  for (const dep of deps) {
+    const prereq = graph.assignments.find(
+      (a) => a.id === dep.depends_on_assignment_id,
+    );
+    if (prereq?.status === "completed") {
+      completed += 1;
+    }
+  }
+  return { completed, total };
+}
+
 function buildFlowStep(
-  event: RoomFlowEvent,
+  event: RoomInvocationEvent,
   opts: {
     agentNameById: Map<string, string>;
     managerAgentId?: string;
     memberNameById?: Map<string, string>;
-    invocationTargetById?: Map<string, string>;
+    graph?: FlowGraphContext;
   },
 ): FlowStep {
   const actorId = resolveFlowStepActorId(event, opts);
@@ -93,133 +513,38 @@ function buildFlowStep(
   };
 }
 
-export function virtualTrackForStep(step: FlowStep, messageId: string): FlowTrack {
-  return {
-    key: step.event.invocation_id
-      ? `inv:${step.event.invocation_id}`
-      : `msg:${messageId}`,
-    invocationId: step.event.invocation_id,
-    messageId,
-    steps: [step],
-    startedAt: step.createdAt,
-    updatedAt: step.createdAt,
-  };
-}
-
-/** One group per user message; steps are all flow events for that message, ordered by event id. */
-export type FlowMessageGroup = {
-  messageId: string;
-  steps: FlowStep[];
-};
-
-export function groupFlowMessages(
-  events: RoomFlowEvent[],
-  opts: {
-    agentNameById: Map<string, string>;
-    managerAgentId?: string;
-    memberNameById?: Map<string, string>;
-    invocationTargetById?: Map<string, string>;
-  },
-): FlowMessageGroup[] {
-  const projected = projectFlowEvents(events);
-  const groups = new Map<string, FlowStep[]>();
-
-  for (const event of projected) {
-    const messageId = resolveEventMessageId(event);
-    if (!messageId) continue;
-    const step = buildFlowStep(event, opts);
-    const steps = groups.get(messageId) ?? [];
-    steps.push(step);
-    groups.set(messageId, steps);
-  }
-
-  return [...groups.entries()]
-    .sort(([a], [b]) => compareMonotonicId(a, b))
-    .map(([messageId, steps]) => ({
-      messageId,
-      steps: sortStepsByEventId(steps),
-    }));
-}
-
-export function flattenFlowMessageSteps(
-  groups: FlowMessageGroup[],
-): Array<{ messageId: string; step: FlowStep }> {
-  return groups.flatMap((group) =>
-    group.steps.map((step) => ({ messageId: group.messageId, step })),
-  );
-}
-
-export function isLatestInvocationStep(
-  step: FlowStep,
-  steps: FlowStep[],
-): boolean {
-  const invocationId = step.event.invocation_id;
-  if (!invocationId) return true;
-  let latest = step;
-  for (const candidate of steps) {
-    if (
-      candidate.event.invocation_id === invocationId &&
-      compareMonotonicId(candidate.event.id, latest.event.id) > 0
-    ) {
-      latest = candidate;
-    }
-  }
-  return latest.event.id === step.event.id;
-}
-
-/** Map each event to the invocation track it belongs to. */
-export function resolveFlowTrackKey(event: RoomFlowEvent): string | null {
-  if (event.type === "user_intent" && event.message_id) {
-    return `msg:${event.message_id}`;
-  }
-  if (event.invocation_id) {
-    return `inv:${event.invocation_id}`;
-  }
-  if (event.step_id) {
-    const prefix = event.step_id.indexOf(":");
-    if (prefix > 0) {
-      return `inv:${event.step_id.slice(prefix + 1)}`;
-    }
-  }
-  return null;
+export function resolveFlowTrackKey(event: RoomInvocationEvent): string | null {
+  if (!event.assignment_id) return null;
+  return `asgn:${event.assignment_id}`;
 }
 
 export function resolveFlowStepActorId(
-  event: RoomFlowEvent,
+  event: RoomInvocationEvent,
   opts: {
     managerAgentId?: string;
-    invocationTargetById?: Map<string, string>;
+    graph?: FlowGraphContext;
   },
 ): string {
   if (event.actor_type === "user" && event.actor_id) {
     return event.actor_id;
   }
 
-  if (event.invocation_id && opts.invocationTargetById?.has(event.invocation_id)) {
-    return opts.invocationTargetById.get(event.invocation_id)!;
-  }
-
-  if (
-    event.category === "control" ||
-    event.category === "confirm" ||
-    event.type.startsWith("manager_")
-  ) {
-    if (event.actor_type === "agent" && event.actor_id) {
-      return event.actor_id;
-    }
-    if (opts.managerAgentId) {
-      return opts.managerAgentId;
-    }
+  const agentId = resolveAssignmentAgentId(event.assignment_id, opts.graph);
+  if (agentId) {
+    return agentId;
   }
 
   if (event.actor_type === "agent" && event.actor_id) {
     return event.actor_id;
   }
+  if (opts.managerAgentId) {
+    return opts.managerAgentId;
+  }
   return event.actor_id ?? "system";
 }
 
 export function resolveFlowActorName(
-  event: RoomFlowEvent,
+  event: RoomInvocationEvent,
   actorId: string,
   agentNameById: Map<string, string>,
   managerAgentId?: string,
@@ -245,30 +570,22 @@ export function resolveFlowActorName(
   return agentNameById.get(actorId) ?? (actorId === "system" ? "系统" : "Agent");
 }
 
-export function flowStepToken(event: RoomFlowEvent, actorName: string): string {
-  if (event.type === "invocation_manual_cancel") {
-    return "手动取消";
-  }
-  if (event.type === "invocation_manual_retry" || event.type === "invocation_retried") {
-    return "手动重试";
-  }
-  if (event.type === "invocation_cancelled") {
-    if (event.payload?.manual_cancel === true) {
-      return "手动取消";
-    }
-    return "已取消";
+export function flowStepToken(
+  event: RoomInvocationEvent,
+  actorName: string,
+): string {
+  const assignmentToken = assignmentStatusToken[event.type];
+  if (assignmentToken) {
+    return assignmentToken;
   }
 
-  const statusToken = invocationStatusToken[event.type];
-  if (statusToken) {
-    return statusToken;
+  const invocationToken = invocationStatusToken[event.type];
+  if (invocationToken) {
+    return invocationToken;
   }
 
   const payload = event.payload ?? {};
   if (typeof payload.label === "string" && payload.label) {
-    if (payload.label.includes("路由给")) {
-      return payload.label.replace(/^群管\s*→\s*/u, "");
-    }
     const stripped = payload.label.replace(
       new RegExp(`^${escapeRegExp(actorName)}\\s*·\\s*`),
       "",
@@ -281,79 +598,41 @@ export function flowStepToken(event: RoomFlowEvent, actorName: string): string {
     ) {
       return stripped;
     }
+    return payload.label;
   }
 
-  switch (event.type) {
-    case "user_intent":
-      return "发送消息";
-    case "manager_route_running":
-      return "分配中";
-    case "manager_route_succeeded":
-      return "已分配";
-    case "manager_route_failed":
-      return "分配失败";
-    case "manager_relay_succeeded":
-      return "接力";
-    case "manager_escalate":
-      return "升级介入";
-    case "agent_at_succeeded":
-      return "互@";
-    case "human_confirm_accepted":
-      return "已确认";
-    case "human_confirm_rejected":
-      return "已拒绝";
-    case "topic_compressed":
-      return "阶段压缩";
-    default:
-      return event.type.replace(/^invocation_/, "").replace(/_/g, " ");
-  }
+  return event.type.replace(/^(assignment_|invocation_)/, "").replace(/_/g, " ");
 }
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function findManagerRouteTarget(track: FlowTrack): string | undefined {
-  for (let i = track.steps.length - 1; i >= 0; i--) {
-    const step = track.steps[i]!;
-    const payload = step.event.payload ?? {};
-    if (typeof payload.target_agent_name === "string" && payload.target_agent_name) {
-      return payload.target_agent_name;
-    }
-    const label = payload.label;
-    if (typeof label === "string") {
-      const match = label.match(/路由给\s*(.+)$/u);
-      if (match?.[1]) {
-        return match[1].trim();
-      }
-    }
-    if (step.token.startsWith("路由给 ")) {
-      return step.token.replace(/^路由给\s*/u, "").trim();
-    }
+function assignmentKindLabel(kind: string): string {
+  switch (kind) {
+    case "join":
+      return "汇合";
+    case "mention":
+      return "提及";
+    case "manager_route":
+      return "群管路由";
+    case "auto_review":
+      return "自动审阅";
+    default:
+      return kind || "任务";
   }
-  return undefined;
 }
 
-function formatUserIntentLine(step: FlowStep): string {
-  const preview = step.event.payload?.preview;
-  if (typeof preview === "string" && preview.trim()) {
-    return `${step.actorName} · ${preview}`;
+function formatJoinLine(
+  assignment: RoomAssignment,
+  graph: FlowGraphContext,
+  token: string,
+): string {
+  const { completed, total } = computeJoinProgress(assignment.id, graph);
+  if (total > 0) {
+    return `汇合 ${completed}/${total} · ${token}`;
   }
-  return `${step.actorName} · 发送消息`;
-}
-
-function isHumanInvocationStep(step: FlowStep): boolean {
-  if (humanInvocationEventTypes.has(step.event.type)) {
-    return true;
-  }
-  return (
-    step.event.type === "invocation_cancelled" &&
-    step.event.payload?.manual_cancel === true
-  );
-}
-
-function isAgentInvocationStatusStep(step: FlowStep): boolean {
-  return step.event.type.startsWith("invocation_") && !isHumanInvocationStep(step);
+  return `汇合 · ${token}`;
 }
 
 function resolveTrackAgentName(
@@ -361,12 +640,10 @@ function resolveTrackAgentName(
   step: FlowStep,
   opts?: FlowDisplayOpts,
 ): string {
-  if (track.invocationId && opts?.invocationTargetById?.has(track.invocationId)) {
-    const targetId = opts.invocationTargetById.get(track.invocationId)!;
-    const name = opts.agentNameById?.get(targetId);
-    if (name) {
-      return name;
-    }
+  const agentId = resolveAssignmentAgentId(track.assignmentId, opts?.graph);
+  if (agentId) {
+    const name = opts?.agentNameById?.get(agentId);
+    if (name) return name;
   }
   const payloadName = step.event.payload?.agent_name;
   if (typeof payloadName === "string" && payloadName) {
@@ -375,52 +652,17 @@ function resolveTrackAgentName(
   return step.actorName;
 }
 
-function formatManagerFlowLine(track: FlowTrack, step: FlowStep): string {
-  const targetName = findManagerRouteTarget(track);
-  const type = step.event.type;
-  const token = step.token;
-
-  if (type === "invocation_succeeded" || (type.includes("succeeded") && token === "完成")) {
-    if (targetName) {
-      return `群管指定${targetName}回复`;
-    }
-    return "群管回复完成";
+function isHumanAssignmentStep(step: FlowStep): boolean {
+  if (humanInvocationEventTypes.has(step.event.type)) {
+    return true;
   }
+  return (
+    step.event.type === "assignment_cancelled" && step.event.actor_type === "user"
+  );
+}
 
-  if (type.includes("failed") || type.includes("timed_out")) {
-    return targetName ? `群管分配${targetName}失败` : `群管 · ${token}`;
-  }
-
-  if (type === "manager_route_succeeded" || token === "已分配" || token.startsWith("路由给 ")) {
-    const routedTo = token.startsWith("路由给 ") ? token.replace(/^路由给\s*/u, "") : targetName;
-    return routedTo ? `群管 · 分配 · ${routedTo}` : "群管 · 分配";
-  }
-
-  if (type === "manager_route_running" || token === "分配中") {
-    return "群管 · 分配 · 思考中";
-  }
-
-  if (type === "manager_relay_succeeded") {
-    const relayTarget =
-      typeof step.event.payload?.target_agent_name === "string"
-        ? step.event.payload.target_agent_name
-        : undefined;
-    return relayTarget ? `群管接力给${relayTarget}` : "群管 · 接力";
-  }
-
-  if (type === "manager_escalate") {
-    return "群管 · 升级介入";
-  }
-
-  if (type === "invocation_running" || token === "思考中") {
-    return targetName ? "群管 · 分配 · 思考中" : "群管 · 思考中";
-  }
-
-  if (type === "invocation_pending" || type === "invocation_queued") {
-    return `群管 · ${token}`;
-  }
-
-  return `群管 · ${token}`;
+function isAgentInvocationStatusStep(step: FlowStep): boolean {
+  return step.event.type.startsWith("invocation_") && !isHumanAssignmentStep(step);
 }
 
 export function formatFlowStepLine(
@@ -428,29 +670,43 @@ export function formatFlowStepLine(
   step: FlowStep,
   opts?: FlowDisplayOpts,
 ): string {
-  if (step.event.type === "user_intent") {
-    return formatUserIntentLine(step);
+  const assignment = assignmentById(opts?.graph, track.assignmentId);
+  if (assignment?.kind === "join" && opts?.graph) {
+    return formatJoinLine(assignment, opts.graph, step.token);
   }
+
   if (opts?.managerAgentId && step.actorId === opts.managerAgentId) {
-    return formatManagerFlowLine(track, step);
+    return `群管 · ${step.token}`;
   }
-  if (isHumanInvocationStep(step)) {
+  if (isHumanAssignmentStep(step)) {
     return `${step.actorName} · ${step.token}`;
   }
   if (isAgentInvocationStatusStep(step)) {
     return `${resolveTrackAgentName(track, step, opts)} · ${step.token}`;
   }
+  if (assignment) {
+    if (
+      assignment.assignee_type === "agent" &&
+      ["manager_route", "manager_relay", "mention", "reassign"].includes(assignment.kind)
+    ) {
+      return `${resolveTrackAgentName(track, step, opts)} · ${step.token}`;
+    }
+    if (assignment.kind === "auto_review") {
+      return `群管 · ${step.token}`;
+    }
+    return `${assignmentKindLabel(assignment.kind)} · ${step.token}`;
+  }
   return `${step.actorName} · ${step.token}`;
 }
 
-/** Group events into one track per agent invocation (full call lifecycle). */
+/** Group invocation events into one track per assignment. */
 export function groupFlowTracks(
-  events: RoomFlowEvent[],
+  events: RoomInvocationEvent[],
   opts: {
     agentNameById: Map<string, string>;
     managerAgentId?: string;
     memberNameById?: Map<string, string>;
-    invocationTargetById?: Map<string, string>;
+    graph?: FlowGraphContext;
   },
 ): FlowTrack[] {
   const projected = projectFlowEvents(events);
@@ -458,16 +714,17 @@ export function groupFlowTracks(
 
   for (const event of projected) {
     const trackKey = resolveFlowTrackKey(event);
-    if (!trackKey) continue;
+    if (!trackKey || !event.assignment_id) continue;
 
     const step = buildFlowStep(event, opts);
-
     let track = tracks.get(trackKey);
     if (!track) {
+      const assignment = assignmentById(opts.graph, event.assignment_id);
       track = {
         key: trackKey,
-        invocationId: event.invocation_id,
-        messageId: resolveEventMessageId(event) ?? undefined,
+        assignmentId: event.assignment_id,
+        sourceMessageId: assignment?.source_message_id,
+        kind: assignment?.kind ?? "",
         steps: [],
         startedAt: event.created_at,
         updatedAt: event.created_at,
@@ -475,32 +732,23 @@ export function groupFlowTracks(
       tracks.set(trackKey, track);
     }
 
-    const messageId = resolveEventMessageId(event);
-    if (!track.messageId && messageId) {
-      track.messageId = messageId;
-    }
-    if (!track.invocationId && event.invocation_id) {
-      track.invocationId = event.invocation_id;
-    }
-
     track.steps.push(step);
     track.updatedAt = event.created_at;
   }
 
   for (const track of tracks.values()) {
-    track.steps = sortStepsByEventId(track.steps);
+    track.steps = collapseRedundantFlowSteps(sortStepsByEventId(track.steps));
     const first = track.steps[0];
     const last = track.steps[track.steps.length - 1];
-    if (first) {
-      track.startedAt = first.createdAt;
-    }
-    if (last) {
-      track.updatedAt = last.createdAt;
-    }
+    if (first) track.startedAt = first.createdAt;
+    if (last) track.updatedAt = last.createdAt;
   }
 
   return [...tracks.values()].sort((a, b) => {
-    const messageCmp = compareMonotonicId(a.messageId ?? "", b.messageId ?? "");
+    const messageCmp = compareMonotonicId(
+      a.sourceMessageId ?? "",
+      b.sourceMessageId ?? "",
+    );
     if (messageCmp !== 0) return messageCmp;
     const aFirst = a.steps[0]?.event.id ?? a.key;
     const bFirst = b.steps[0]?.event.id ?? b.key;
@@ -508,191 +756,99 @@ export function groupFlowTracks(
   });
 }
 
-export function isActiveFlowStep(
-  step: FlowStep,
-  allSteps: FlowStep[],
-  invocationById?: Map<string, MentionInvocation>,
-): boolean {
-  if (!isLatestInvocationStep(step, allSteps)) {
-    return false;
-  }
-  if (step.event.invocation_id && invocationById) {
-    const inv = invocationById.get(step.event.invocation_id);
-    if (
-      inv &&
-      (inv.status === "pending" ||
-        inv.status === "queued" ||
-        inv.status === "running" ||
-        inv.status === "delivered")
-    ) {
-      return true;
-    }
-  }
-  const type = step.event.type;
-  if (
-    type.includes("failed") ||
-    type.includes("rejected") ||
-    type.includes("timed_out")
-  ) {
-    return true;
-  }
-  if (
-    type === "invocation_running" ||
-    type === "invocation_pending" ||
-    type === "invocation_queued" ||
-    type === "manager_route_running"
-  ) {
-    return true;
-  }
-  return false;
-}
-
-export function flowStepSurface(step: FlowStep): string {
-  const type = step.event.type;
-  if (
-    type.includes("failed") ||
-    type.includes("rejected") ||
-    type.includes("timed_out")
-  ) {
-    return "bg-destructive/8";
-  }
-  if (type === "invocation_running" || type === "manager_route_running") {
-    return "bg-primary/8";
-  }
-  if (type === "invocation_pending" || type === "invocation_queued") {
-    return "bg-muted/50";
-  }
-  return "";
-}
-
 export function flowTrackLatestStep(track: FlowTrack): FlowStep | undefined {
   if (track.steps.length === 0) return undefined;
   return track.steps[track.steps.length - 1];
 }
 
-/** Prefer live invocation status when flow events lag behind the invocation row. */
 export function resolveFlowTrackDisplayStep(
   track: FlowTrack,
-  invocationById?: Map<string, MentionInvocation>,
+  graph?: FlowGraphContext,
   opts?: {
     agentNameById: Map<string, string>;
     managerAgentId?: string;
-    invocationTargetById?: Map<string, string>;
   },
 ): FlowStep | undefined {
   const last = flowTrackLatestStep(track);
-  if (last) {
-    return last;
-  }
-  if (!track.invocationId || !invocationById || !opts) {
-    return last;
-  }
-  const inv = invocationById.get(track.invocationId);
-  if (!inv) {
-    return last;
-  }
-  const liveToken = invocationStatusFromInvocation[inv.status];
-  if (!liveToken) {
-    return last;
-  }
-  const fallbackEvent: RoomFlowEvent = {
-    id: `live:${track.invocationId}`,
-    room_id: "",
-    type:
-      inv.status === "pending"
-        ? "invocation_pending"
-        : inv.status === "queued"
-          ? "invocation_queued"
-          : "invocation_running",
-    created_at: track.updatedAt,
+  if (last) return last;
+
+  const assignment = assignmentById(graph, track.assignmentId);
+  if (!assignment) return undefined;
+
+  const inv = invocationForAssignment(graph, track.assignmentId);
+  const liveToken =
+    (inv && invocationStatusFromRow[inv.status]) ||
+    assignmentStatusFromRow[assignment.status];
+  if (!liveToken) return undefined;
+
+  const fallbackEvent: RoomInvocationEvent = {
+    id: `live:${track.assignmentId}`,
+    room_id: assignment.room_id,
+    assignment_id: track.assignmentId,
+    invocation_id: inv?.id,
+    type: inv ? `invocation_${inv.status}` : `assignment_${assignment.status}`,
+    created_at: assignment.updated_at ?? assignment.created_at ?? "",
     actor_type: "agent",
     payload: {},
-    invocation_id: track.invocationId,
   };
-  const actorId = resolveFlowStepActorId(fallbackEvent, opts);
-  const fallbackStep: FlowStep = {
+  const actorId = resolveAssignmentAgentId(track.assignmentId, graph) ?? "system";
+  return {
     token: liveToken,
-    createdAt: track.updatedAt,
-    event: fallbackEvent,
+    createdAt: fallbackEvent.created_at,
+    event: { ...fallbackEvent, actor_id: actorId },
     actorId,
     actorName: resolveFlowActorName(
       fallbackEvent,
       actorId,
-      opts.agentNameById,
-      opts.managerAgentId,
+      opts?.agentNameById ?? new Map(),
+      opts?.managerAgentId,
     ),
-  };
-  const actorName = resolveTrackAgentName(
-    track,
-    fallbackStep,
-    {
-      agentNameById: opts.agentNameById,
-      invocationTargetById: opts.invocationTargetById,
-    },
-  );
-  return {
-    token: liveToken,
-    createdAt: track.updatedAt,
-    event: {
-      ...fallbackEvent,
-      actor_id: actorId,
-      payload: { agent_name: actorName },
-    },
-    actorId,
-    actorName,
   };
 }
 
 export function formatFlowTrackLine(
   track: FlowTrack,
   opts?: FlowDisplayOpts & {
-    invocationById?: Map<string, MentionInvocation>;
-    trackOpts?: {
-      agentNameById: Map<string, string>;
-      managerAgentId?: string;
-      invocationTargetById?: Map<string, string>;
-    };
+    invocationById?: Map<string, RoomInvocation>;
   },
 ): string {
   const displayOpts: FlowDisplayOpts = {
-    managerAgentId: opts?.managerAgentId ?? opts?.trackOpts?.managerAgentId,
+    managerAgentId: opts?.managerAgentId,
     memberNameById: opts?.memberNameById,
-    agentNameById: opts?.agentNameById ?? opts?.trackOpts?.agentNameById,
-    invocationTargetById:
-      opts?.invocationTargetById ?? opts?.trackOpts?.invocationTargetById,
+    agentNameById: opts?.agentNameById,
+    graph: opts?.graph,
   };
-  const step = resolveFlowTrackDisplayStep(
-    track,
-    opts?.invocationById,
-    displayOpts.agentNameById && displayOpts.invocationTargetById
-      ? {
-          agentNameById: displayOpts.agentNameById,
-          managerAgentId: displayOpts.managerAgentId,
-          invocationTargetById: displayOpts.invocationTargetById,
-        }
-      : opts?.trackOpts,
-  );
+  const step = resolveFlowTrackDisplayStep(track, opts?.graph, {
+    agentNameById: opts?.agentNameById ?? new Map(),
+    managerAgentId: opts?.managerAgentId,
+  });
   if (!step) return "…";
   return formatFlowStepLine(track, step, displayOpts);
 }
 
 export function isActiveFlowTrack(
   track: FlowTrack,
-  invocationById?: Map<string, MentionInvocation>,
+  graph?: FlowGraphContext,
 ): boolean {
-  const last = flowTrackLatestStep(track);
-  if (!last) {
-    if (track.invocationId && invocationById) {
-      const inv = invocationById.get(track.invocationId);
-      return (
-        inv?.status === "pending" ||
-        inv?.status === "queued" ||
-        inv?.status === "running" ||
-        inv?.status === "delivered"
-      );
-    }
-    return false;
+  const assignment = assignmentById(graph, track.assignmentId);
+  if (
+    assignment &&
+    ["pending", "blocked", "running"].includes(assignment.status)
+  ) {
+    return true;
   }
+
+  const inv = invocationForAssignment(graph, track.assignmentId);
+  if (
+    inv &&
+    ["pending", "queued", "running", "delivered"].includes(inv.status)
+  ) {
+    return true;
+  }
+
+  const last = flowTrackLatestStep(track);
+  if (!last) return false;
+
   const type = last.event.type;
   if (
     type.includes("failed") ||
@@ -705,14 +861,21 @@ export function isActiveFlowTrack(
     type === "invocation_running" ||
     type === "invocation_pending" ||
     type === "invocation_queued" ||
-    type === "manager_route_running"
+    type === "assignment_created"
   ) {
     return true;
   }
   return false;
 }
 
-export function flowTrackTone(track: FlowTrack): string {
+export function flowTrackTone(track: FlowTrack, graph?: FlowGraphContext): string {
+  const assignment = assignmentById(graph, track.assignmentId);
+  if (assignment?.status === "failed") return "text-destructive";
+  const inv = invocationForAssignment(graph, track.assignmentId);
+  if (inv && ["failed", "timed_out"].includes(inv.status)) {
+    return "text-destructive";
+  }
+
   const last = flowTrackLatestStep(track);
   if (!last) return "text-muted-foreground";
   const type = last.event.type;
@@ -728,7 +891,7 @@ export function flowTrackTone(track: FlowTrack): string {
     type === "invocation_running" ||
     type === "invocation_pending" ||
     type === "invocation_queued" ||
-    type === "manager_route_running"
+    assignment?.status === "running"
   ) {
     return "text-foreground";
   }
@@ -747,15 +910,21 @@ export function flowStepTone(step: FlowStep): string {
   if (
     type === "invocation_running" ||
     type === "invocation_pending" ||
-    type === "invocation_queued" ||
-    type === "manager_route_running"
+    type === "invocation_queued"
   ) {
     return "text-foreground";
   }
   return "text-muted-foreground/70";
 }
 
-export function flowTrackSurface(track: FlowTrack): string {
+export function flowTrackSurface(track: FlowTrack, graph?: FlowGraphContext): string {
+  const assignment = assignmentById(graph, track.assignmentId);
+  if (assignment?.status === "failed") return "bg-destructive/8";
+  const inv = invocationForAssignment(graph, track.assignmentId);
+  if (inv && ["failed", "timed_out"].includes(inv.status)) {
+    return "bg-destructive/8";
+  }
+
   const last = flowTrackLatestStep(track);
   if (!last) return "";
   const type = last.event.type;
@@ -766,7 +935,7 @@ export function flowTrackSurface(track: FlowTrack): string {
   ) {
     return "bg-destructive/8";
   }
-  if (type === "invocation_running" || type === "manager_route_running") {
+  if (type === "invocation_running" || assignment?.status === "running") {
     return "bg-primary/8";
   }
   if (type === "invocation_pending" || type === "invocation_queued") {
@@ -775,8 +944,8 @@ export function flowTrackSurface(track: FlowTrack): string {
   return "";
 }
 
-export function buildInvocationTargetMap(
-  invocations: MentionInvocation[],
+export function buildInvocationAgentMap(
+  invocations: RoomInvocation[],
 ): Map<string, string> {
-  return new Map(invocations.map((inv) => [inv.id, inv.target_id]));
+  return new Map(invocations.map((inv) => [inv.id, inv.agent_id]));
 }

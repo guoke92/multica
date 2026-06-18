@@ -16,13 +16,20 @@ export function useAutoScroll(ref: RefObject<HTMLElement | null>) {
   // mode="hidden">` and back. We want the jump only on a real first mount.
   const didInitialScrollRef = useRef(false)
 
+  const scrollToBottom = useCallback((force = false) => {
+    const el = ref.current
+    if (!el) return
+    if (force) {
+      stickRef.current = true
+    }
+    if (stickRef.current) {
+      el.scrollTo({ top: el.scrollHeight })
+    }
+  }, [ref])
+
   useEffect(() => {
     const el = ref.current
     if (!el) return
-
-    const scrollToBottom = () => {
-      el.scrollTo({ top: el.scrollHeight })
-    }
 
     const onScroll = () => {
       const { scrollTop, scrollHeight, clientHeight } = el
@@ -60,7 +67,7 @@ export function useAutoScroll(ref: RefObject<HTMLElement | null>) {
 
     if (!didInitialScrollRef.current) {
       didInitialScrollRef.current = true
-      scrollToBottom()
+      scrollToBottom(true)
     }
 
     return () => {
@@ -68,7 +75,7 @@ export function useAutoScroll(ref: RefObject<HTMLElement | null>) {
       ro.disconnect()
       mo.disconnect()
     }
-  }, [ref])
+  }, [ref, scrollToBottom])
 
   /** Temporarily suppress auto-scroll during prepend operations */
   const suppressAutoScroll = useCallback(() => {
@@ -76,5 +83,5 @@ export function useAutoScroll(ref: RefObject<HTMLElement | null>) {
     return () => { lockRef.current = false }
   }, [])
 
-  return { suppressAutoScroll }
+  return { suppressAutoScroll, scrollToBottom }
 }

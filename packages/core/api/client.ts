@@ -180,7 +180,9 @@ import {
   EMPTY_CREATE_BILLING_CHECKOUT_SESSION_RESPONSE,
   EMPTY_BILLING_CHECKOUT_SESSION_STATUS,
   EMPTY_CREATE_BILLING_PORTAL_SESSION_RESPONSE,
+  EMPTY_CREATE_ROOM_ASSIGNMENT_RESPONSE,
   EMPTY_ROOM_FLOW_EVENTS_RESPONSE,
+  EMPTY_ROOM_GRAPH_SNAPSHOT,
   EMPTY_ROOM_LIST,
   EMPTY_ROOM_MESSAGE_LIST,
   EMPTY_ROOM_TOPICS_RESPONSE,
@@ -188,12 +190,15 @@ import {
   EMPTY_MENTION_INVOCATION_LIST,
   EMPTY_ROOM,
   MentionInvocationListSchema,
+  CreateRoomAssignmentResponseSchema,
   RoomFlowEventsResponseSchema,
+  RoomGraphSnapshotSchema,
   RoomListSchema,
   RoomMessageListSchema,
   RoomSchema,
   RoomTopicsResponseSchema,
   RoomWorkboardSchema,
+  RoomInvocationSchema,
 } from "./schemas";
 
 /** Identifies the calling client to the server.
@@ -1740,6 +1745,64 @@ export class ApiClient {
     });
   }
 
+  async getRoomGraph(
+    roomId: string,
+  ): Promise<import("../types/room").RoomGraphSnapshot> {
+    const raw = await this.fetch(`/api/rooms/${roomId}/graph`);
+    return parseWithFallback(raw, RoomGraphSnapshotSchema, EMPTY_ROOM_GRAPH_SNAPSHOT, {
+      endpoint: "GET /api/rooms/:id/graph",
+    });
+  }
+
+  async retryRoomAssignment(
+    roomId: string,
+    assignmentId: string,
+  ): Promise<import("../types/room").RoomInvocation> {
+    const raw = await this.fetch(
+      `/api/rooms/${roomId}/assignments/${assignmentId}/retry`,
+      { method: "POST" },
+    );
+    return parseWithFallback(raw, RoomInvocationSchema, { id: "", assignment_id: "", source_message_id: "", agent_id: "", status: "pending" }, {
+      endpoint: "POST /api/rooms/:id/assignments/:id/retry",
+    });
+  }
+
+  async createRoomAssignment(
+    roomId: string,
+    data: {
+      source_message_id: string;
+      assignee_type: string;
+      assignee_id: string;
+      kind?: string;
+      reason?: string;
+      depends_on_assignment_ids?: string[];
+    },
+  ): Promise<{
+    assignment: import("../types/room").RoomAssignment;
+    invocation?: import("../types/room").RoomInvocation;
+  }> {
+    const raw = await this.fetch(`/api/rooms/${roomId}/assignments`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(
+      raw,
+      CreateRoomAssignmentResponseSchema,
+      EMPTY_CREATE_ROOM_ASSIGNMENT_RESPONSE,
+      { endpoint: "POST /api/rooms/:id/assignments" },
+    );
+  }
+
+  async cancelRoomAssignment(
+    roomId: string,
+    assignmentId: string,
+  ): Promise<void> {
+    await this.fetch(
+      `/api/rooms/${roomId}/assignments/${assignmentId}/cancel`,
+      { method: "POST" },
+    );
+  }
+
   async listRoomTopics(
     roomId: string,
   ): Promise<{ topics: import("../types/room").RoomTopic[] }> {
@@ -1751,19 +1814,20 @@ export class ApiClient {
 
   async listRoomFlowEvents(
     roomId: string,
-    params?: { topicId?: string; limit?: number; before?: string },
-  ): Promise<{ events: import("../types/room").RoomFlowEvent[] }> {
+    params?: { assignmentId?: string; topicId?: string; limit?: number; before?: string },
+  ): Promise<{ events: import("../types/room").RoomInvocationEvent[] }> {
     const q = new URLSearchParams();
     if (params?.limit) q.set("limit", String(params.limit));
     if (params?.before) q.set("before", params.before);
     const suffix = q.toString() ? `?${q}` : "";
-    const path = params?.topicId
-      ? `/api/rooms/${roomId}/topics/${params.topicId}/flow-events${suffix}`
+    const assignmentId = params?.assignmentId ?? params?.topicId;
+    const path = assignmentId
+      ? `/api/rooms/${roomId}/topics/${assignmentId}/flow-events${suffix}`
       : `/api/rooms/${roomId}/flow-events${suffix}`;
     const raw = await this.fetch(path);
     return parseWithFallback(raw, RoomFlowEventsResponseSchema, EMPTY_ROOM_FLOW_EVENTS_RESPONSE, {
-      endpoint: params?.topicId
-        ? "GET /api/rooms/:id/topics/:topicId/flow-events"
+      endpoint: assignmentId
+        ? "GET /api/rooms/:id/topics/:assignmentId/flow-events"
         : "GET /api/rooms/:id/flow-events",
     });
   }

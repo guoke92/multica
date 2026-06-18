@@ -45,6 +45,7 @@ export function useSendRoomMessage(wsId: string, roomId: string) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: roomKeys.messages(wsId, roomId) });
       void qc.invalidateQueries({ queryKey: roomKeys.invocations(wsId, roomId) });
+      void qc.invalidateQueries({ queryKey: roomKeys.graph(wsId, roomId) });
     },
   });
 }
@@ -97,6 +98,46 @@ export function useResumeInvocation(wsId: string, roomId: string) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: roomKeys.invocations(wsId, roomId) });
       void qc.invalidateQueries({ queryKey: roomKeys.messages(wsId, roomId) });
+      void qc.invalidateQueries({ queryKey: roomKeys.graph(wsId, roomId) });
+    },
+  });
+}
+
+export function useRetryRoomAssignment(wsId: string, roomId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (assignmentId: string) =>
+      api.retryRoomAssignment(roomId, assignmentId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: roomKeys.graph(wsId, roomId) });
+      void qc.invalidateQueries({ queryKey: roomKeys.invocations(wsId, roomId) });
+      void qc.invalidateQueries({ queryKey: roomKeys.messages(wsId, roomId) });
+      void qc.invalidateQueries({ queryKey: roomKeys.detail(wsId, roomId) });
+    },
+  });
+}
+
+export function useCreateRoomAssignment(wsId: string, roomId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.createRoomAssignment>[1]) =>
+      api.createRoomAssignment(roomId, data),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: roomKeys.graph(wsId, roomId) });
+      void qc.invalidateQueries({ queryKey: roomKeys.detail(wsId, roomId) });
+    },
+  });
+}
+
+export function useCancelRoomAssignment(wsId: string, roomId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (assignmentId: string) =>
+      api.cancelRoomAssignment(roomId, assignmentId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: roomKeys.graph(wsId, roomId) });
+      void qc.invalidateQueries({ queryKey: roomKeys.invocations(wsId, roomId) });
+      void qc.invalidateQueries({ queryKey: roomKeys.detail(wsId, roomId) });
     },
   });
 }

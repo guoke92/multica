@@ -22,14 +22,15 @@ func TestChainDepthPauseThreshold(t *testing.T) {
 	}
 }
 
-func TestJsonMarshalRoomSnapshot(t *testing.T) {
-	b := jsonMarshalRoomSnapshot(db.CountInvocationStatusByRoomRow{
-		PendingCount:  2,
-		QueuedCount:   1,
-		RunningCount:  3,
-		FailedCount:   0,
-		TimedOutCount: 1,
+func TestJsonMarshalAssignmentSnapshot(t *testing.T) {
+	b := jsonMarshalAssignmentSnapshot(db.CountRoomAssignmentStatusByRoomRow{
+		PendingCount:   2,
+		BlockedCount:   1,
+		RunningCount:   3,
+		FailedCount:    0,
+		CompletedCount: 4,
 	})
 	require.Contains(t, string(b), `"pending_count":2`)
-	require.Contains(t, string(b), `"timed_out_count":1`)
+	require.Contains(t, string(b), `"blocked_count":1`)
+	require.Contains(t, string(b), `"completed_count":4`)
 }

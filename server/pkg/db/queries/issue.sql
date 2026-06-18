@@ -123,11 +123,10 @@ INSERT INTO issue (
     workspace_id, title, description, status, priority,
     assignee_type, assignee_id, creator_type, creator_id,
     parent_issue_id, position, start_date, due_date, number, project_id,
-    origin_type, origin_id, source_room_id, source_message_id
+    origin_type, origin_id
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-    sqlc.narg('origin_type'), sqlc.narg('origin_id'),
-    sqlc.narg('source_room_id'), sqlc.narg('source_message_id')
+    sqlc.narg('origin_type'), sqlc.narg('origin_id')
 ) RETURNING *;
 
 -- name: LockIssueDuplicateKey :exec

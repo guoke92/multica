@@ -30,10 +30,17 @@ import {
   AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
 import { MoreHorizontal, Plus, Users } from "lucide-react";
-import type { RoomMember, MentionInvocation } from "@multica/core/types/room";
+import type {
+  RoomAssignment,
+  RoomAssignmentDependency,
+  RoomInvocation,
+  RoomInvocationEvent,
+  RoomMember,
+} from "@multica/core/types/room";
 import { toast } from "sonner";
 import { RoomAddMemberDialog } from "./room-add-member-dialog";
 import { RoomWorkboardPanel } from "./room-workboard-panel";
+import { deriveAgentRunState } from "./room-flow-utils";
 
 type Props = {
   roomId: string;
@@ -42,7 +49,14 @@ type Props = {
   currentUserId?: string;
   canManage: boolean;
   isOwner: boolean;
-  invocations?: MentionInvocation[];
+  assignments?: RoomAssignment[];
+  assignmentDependencies?: RoomAssignmentDependency[];
+  invocations?: RoomInvocation[];
+  invocationEvents?: RoomInvocationEvent[];
+  onRetryAssignment?: (assignmentId: string) => void;
+  onCancelAssignment?: (assignmentId: string) => void;
+  retryingAssignmentId?: string | null;
+  cancellingAssignmentId?: string | null;
   onLeft?: () => void;
 };
 
@@ -68,7 +82,14 @@ export function RoomMembersPanel({
   currentUserId,
   canManage,
   isOwner,
+  assignments = [],
+  assignmentDependencies = [],
   invocations = [],
+  invocationEvents = [],
+  onRetryAssignment,
+  onCancelAssignment,
+  retryingAssignmentId,
+  cancellingAssignmentId,
   onLeft,
 }: Props) {
   const { data: members = [] } = useQuery(roomMembersOptions(wsId, roomId));
@@ -87,37 +108,19 @@ export function RoomMembersPanel({
   );
   const agentNames = new Map(agents.map((a) => [a.id, a.name]));
 
-  /** Map: principal_id → active invocation status label */
   const statusByAgent = useMemo(() => {
     const map = new Map<string, { label: string; tone: "running" | "queued" | "failed" | "paused" }>();
-    for (const inv of invocations) {
-      // Skip legacy manager-only intents; new route/relay/escalate intents show status.
-      if (inv.intent === "orchestrate" || inv.intent === "review" || inv.intent === "confirm") continue;
-
-      const s = inv.status;
-      if (["running", "delivered"].includes(s)) {
-        map.set(inv.target_id, { label: "正在处理", tone: "running" });
-      } else if (["pending", "queued"].includes(s)) {
-        if (!map.has(inv.target_id)) {
-          map.set(inv.target_id, { label: "排队中", tone: "queued" });
-        }
-      } else if (["failed", "timed_out"].includes(s)) {
-        if (!map.has(inv.target_id)) {
-          map.set(inv.target_id, { label: s === "timed_out" ? "已超时" : "失败", tone: "failed" });
-        }
-      } else if (s === "paused") {
-        if (!map.has(inv.target_id)) {
-          map.set(inv.target_id, { label: "已暂停", tone: "paused" });
-        }
+    for (const agent of agents) {
+      const state = deriveAgentRunState(agent.id, assignments, invocations);
+      if (state) {
+        map.set(agent.id, state);
       }
     }
     return map;
-  }, [invocations, managerAgentId]);
+  }, [agents, assignments, invocations]);
 
   const users = members.filter((m) => m.principal_type === "user");
-  const roomAgents = members.filter(
-    (m) => m.principal_type === "agent",
-  );
+  const roomAgents = members.filter((m) => m.principal_type === "agent");
   const squads = members.filter((m) => m.principal_type === "squad");
 
   const resolveName = (m: RoomMember) => {
@@ -335,12 +338,17 @@ export function RoomMembersPanel({
           ) : null}
         </div>
         <RoomWorkboardPanel
-          wsId={wsId}
-          roomId={roomId}
+          assignments={assignments}
+          assignmentDependencies={assignmentDependencies}
+          invocations={invocations}
+          invocationEvents={invocationEvents}
           managerAgentId={managerAgentId}
           agentNameById={agentNames}
           memberNameById={userNames}
-          invocations={invocations}
+          onRetryAssignment={onRetryAssignment}
+          onCancelAssignment={onCancelAssignment}
+          retryingAssignmentId={retryingAssignmentId}
+          cancellingAssignmentId={cancellingAssignmentId}
         />
       </aside>
 

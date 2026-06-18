@@ -1,17 +1,20 @@
 "use client";
 
-import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { roomFlowEventsOptions } from "@multica/core/room/queries";
-import type { MentionInvocation } from "@multica/core/types/room";
+import { useEffect, useMemo, useRef } from "react";
+import type {
+  RoomAssignment,
+  RoomAssignmentDependency,
+  RoomInvocation,
+  RoomInvocationEvent,
+} from "@multica/core/types/room";
 import { cn } from "@multica/ui/lib/utils";
+import { useAutoScroll } from "@multica/ui/hooks/use-auto-scroll";
 import {
   HoverCard,
   HoverCardContent,
   HoverCardTrigger,
 } from "@multica/ui/components/ui/hover-card";
 import {
-  buildInvocationTargetMap,
   flowStepTone,
   flowTrackSurface,
   flowTrackTone,
@@ -19,36 +22,38 @@ import {
   formatFlowTrackLine,
   groupFlowTracks,
   isActiveFlowTrack,
+  type FlowGraphContext,
   type FlowTrack,
 } from "./room-flow-utils";
 
 type Props = {
-  wsId: string;
-  roomId: string;
+  events: RoomInvocationEvent[];
+  assignments: RoomAssignment[];
+  assignmentDependencies: RoomAssignmentDependency[];
+  invocations: RoomInvocation[];
   managerAgentId?: string;
   agentNameById: Map<string, string>;
   memberNameById?: Map<string, string>;
-  invocations?: MentionInvocation[];
   className?: string;
 };
 
 export function RoomFlowTimeline({
-  wsId,
-  roomId,
+  events,
+  assignments,
+  assignmentDependencies,
+  invocations,
   managerAgentId,
   agentNameById,
   memberNameById,
-  invocations = [],
   className,
 }: Props) {
-  const { data: events = [] } = useQuery(roomFlowEventsOptions(wsId, roomId));
-  const invocationTargetById = useMemo(
-    () => buildInvocationTargetMap(invocations),
-    [invocations],
-  );
-  const invocationById = useMemo(
-    () => new Map(invocations.map((inv) => [inv.id, inv])),
-    [invocations],
+  const graph = useMemo<FlowGraphContext>(
+    () => ({
+      assignments,
+      assignment_dependencies: assignmentDependencies,
+      invocations,
+    }),
+    [assignments, assignmentDependencies, invocations],
   );
 
   const displayOpts = useMemo(
@@ -56,17 +61,9 @@ export function RoomFlowTimeline({
       managerAgentId,
       memberNameById,
       agentNameById,
-      invocationTargetById,
+      graph,
     }),
-    [managerAgentId, memberNameById, agentNameById, invocationTargetById],
-  );
-
-  const formatOpts = useMemo(
-    () => ({
-      ...displayOpts,
-      invocationById,
-    }),
-    [displayOpts, invocationById],
+    [managerAgentId, memberNameById, agentNameById, graph],
   );
 
   const tracks = useMemo(
@@ -75,28 +72,43 @@ export function RoomFlowTimeline({
         agentNameById,
         managerAgentId,
         memberNameById,
-        invocationTargetById,
+        graph,
       }),
-    [events, agentNameById, managerAgentId, memberNameById, invocationTargetById],
+    [events, agentNameById, managerAgentId, memberNameById, graph],
   );
+
+  const scrollRef = useRef<HTMLUListElement>(null);
+  const { scrollToBottom } = useAutoScroll(scrollRef);
+
+  const flowTailKey = useMemo(() => {
+    const last = tracks[tracks.length - 1];
+    if (!last) return "";
+    const lastStep = last.steps[last.steps.length - 1];
+    return `${last.key}:${last.updatedAt}:${lastStep?.event.id ?? ""}:${tracks.length}`;
+  }, [tracks]);
+
+  useEffect(() => {
+    scrollToBottom();
+    const frame = requestAnimationFrame(() => scrollToBottom());
+    return () => cancelAnimationFrame(frame);
+  }, [flowTailKey, scrollToBottom]);
 
   if (tracks.length === 0) {
     return (
-      <p className={cn("text-muted-foreground px-3 py-2 text-xs", className)}>
-        暂无流程动态。发送消息后会自动显示群管路由、Agent 执行、确认与阶段压缩。
+      <p className={cn("text-muted-foreground px-1 py-2 text-xs", className)}>
+        暂无流程动态。发送消息后会显示分派与执行进度。
       </p>
     );
   }
 
   return (
-    <ul className={cn("max-h-48 space-y-0.5 overflow-y-auto px-2 py-2", className)}>
+    <ul ref={scrollRef} className={cn("max-h-48 space-y-0.5 overflow-y-auto", className)}>
       {tracks.map((track) => (
         <FlowTrackRow
           key={track.key}
           track={track}
           displayOpts={displayOpts}
-          formatOpts={formatOpts}
-          invocationById={invocationById}
+          graph={graph}
         />
       ))}
     </ul>
@@ -106,24 +118,22 @@ export function RoomFlowTimeline({
 function FlowTrackRow({
   track,
   displayOpts,
-  formatOpts,
-  invocationById,
+  graph,
 }: {
   track: FlowTrack;
   displayOpts: {
     managerAgentId?: string;
     memberNameById?: Map<string, string>;
     agentNameById: Map<string, string>;
-    invocationTargetById: Map<string, string>;
+    graph: FlowGraphContext;
   };
-  formatOpts: Parameters<typeof formatFlowTrackLine>[1];
-  invocationById: Map<string, MentionInvocation>;
+  graph: FlowGraphContext;
 }) {
-  const tone = flowTrackTone(track);
-  const surface = flowTrackSurface(track);
-  const isActive = isActiveFlowTrack(track, invocationById);
+  const tone = flowTrackTone(track, graph);
+  const surface = flowTrackSurface(track, graph);
+  const isActive = isActiveFlowTrack(track, graph);
   const hasHistory = track.steps.length > 1;
-  const line = formatFlowTrackLine(track, formatOpts);
+  const line = formatFlowTrackLine(track, displayOpts);
 
   const row = (
     <div
@@ -167,18 +177,16 @@ function FlowTrackHistoryPanel({
     managerAgentId?: string;
     memberNameById?: Map<string, string>;
     agentNameById: Map<string, string>;
-    invocationTargetById: Map<string, string>;
+    graph: FlowGraphContext;
   };
 }) {
-  const steps = track.steps;
-
   return (
     <div className="overflow-hidden">
       <p className="text-muted-foreground border-border border-b px-3 py-2 text-[10px] font-medium tracking-wide">
         状态变化
       </p>
       <ul className="max-h-44 space-y-0.5 overflow-y-auto px-2 py-2">
-        {steps.map((step) => (
+        {track.steps.map((step) => (
           <li
             key={step.event.id}
             className={cn(

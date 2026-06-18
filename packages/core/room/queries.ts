@@ -15,10 +15,14 @@ export const roomKeys = {
     [...roomKeys.all(wsId), roomId, "members"] as const,
   workboard: (wsId: string, roomId: string) =>
     [...roomKeys.all(wsId), roomId, "workboard"] as const,
+  graph: (wsId: string, roomId: string) =>
+    [...roomKeys.all(wsId), roomId, "graph"] as const,
   topics: (wsId: string, roomId: string) =>
     [...roomKeys.all(wsId), roomId, "topics"] as const,
   flowEvents: (wsId: string, roomId: string, scope: string = "room") =>
     [...roomKeys.all(wsId), roomId, "flow-events", scope] as const,
+  invocationEvents: (wsId: string, roomId: string, scope: string = "room") =>
+    [...roomKeys.all(wsId), roomId, "invocation-events", scope] as const,
 };
 
 export function roomWorkboardOptions(wsId: string, roomId: string) {
@@ -27,6 +31,14 @@ export function roomWorkboardOptions(wsId: string, roomId: string) {
     queryFn: () => api.getRoomWorkboard(roomId),
     enabled: !!wsId && !!roomId,
     refetchInterval: 5000,
+  });
+}
+
+export function roomGraphOptions(wsId: string, roomId: string) {
+  return queryOptions({
+    queryKey: roomKeys.graph(wsId, roomId),
+    queryFn: () => api.getRoomGraph(roomId),
+    enabled: !!wsId && !!roomId,
   });
 }
 
@@ -44,13 +56,16 @@ export function roomTopicsOptions(wsId: string, roomId: string) {
 export function roomFlowEventsOptions(
   wsId: string,
   roomId: string,
-  topicId?: string,
+  assignmentId?: string,
 ) {
-  const scope = topicId ? `topic:${topicId}` : "room";
+  const scope = assignmentId ? `assignment:${assignmentId}` : "room";
   return queryOptions({
-    queryKey: roomKeys.flowEvents(wsId, roomId, scope),
+    queryKey: roomKeys.invocationEvents(wsId, roomId, scope),
     queryFn: async () => {
-      const res = await api.listRoomFlowEvents(roomId, topicId ? { topicId } : undefined);
+      const res = await api.listRoomFlowEvents(
+        roomId,
+        assignmentId ? { assignmentId } : undefined,
+      );
       return res.events;
     },
     enabled: !!wsId && !!roomId,

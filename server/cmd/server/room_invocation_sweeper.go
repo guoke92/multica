@@ -23,9 +23,6 @@ func runRoomInvocationSweeper(ctx context.Context, taskSvc *service.TaskService)
 			if n > 0 {
 				slog.Info("room invocation sweeper: timed out invocations", "count", n)
 			}
-			if expired := taskSvc.SweepExpiredRoomHumanActions(ctx); expired > 0 {
-				slog.Info("room invocation sweeper: expired human actions", "count", expired)
-			}
 		}
 	}
 }

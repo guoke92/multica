@@ -978,19 +978,16 @@ func (s *TaskService) StartTask(ctx context.Context, taskID pgtype.UUID) (*db.Ag
 	s.captureTaskStarted(ctx, task)
 	if task.RoomID.Valid && task.InvocationID.Valid {
 		now := time.Now()
-		_, _ = s.Queries.UpdateMentionInvocationStatus(ctx, db.UpdateMentionInvocationStatusParams{
-			ID:        task.InvocationID,
-			Status:    "running",
-			StartedAt: pgtype.Timestamptz{Time: now, Valid: true},
-		})
-		// Clock for mention timeout starts when the daemon actually runs, not when queued.
-		_ = s.Queries.UpdateMentionInvocationTimeout(ctx, db.UpdateMentionInvocationTimeoutParams{
-			ID:        task.InvocationID,
-			TimeoutAt: pgtype.Timestamptz{Time: now.Add(30 * time.Minute), Valid: true},
-		})
-		if room, roomErr := s.Queries.GetRoom(ctx, task.RoomID); roomErr == nil {
-			if inv, invErr := s.Queries.GetMentionInvocation(ctx, task.InvocationID); invErr == nil {
-				s.MaybeRecordInvocationStatusFlowEvent(ctx, room, inv, "running")
+		inv, invErr := s.Queries.GetRoomInvocation(ctx, task.InvocationID)
+		if invErr == nil {
+			inv, _ = s.Queries.UpdateRoomInvocationStatus(ctx, db.UpdateRoomInvocationStatusParams{
+				ID: inv.ID, Status: "running",
+				StartedAt: pgtype.Timestamptz{Time: now, Valid: true},
+			})
+			if room, roomErr := s.Queries.GetRoom(ctx, task.RoomID); roomErr == nil {
+				if assignment, aErr := s.Queries.GetRoomAssignment(ctx, inv.AssignmentID); aErr == nil {
+					s.appendInvocationEvent(ctx, room, assignment, inv, "invocation_running", "agent", task.AgentID, nil)
+				}
 			}
 		}
 		s.RefreshRoomSnapshot(ctx, task.RoomID)
@@ -1199,9 +1196,8 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 
 	if task.RoomID.Valid && task.InvocationID.Valid {
 		if s.maybeRequestRoomApprovalFromResult(ctx, task, result) {
-			_, _ = s.Queries.UpdateMentionInvocationStatus(ctx, db.UpdateMentionInvocationStatusParams{
-				ID:     task.InvocationID,
-				Status: "pending",
+			_, _ = s.Queries.UpdateRoomInvocationStatus(ctx, db.UpdateRoomInvocationStatusParams{
+				ID: task.InvocationID, Status: "pending",
 			})
 			s.RefreshRoomSnapshot(ctx, task.RoomID)
 		} else {

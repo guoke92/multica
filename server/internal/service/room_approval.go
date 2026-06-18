@@ -30,6 +30,7 @@ func (s *TaskService) RequestRoomApproval(ctx context.Context, p RequestRoomAppr
 	}
 	summary := fmt.Sprintf("Approval required: **%s**", p.ActionType)
 	msg, err := s.Queries.CreateRoomMessage(ctx, db.CreateRoomMessageParams{
+		ID:         util.MustNewUUIDv7(),
 		RoomID:     p.Room.ID,
 		SenderType: "system",
 		Content:    summary,

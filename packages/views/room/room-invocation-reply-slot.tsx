@@ -185,20 +185,12 @@ export function RoomInvocationReplySlot({
         ) : isTerminal ? (
           <TerminalBody status={inv.status} failureReason={inv.failure_reason} />
         ) : isRunning && inv.task_id ? (
-          <div className="space-y-1.5">
-            <div
-              className="text-muted-foreground flex items-center gap-2 text-sm"
-              aria-live="polite"
-            >
-              <UnicodeSpinner name="breathe" className="opacity-70" />
-              <span className={cn("animate-chat-text-shimmer")}>思考中</span>
-            </div>
-            <RunningBody taskId={inv.task_id} />
-          </div>
+          <RunningBody taskId={inv.task_id} />
         ) : (
           <QueuedBody
             invocationId={inv.id}
             createdAt={inv.created_at}
+            status={inv.status}
           />
         )}
       </div>
@@ -311,9 +303,11 @@ function waitAnchorMs(invocationId: string, createdAt?: string): number {
 function QueuedBody({
   invocationId,
   createdAt,
+  status,
 }: {
   invocationId: string;
   createdAt?: string;
+  status: string;
 }) {
   const anchor = waitAnchorMs(invocationId, createdAt);
   const [now, setNow] = useState(() => Date.now());
@@ -324,7 +318,7 @@ function QueuedBody({
   }, []);
 
   const elapsedSecs = Math.max(0, Math.floor((now - anchor) / 1000));
-  const statusText = "思考中";
+  const statusText = status === "pending" ? "待调度" : "排队中";
 
   return (
     <div

@@ -60,7 +60,7 @@ export function RoomRouteHint({
                 name="breathe"
                 className="size-3 opacity-70"
               />
-              <span className="animate-chat-text-shimmer">思考中</span>
+              <span className="animate-chat-text-shimmer">分配中</span>
             </>
           ) : isFailed ? (
             <>

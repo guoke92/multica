@@ -32,27 +32,27 @@ type CreateRoomManagerAgentRequest struct {
 }
 
 type CreateRoomRequest struct {
-	Name            string                         `json:"name"`
-	Description     string                         `json:"description"`
-	Type            string                         `json:"type"`
-	ManagerAgentID  *string                        `json:"manager_agent_id,omitempty"`
-	ManagerAgent    *CreateRoomManagerAgentRequest `json:"manager_agent,omitempty"`
-	Policy          json.RawMessage                `json:"policy,omitempty"`
-	AgentMemberIDs  []string                       `json:"agent_member_ids,omitempty"`
-	MemberUserIDs   []string                       `json:"member_user_ids,omitempty"`
+	Name           string                         `json:"name"`
+	Description    string                         `json:"description"`
+	Type           string                         `json:"type"`
+	ManagerAgentID *string                        `json:"manager_agent_id,omitempty"`
+	ManagerAgent   *CreateRoomManagerAgentRequest `json:"manager_agent,omitempty"`
+	Policy         json.RawMessage                `json:"policy,omitempty"`
+	AgentMemberIDs []string                       `json:"agent_member_ids,omitempty"`
+	MemberUserIDs  []string                       `json:"member_user_ids,omitempty"`
 }
 
 type RoomResponse struct {
-	ID              string          `json:"id"`
-	WorkspaceID     string          `json:"workspace_id"`
-	Name            string          `json:"name"`
-	Description     string          `json:"description"`
-	Type            string          `json:"type"`
-	ManagerAgentID  *string         `json:"manager_agent_id,omitempty"`
-	Policy          json.RawMessage `json:"policy,omitempty"`
-	Snapshot        json.RawMessage `json:"snapshot"`
-	CreatedAt       string          `json:"created_at"`
-	UpdatedAt       string          `json:"updated_at"`
+	ID             string          `json:"id"`
+	WorkspaceID    string          `json:"workspace_id"`
+	Name           string          `json:"name"`
+	Description    string          `json:"description"`
+	Type           string          `json:"type"`
+	ManagerAgentID *string         `json:"manager_agent_id,omitempty"`
+	Policy         json.RawMessage `json:"policy,omitempty"`
+	Snapshot       json.RawMessage `json:"snapshot"`
+	CreatedAt      string          `json:"created_at"`
+	UpdatedAt      string          `json:"updated_at"`
 }
 
 type SendRoomMessageRequest struct {
@@ -62,9 +62,9 @@ type SendRoomMessageRequest struct {
 }
 
 type SendRoomMessageResponse struct {
-	MessageID    string                    `json:"message_id"`
-	CreatedAt    string                    `json:"created_at"`
-	Invocations  []InvocationResponse      `json:"invocations,omitempty"`
+	MessageID   string               `json:"message_id"`
+	CreatedAt   string               `json:"created_at"`
+	Invocations []InvocationResponse `json:"invocations,omitempty"`
 }
 
 type InvocationResponse struct {
@@ -170,9 +170,9 @@ func (h *Handler) loadRoomMember(w http.ResponseWriter, r *http.Request, userID,
 		return db.Room{}, db.RoomMember{}, false
 	}
 	member, err := h.Queries.GetRoomMember(r.Context(), db.GetRoomMemberParams{
-		RoomID:         room.ID,
-		PrincipalType:  "user",
-		PrincipalID:    parseUUID(userID),
+		RoomID:        room.ID,
+		PrincipalType: "user",
+		PrincipalID:   parseUUID(userID),
 	})
 	if err != nil {
 		writeError(w, http.StatusForbidden, "not a room member")
@@ -1083,7 +1083,7 @@ func (h *Handler) UpdateRoomMemberRole(w http.ResponseWriter, r *http.Request) {
 			RoomID: room.ID, PrincipalType: "user", PrincipalID: parseUUID(userID), Role: "member",
 		})
 		h.logRoomAudit(ctx, workspaceID, "member", userID, "room_owner_transferred", map[string]string{
-			"room_id":     uuidToString(room.ID),
+			"room_id":      uuidToString(room.ID),
 			"new_owner_id": req.PrincipalID,
 		})
 		h.publishRoomMembersUpdated(workspaceID, userID, uuidToString(room.ID))
@@ -1111,9 +1111,9 @@ func (h *Handler) UpdateRoomMemberRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.logRoomAudit(ctx, workspaceID, "member", userID, "room_member_role_updated", map[string]string{
-		"room_id":        uuidToString(room.ID),
-		"principal_id":   req.PrincipalID,
-		"role":           req.Role,
+		"room_id":      uuidToString(room.ID),
+		"principal_id": req.PrincipalID,
+		"role":         req.Role,
 	})
 	h.publishRoomMembersUpdated(workspaceID, userID, uuidToString(room.ID))
 	writeJSON(w, http.StatusOK, RoomMemberResponse{
@@ -1190,6 +1190,7 @@ func (h *Handler) SendRoomMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	msg, err := h.Queries.CreateRoomMessage(r.Context(), db.CreateRoomMessageParams{
+		ID:             util.MustNewUUIDv7(),
 		RoomID:         room.ID,
 		SenderType:     "user",
 		SenderID:       pgtype.UUID{Bytes: parseUUID(userID).Bytes, Valid: true},
@@ -1200,6 +1201,8 @@ func (h *Handler) SendRoomMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create message")
 		return
 	}
+
+	h.TaskService.RecordUserMessageFlowEvent(r.Context(), room, msg, parseUUID(userID))
 
 	_ = h.Queries.TouchRoom(r.Context(), room.ID)
 
@@ -1433,17 +1436,20 @@ func (h *Handler) ListRoomMessages(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	var before pgtype.Timestamptz
+	var before pgtype.UUID
 	if b := r.URL.Query().Get("before"); b != "" {
-		if t, err := time.Parse(time.RFC3339, b); err == nil {
-			before = pgtype.Timestamptz{Time: t, Valid: true}
+		var err error
+		before, err = util.ParseUUID(b)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid before cursor")
+			return
 		}
 	}
 
 	listParams := db.ListRoomMessagesParams{
-		RoomID:          room.ID,
-		BeforeCreatedAt: before,
-		Limit:           int32(limit),
+		RoomID:   room.ID,
+		BeforeID: before,
+		Limit:    int32(limit),
 	}
 	rows, err := h.Queries.ListRoomMessagesExtended(r.Context(), db.ListRoomMessagesExtendedParams(listParams))
 	if err != nil {
@@ -1574,10 +1580,6 @@ func (h *Handler) RetryInvocation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invocation cannot be retried")
 		return
 	}
-	if inv.RetryCount >= inv.MaxRetries {
-		writeError(w, http.StatusBadRequest, "max retries exceeded")
-		return
-	}
 	msg, err := h.Queries.GetRoomMessageInRoom(r.Context(), db.GetRoomMessageInRoomParams{
 		ID:     inv.MessageID,
 		RoomID: room.ID,
@@ -1596,14 +1598,16 @@ func (h *Handler) RetryInvocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	inv, err = h.Queries.UpdateMentionInvocationStatus(r.Context(), db.UpdateMentionInvocationStatusParams{
-		ID:         inv.ID,
-		Status:     "pending",
-		RetryCount: pgtype.Int4{Int32: inv.RetryCount + 1, Valid: true},
+		ID:     inv.ID,
+		Status: "pending",
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to reset invocation")
 		return
 	}
+	userUUID := parseUUID(userID)
+	h.TaskService.RecordManualInvocationRetryFlowEvent(r.Context(), room, inv, userUUID)
+	h.TaskService.MaybeRecordInvocationStatusFlowEvent(r.Context(), room, inv, "pending")
 	task, err := h.TaskService.EnqueueRoomInvocationTask(r.Context(), service.EnqueueRoomInvocationParams{
 		Room:       room,
 		Message:    msg,
@@ -1622,10 +1626,8 @@ func (h *Handler) RetryInvocation(w http.ResponseWriter, r *http.Request) {
 		TaskID:      task.ID,
 		DeliveredAt: pgtype.Timestamptz{Time: now, Valid: true},
 	})
+	h.TaskService.MaybeRecordInvocationStatusFlowEvent(r.Context(), room, inv, "queued")
 	h.TaskService.DrainQueuedRoomInvocations(r.Context(), agentID)
-	h.TaskService.RecordInvocationFlowEvent(r.Context(), room, inv, "invocation_retried", "user", parseUUID(userID), map[string]any{
-		"retry_count": inv.RetryCount,
-	})
 	_ = actorType
 	_ = actorID
 	writeJSON(w, http.StatusOK, invocationToResponse(inv))
@@ -1676,7 +1678,7 @@ func (h *Handler) CancelRoomInvocation(w http.ResponseWriter, r *http.Request) {
 		h.TaskService.DrainQueuedRoomInvocations(r.Context(), agentID)
 	}
 	h.TaskService.RefreshRoomSnapshot(r.Context(), inv.RoomID)
-	h.TaskService.MaybeRecordInvocationStatusFlowEvent(r.Context(), room, inv, "cancelled")
+	h.TaskService.RecordManualInvocationCancelFlowEvent(r.Context(), room, inv, parseUUID(userID))
 	h.publishRoom(protocol.EventRoomInvocationUpdated, workspaceID, "member", userID, map[string]string{
 		"room_id": uuidToString(inv.RoomID),
 	})
@@ -1752,7 +1754,7 @@ func (h *Handler) CancelInvocation(w http.ResponseWriter, r *http.Request) {
 		h.TaskService.DrainQueuedRoomInvocations(r.Context(), agentID)
 	}
 	h.TaskService.RefreshRoomSnapshot(r.Context(), inv.RoomID)
-	h.TaskService.MaybeRecordInvocationStatusFlowEvent(r.Context(), room, inv, "cancelled")
+	h.TaskService.RecordManualInvocationCancelFlowEvent(r.Context(), room, inv, parseUUID(userID))
 	h.publishRoom(protocol.EventRoomInvocationUpdated, workspaceID, "member", userID, map[string]string{
 		"room_id": uuidToString(inv.RoomID),
 	})

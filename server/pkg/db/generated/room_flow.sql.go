@@ -13,14 +13,14 @@ import (
 
 const insertRoomFlowEvent = `-- name: InsertRoomFlowEvent :one
 INSERT INTO room_flow_events (
-    room_id, topic_id, category, step_id, from_message_id, to_message_id,
+    id, room_id, topic_id, category, step_id, from_message_id, to_message_id,
     type, message_id, invocation_id, actor_type, actor_id, payload
 )
 VALUES (
     $1,
     $2,
-    COALESCE($3, 'control'),
-    $4,
+    $3,
+    COALESCE($4, 'control'),
     $5,
     $6,
     $7,
@@ -28,12 +28,14 @@ VALUES (
     $9,
     $10,
     $11,
-    COALESCE($12::jsonb, '{}'::jsonb)
+    $12,
+    COALESCE($13::jsonb, '{}'::jsonb)
 )
 RETURNING id, room_id, topic_id, category, step_id, from_message_id, to_message_id, type, message_id, invocation_id, actor_type, actor_id, payload, created_at
 `
 
 type InsertRoomFlowEventParams struct {
+	ID            pgtype.UUID `json:"id"`
 	RoomID        pgtype.UUID `json:"room_id"`
 	TopicID       pgtype.UUID `json:"topic_id"`
 	Category      pgtype.Text `json:"category"`
@@ -49,10 +51,17 @@ type InsertRoomFlowEventParams struct {
 }
 
 func (q *Queries) InsertRoomFlowEvent(ctx context.Context, arg InsertRoomFlowEventParams) (RoomFlowEvent, error) {
+	if !arg.ID.Valid {
+		id, err := newUUIDv7()
+		if err != nil {
+			return RoomFlowEvent{}, err
+		}
+		arg.ID = id
+	}
 	row := q.db.QueryRow(ctx, insertRoomFlowEvent,
-		arg.RoomID, arg.TopicID, arg.Category, arg.StepID, arg.FromMessageID,
-		arg.ToMessageID, arg.Type, arg.MessageID, arg.InvocationID,
-		arg.ActorType, arg.ActorID, arg.Payload,
+		arg.ID, arg.RoomID, arg.TopicID, arg.Category, arg.StepID,
+		arg.FromMessageID, arg.ToMessageID, arg.Type, arg.MessageID,
+		arg.InvocationID, arg.ActorType, arg.ActorID, arg.Payload,
 	)
 	var i RoomFlowEvent
 	err := row.Scan(
@@ -66,20 +75,20 @@ func (q *Queries) InsertRoomFlowEvent(ctx context.Context, arg InsertRoomFlowEve
 const listRoomFlowEventsByRoom = `-- name: ListRoomFlowEventsByRoom :many
 SELECT id, room_id, topic_id, category, step_id, from_message_id, to_message_id, type, message_id, invocation_id, actor_type, actor_id, payload, created_at FROM room_flow_events
 WHERE room_id = $1
-  AND ($2::timestamptz IS NULL OR created_at < $2::timestamptz)
-ORDER BY created_at DESC
+  AND ($2::uuid IS NULL OR id < $2::uuid)
+ORDER BY id DESC
 LIMIT $3
 `
 
 type ListRoomFlowEventsByRoomParams struct {
-	RoomID          pgtype.UUID        `json:"room_id"`
-	BeforeCreatedAt pgtype.Timestamptz `json:"before_created_at"`
-	Limit           int32              `json:"limit"`
+	RoomID   pgtype.UUID `json:"room_id"`
+	BeforeID pgtype.UUID `json:"before_id"`
+	Limit    int32       `json:"limit"`
 }
 
 func (q *Queries) ListRoomFlowEventsByRoom(ctx context.Context, arg ListRoomFlowEventsByRoomParams) ([]RoomFlowEvent, error) {
 	rows, err := q.db.Query(ctx, listRoomFlowEventsByRoom,
-		arg.RoomID, arg.BeforeCreatedAt, arg.Limit,
+		arg.RoomID, arg.BeforeID, arg.Limit,
 	)
 	if err != nil {
 		return nil, err
@@ -103,21 +112,21 @@ func (q *Queries) ListRoomFlowEventsByRoom(ctx context.Context, arg ListRoomFlow
 const listRoomFlowEventsByTopic = `-- name: ListRoomFlowEventsByTopic :many
 SELECT id, room_id, topic_id, category, step_id, from_message_id, to_message_id, type, message_id, invocation_id, actor_type, actor_id, payload, created_at FROM room_flow_events
 WHERE room_id = $1 AND topic_id = $2
-  AND ($3::timestamptz IS NULL OR created_at < $3::timestamptz)
-ORDER BY created_at DESC
+  AND ($3::uuid IS NULL OR id < $3::uuid)
+ORDER BY id DESC
 LIMIT $4
 `
 
 type ListRoomFlowEventsByTopicParams struct {
-	RoomID          pgtype.UUID        `json:"room_id"`
-	TopicID         pgtype.UUID        `json:"topic_id"`
-	BeforeCreatedAt pgtype.Timestamptz `json:"before_created_at"`
-	Limit           int32              `json:"limit"`
+	RoomID   pgtype.UUID `json:"room_id"`
+	TopicID  pgtype.UUID `json:"topic_id"`
+	BeforeID pgtype.UUID `json:"before_id"`
+	Limit    int32       `json:"limit"`
 }
 
 func (q *Queries) ListRoomFlowEventsByTopic(ctx context.Context, arg ListRoomFlowEventsByTopicParams) ([]RoomFlowEvent, error) {
 	rows, err := q.db.Query(ctx, listRoomFlowEventsByTopic,
-		arg.RoomID, arg.TopicID, arg.BeforeCreatedAt, arg.Limit,
+		arg.RoomID, arg.TopicID, arg.BeforeID, arg.Limit,
 	)
 	if err != nil {
 		return nil, err
@@ -372,7 +381,7 @@ func (q *Queries) UpdateRoomTopicLastMessage(ctx context.Context, arg UpdateRoom
 const getLatestRoomFlowEventID = `-- name: GetLatestRoomFlowEventID :one
 SELECT id FROM room_flow_events
 WHERE room_id = $1
-ORDER BY created_at DESC
+ORDER BY id DESC
 LIMIT 1
 `
 
@@ -389,7 +398,7 @@ WHERE room_id = $1
   AND topic_id = $2
   AND message_kind = 'card'
   AND deleted_at IS NULL
-ORDER BY created_at ASC
+ORDER BY id ASC
 LIMIT 1
 `
 

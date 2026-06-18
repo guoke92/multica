@@ -123,6 +123,16 @@ func (s *TaskService) finalizeRoomInvocation(ctx context.Context, task db.AgentT
 	if !task.InvocationID.Valid {
 		return
 	}
+	if inv, err := s.loadMentionInvocation(ctx, task.InvocationID); err == nil {
+		if inv.Status == "cancelled" || inv.Status == "succeeded" {
+			slog.Info("finalize room invocation skipped: already terminal",
+				"invocation_id", util.UUIDToString(task.InvocationID),
+				"status", inv.Status,
+				"task_id", util.UUIDToString(task.ID),
+			)
+			return
+		}
+	}
 	now := time.Now()
 	terminalStatus := status
 	failureReasonText := failureReason
@@ -168,6 +178,7 @@ func (s *TaskService) finalizeRoomInvocation(ctx context.Context, task db.AgentT
 						"trigger_message_id":   triggerMessageID,
 					})
 					msg, err := s.Queries.CreateRoomMessage(ctx, db.CreateRoomMessageParams{
+						ID:     util.MustNewUUIDv7(),
 						RoomID: task.RoomID, SenderType: "agent",
 						SenderID: pgtype.UUID{Bytes: task.AgentID.Bytes, Valid: true},
 						Content:  redact.Text(short), Metadata: meta,

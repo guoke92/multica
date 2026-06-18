@@ -1,19 +1,20 @@
 -- name: InsertRoomFlowEvent :one
 INSERT INTO room_flow_events (
-    room_id, topic_id, category, step_id, from_message_id, to_message_id,
+    id, room_id, topic_id, category, step_id, from_message_id, to_message_id,
     type, message_id, invocation_id, actor_type, actor_id, payload
 )
 VALUES (
-    $1,
+    sqlc.arg('id'),
+    sqlc.arg('room_id'),
     sqlc.narg('topic_id'),
     COALESCE(sqlc.narg('category'), 'control'),
     sqlc.narg('step_id'),
     sqlc.narg('from_message_id'),
     sqlc.narg('to_message_id'),
-    $2,
+    sqlc.arg('type'),
     sqlc.narg('message_id'),
     sqlc.narg('invocation_id'),
-    $3,
+    sqlc.arg('actor_type'),
     sqlc.narg('actor_id'),
     COALESCE(sqlc.narg('payload')::jsonb, '{}'::jsonb)
 )
@@ -22,15 +23,15 @@ RETURNING *;
 -- name: ListRoomFlowEventsByRoom :many
 SELECT * FROM room_flow_events
 WHERE room_id = $1
-  AND (sqlc.narg('before_created_at')::timestamptz IS NULL OR created_at < sqlc.narg('before_created_at')::timestamptz)
-ORDER BY created_at DESC
+  AND (sqlc.narg('before_id')::uuid IS NULL OR id < sqlc.narg('before_id')::uuid)
+ORDER BY id DESC
 LIMIT sqlc.arg('limit');
 
 -- name: ListRoomFlowEventsByTopic :many
 SELECT * FROM room_flow_events
 WHERE room_id = $1 AND topic_id = $2
-  AND (sqlc.narg('before_created_at')::timestamptz IS NULL OR created_at < sqlc.narg('before_created_at')::timestamptz)
-ORDER BY created_at DESC
+  AND (sqlc.narg('before_id')::uuid IS NULL OR id < sqlc.narg('before_id')::uuid)
+ORDER BY id DESC
 LIMIT sqlc.arg('limit');
 
 -- name: CreateRoomHumanAction :one
@@ -100,7 +101,7 @@ RETURNING *;
 -- name: GetLatestRoomFlowEventID :one
 SELECT id FROM room_flow_events
 WHERE room_id = $1
-ORDER BY created_at DESC
+ORDER BY id DESC
 LIMIT 1;
 
 -- name: GetRoomTopicCardMessageID :one
@@ -109,7 +110,7 @@ WHERE room_id = $1
   AND topic_id = $2
   AND message_kind = 'card'
   AND deleted_at IS NULL
-ORDER BY created_at ASC
+ORDER BY id ASC
 LIMIT 1;
 
 -- name: ListExpiredPendingRoomHumanActions :many

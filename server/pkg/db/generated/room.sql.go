@@ -196,14 +196,20 @@ func (q *Queries) CreateApprovalRequest(ctx context.Context, arg CreateApprovalR
 
 const createMentionInvocation = `-- name: CreateMentionInvocation :one
 INSERT INTO mention_invocation (
-    room_id, message_id, target_type, target_id, intent, status, priority,
+    id, room_id, message_id, target_type, target_id, intent, status, priority,
     max_retries, parent_invocation_id, chain_depth, timeout_at
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $11, $9, $10)
+VALUES (
+    $1, $2, $3,
+    $4, $5, $6,
+    $7, $8, $9,
+    $12, $10, $11
+)
 RETURNING id, room_id, message_id, target_type, target_id, intent, status, priority, retry_count, max_retries, task_id, response_message_id, failure_reason, parent_invocation_id, chain_depth, timeout_at, delivered_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at, delivery_id, topic_id
 `
 
 type CreateMentionInvocationParams struct {
+	ID                 pgtype.UUID        `json:"id"`
 	RoomID             pgtype.UUID        `json:"room_id"`
 	MessageID          pgtype.UUID        `json:"message_id"`
 	TargetType         string             `json:"target_type"`
@@ -218,7 +224,15 @@ type CreateMentionInvocationParams struct {
 }
 
 func (q *Queries) CreateMentionInvocation(ctx context.Context, arg CreateMentionInvocationParams) (MentionInvocation, error) {
+	if !arg.ID.Valid {
+		id, err := newUUIDv7()
+		if err != nil {
+			return MentionInvocation{}, err
+		}
+		arg.ID = id
+	}
 	row := q.db.QueryRow(ctx, createMentionInvocation,
+		arg.ID,
 		arg.RoomID,
 		arg.MessageID,
 		arg.TargetType,
@@ -307,12 +321,17 @@ func (q *Queries) CreateRoom(ctx context.Context, arg CreateRoomParams) (Room, e
 }
 
 const createRoomMessage = `-- name: CreateRoomMessage :one
-INSERT INTO room_message (room_id, sender_type, sender_id, content, quote_message_id, metadata)
-VALUES ($1, $2, $4, $3, $5, COALESCE($6::jsonb, '{}'::jsonb))
+INSERT INTO room_message (id, room_id, sender_type, sender_id, content, quote_message_id, metadata)
+VALUES (
+    $1, $2, $3,
+    $5, $4, $6,
+    COALESCE($7::jsonb, '{}'::jsonb)
+)
 RETURNING id, room_id, sender_type, sender_id, content, quote_message_id, metadata, created_at, edited_at, deleted_at
 `
 
 type CreateRoomMessageParams struct {
+	ID             pgtype.UUID `json:"id"`
 	RoomID         pgtype.UUID `json:"room_id"`
 	SenderType     string      `json:"sender_type"`
 	Content        string      `json:"content"`
@@ -322,7 +341,15 @@ type CreateRoomMessageParams struct {
 }
 
 func (q *Queries) CreateRoomMessage(ctx context.Context, arg CreateRoomMessageParams) (RoomMessage, error) {
+	if !arg.ID.Valid {
+		id, err := newUUIDv7()
+		if err != nil {
+			return RoomMessage{}, err
+		}
+		arg.ID = id
+	}
 	row := q.db.QueryRow(ctx, createRoomMessage,
+		arg.ID,
 		arg.RoomID,
 		arg.SenderType,
 		arg.Content,
@@ -479,7 +506,7 @@ func (q *Queries) GetApprovalRequest(ctx context.Context, id pgtype.UUID) (Appro
 const getLatestInvocationForMessage = `-- name: GetLatestInvocationForMessage :one
 SELECT id, room_id, message_id, target_type, target_id, intent, status, priority, retry_count, max_retries, task_id, response_message_id, failure_reason, parent_invocation_id, chain_depth, timeout_at, delivered_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at, delivery_id, topic_id FROM mention_invocation
 WHERE message_id = $1
-ORDER BY chain_depth DESC, created_at DESC
+ORDER BY chain_depth DESC, id DESC
 LIMIT 1
 `
 
@@ -600,7 +627,7 @@ SELECT mi.id, mi.room_id, mi.message_id, mi.target_type, mi.target_id, mi.intent
 FROM mention_invocation mi
 WHERE mi.room_id = $1
   AND mi.status = 'queued'
-ORDER BY mi.created_at ASC
+ORDER BY mi.id ASC
 LIMIT $2
 `
 
@@ -643,7 +670,7 @@ func (q *Queries) GetPendingRoomInvocationTasks(ctx context.Context, arg GetPend
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeliveryID,
-		&i.TopicID,
+			&i.TopicID,
 		); err != nil {
 			return nil, err
 		}
@@ -800,7 +827,7 @@ func (q *Queries) GetRoomMessageInRoom(ctx context.Context, arg GetRoomMessageIn
 const listRoomMentionInvocations = `-- name: ListRoomMentionInvocations :many
 SELECT id, room_id, message_id, target_type, target_id, intent, status, priority, retry_count, max_retries, task_id, response_message_id, failure_reason, parent_invocation_id, chain_depth, timeout_at, delivered_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at, delivery_id, topic_id FROM mention_invocation
 WHERE room_id = $1
-ORDER BY created_at ASC
+ORDER BY id ASC
 `
 
 func (q *Queries) ListRoomMentionInvocations(ctx context.Context, roomID pgtype.UUID) ([]MentionInvocation, error) {
@@ -837,7 +864,7 @@ func (q *Queries) ListRoomMentionInvocations(ctx context.Context, roomID pgtype.
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeliveryID,
-		&i.TopicID,
+			&i.TopicID,
 		); err != nil {
 			return nil, err
 		}
@@ -853,7 +880,7 @@ const listActiveMentionInvocationsByRoom = `-- name: ListActiveMentionInvocation
 SELECT id, room_id, message_id, target_type, target_id, intent, status, priority, retry_count, max_retries, task_id, response_message_id, failure_reason, parent_invocation_id, chain_depth, timeout_at, delivered_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at, delivery_id, topic_id FROM mention_invocation
 WHERE room_id = $1
   AND status NOT IN ('succeeded', 'cancelled')
-ORDER BY created_at DESC
+ORDER BY id DESC
 `
 
 func (q *Queries) ListActiveMentionInvocationsByRoom(ctx context.Context, roomID pgtype.UUID) ([]MentionInvocation, error) {
@@ -890,7 +917,7 @@ func (q *Queries) ListActiveMentionInvocationsByRoom(ctx context.Context, roomID
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeliveryID,
-		&i.TopicID,
+			&i.TopicID,
 		); err != nil {
 			return nil, err
 		}
@@ -903,7 +930,7 @@ func (q *Queries) ListActiveMentionInvocationsByRoom(ctx context.Context, roomID
 }
 
 const listMentionInvocationsByMessage = `-- name: ListMentionInvocationsByMessage :many
-SELECT id, room_id, message_id, target_type, target_id, intent, status, priority, retry_count, max_retries, task_id, response_message_id, failure_reason, parent_invocation_id, chain_depth, timeout_at, delivered_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at, delivery_id, topic_id FROM mention_invocation WHERE message_id = $1 ORDER BY created_at ASC
+SELECT id, room_id, message_id, target_type, target_id, intent, status, priority, retry_count, max_retries, task_id, response_message_id, failure_reason, parent_invocation_id, chain_depth, timeout_at, delivered_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at, delivery_id, topic_id FROM mention_invocation WHERE message_id = $1 ORDER BY id ASC
 `
 
 func (q *Queries) ListMentionInvocationsByMessage(ctx context.Context, messageID pgtype.UUID) ([]MentionInvocation, error) {
@@ -940,7 +967,7 @@ func (q *Queries) ListMentionInvocationsByMessage(ctx context.Context, messageID
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeliveryID,
-		&i.TopicID,
+			&i.TopicID,
 		); err != nil {
 			return nil, err
 		}
@@ -962,7 +989,7 @@ WHERE mi.status = 'queued'
     (mi.target_type = 'agent' AND mi.target_id = $1)
     OR (mi.target_type = 'squad' AND s.leader_id = $1)
   )
-ORDER BY mi.created_at ASC
+ORDER BY mi.id ASC
 LIMIT $2
 `
 
@@ -1005,7 +1032,7 @@ func (q *Queries) ListQueuedInvocationsForExecutor(ctx context.Context, arg List
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeliveryID,
-		&i.TopicID,
+			&i.TopicID,
 		); err != nil {
 			return nil, err
 		}
@@ -1022,7 +1049,7 @@ SELECT id, room_id, message_id, target_type, target_id, intent, status, priority
 WHERE target_type = 'agent'
   AND target_id = $1
   AND status = 'queued'
-ORDER BY created_at ASC
+ORDER BY id ASC
 LIMIT $2
 `
 
@@ -1065,7 +1092,7 @@ func (q *Queries) ListQueuedInvocationsForAgent(ctx context.Context, arg ListQue
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeliveryID,
-		&i.TopicID,
+			&i.TopicID,
 		); err != nil {
 			return nil, err
 		}
@@ -1080,7 +1107,7 @@ func (q *Queries) ListQueuedInvocationsForAgent(ctx context.Context, arg ListQue
 const listQueuedRoomInvocations = `-- name: ListQueuedRoomInvocations :many
 SELECT id, room_id, message_id, target_type, target_id, intent, status, priority, retry_count, max_retries, task_id, response_message_id, failure_reason, parent_invocation_id, chain_depth, timeout_at, delivered_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at, delivery_id, topic_id FROM mention_invocation
 WHERE status = 'queued'
-ORDER BY created_at ASC
+ORDER BY id ASC
 LIMIT $1
 `
 
@@ -1118,7 +1145,7 @@ func (q *Queries) ListQueuedRoomInvocations(ctx context.Context, limit int32) ([
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeliveryID,
-		&i.TopicID,
+			&i.TopicID,
 		); err != nil {
 			return nil, err
 		}
@@ -1168,19 +1195,19 @@ const listRoomMessages = `-- name: ListRoomMessages :many
 SELECT id, room_id, sender_type, sender_id, content, quote_message_id, metadata, created_at, edited_at, deleted_at FROM room_message
 WHERE room_id = $1
   AND deleted_at IS NULL
-  AND ($2::timestamptz IS NULL OR created_at < $2::timestamptz)
-ORDER BY created_at DESC
+  AND ($2::uuid IS NULL OR id < $2::uuid)
+ORDER BY id DESC
 LIMIT $3
 `
 
 type ListRoomMessagesParams struct {
-	RoomID          pgtype.UUID        `json:"room_id"`
-	BeforeCreatedAt pgtype.Timestamptz `json:"before_created_at"`
-	Limit           int32              `json:"limit"`
+	RoomID   pgtype.UUID `json:"room_id"`
+	BeforeID pgtype.UUID `json:"before_id"`
+	Limit    int32       `json:"limit"`
 }
 
 func (q *Queries) ListRoomMessages(ctx context.Context, arg ListRoomMessagesParams) ([]RoomMessage, error) {
-	rows, err := q.db.Query(ctx, listRoomMessages, arg.RoomID, arg.BeforeCreatedAt, arg.Limit)
+	rows, err := q.db.Query(ctx, listRoomMessages, arg.RoomID, arg.BeforeID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1336,7 +1363,7 @@ func (q *Queries) ListTimedOutRunningInvocations(ctx context.Context, limit int3
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeliveryID,
-		&i.TopicID,
+			&i.TopicID,
 		); err != nil {
 			return nil, err
 		}
@@ -1593,10 +1620,10 @@ RETURNING id, room_id, sender_type, sender_id, content, quote_message_id, metada
 `
 
 type UpdateRoomMessageContentParams struct {
-	ID         pgtype.UUID `json:"id"`
-	Content    string      `json:"content"`
-	RoomID     pgtype.UUID `json:"room_id"`
-	SenderID   pgtype.UUID `json:"sender_id"`
+	ID       pgtype.UUID `json:"id"`
+	Content  string      `json:"content"`
+	RoomID   pgtype.UUID `json:"room_id"`
+	SenderID pgtype.UUID `json:"sender_id"`
 }
 
 func (q *Queries) UpdateRoomMessageContent(ctx context.Context, arg UpdateRoomMessageContentParams) (RoomMessage, error) {

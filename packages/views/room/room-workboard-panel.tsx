@@ -8,6 +8,7 @@ type Props = {
   roomId: string;
   managerAgentId?: string;
   agentNameById: Map<string, string>;
+  memberNameById?: Map<string, string>;
   invocations?: MentionInvocation[];
 };
 
@@ -16,6 +17,7 @@ export function RoomWorkboardPanel({
   roomId,
   managerAgentId,
   agentNameById,
+  memberNameById,
   invocations,
 }: Props) {
   return (
@@ -28,6 +30,7 @@ export function RoomWorkboardPanel({
         roomId={roomId}
         managerAgentId={managerAgentId}
         agentNameById={agentNameById}
+        memberNameById={memberNameById}
         invocations={invocations}
       />
     </div>

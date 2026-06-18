@@ -13,9 +13,12 @@ import {
 import {
   buildInvocationTargetMap,
   flowStepTone,
+  flowTrackSurface,
   flowTrackTone,
+  formatFlowStepLine,
   formatFlowTrackLine,
   groupFlowTracks,
+  isActiveFlowTrack,
   type FlowTrack,
 } from "./room-flow-utils";
 
@@ -24,6 +27,7 @@ type Props = {
   roomId: string;
   managerAgentId?: string;
   agentNameById: Map<string, string>;
+  memberNameById?: Map<string, string>;
   invocations?: MentionInvocation[];
   className?: string;
 };
@@ -33,6 +37,7 @@ export function RoomFlowTimeline({
   roomId,
   managerAgentId,
   agentNameById,
+  memberNameById,
   invocations = [],
   className,
 }: Props) {
@@ -41,15 +46,38 @@ export function RoomFlowTimeline({
     () => buildInvocationTargetMap(invocations),
     [invocations],
   );
+  const invocationById = useMemo(
+    () => new Map(invocations.map((inv) => [inv.id, inv])),
+    [invocations],
+  );
+
+  const displayOpts = useMemo(
+    () => ({
+      managerAgentId,
+      memberNameById,
+      agentNameById,
+      invocationTargetById,
+    }),
+    [managerAgentId, memberNameById, agentNameById, invocationTargetById],
+  );
+
+  const formatOpts = useMemo(
+    () => ({
+      ...displayOpts,
+      invocationById,
+    }),
+    [displayOpts, invocationById],
+  );
 
   const tracks = useMemo(
     () =>
       groupFlowTracks(events, {
         agentNameById,
         managerAgentId,
+        memberNameById,
         invocationTargetById,
       }),
-    [events, agentNameById, managerAgentId, invocationTargetById],
+    [events, agentNameById, managerAgentId, memberNameById, invocationTargetById],
   );
 
   if (tracks.length === 0) {
@@ -61,12 +89,14 @@ export function RoomFlowTimeline({
   }
 
   return (
-    <ul className={cn("max-h-40 space-y-1 overflow-y-auto px-3 py-2", className)}>
-      {tracks.map((track, idx) => (
+    <ul className={cn("max-h-48 space-y-0.5 overflow-y-auto px-2 py-2", className)}>
+      {tracks.map((track) => (
         <FlowTrackRow
           key={track.key}
           track={track}
-          emphasize={idx === tracks.length - 1}
+          displayOpts={displayOpts}
+          formatOpts={formatOpts}
+          invocationById={invocationById}
         />
       ))}
     </ul>
@@ -75,25 +105,38 @@ export function RoomFlowTimeline({
 
 function FlowTrackRow({
   track,
-  emphasize,
+  displayOpts,
+  formatOpts,
+  invocationById,
 }: {
   track: FlowTrack;
-  emphasize: boolean;
+  displayOpts: {
+    managerAgentId?: string;
+    memberNameById?: Map<string, string>;
+    agentNameById: Map<string, string>;
+    invocationTargetById: Map<string, string>;
+  };
+  formatOpts: Parameters<typeof formatFlowTrackLine>[1];
+  invocationById: Map<string, MentionInvocation>;
 }) {
   const tone = flowTrackTone(track);
+  const surface = flowTrackSurface(track);
+  const isActive = isActiveFlowTrack(track, invocationById);
   const hasHistory = track.steps.length > 1;
+  const line = formatFlowTrackLine(track, formatOpts);
 
   const row = (
     <div
       className={cn(
-        "flex items-baseline justify-between gap-2 text-xs",
+        "flex items-baseline justify-between gap-2 rounded-md px-2 py-1 text-xs transition-colors",
         tone,
-        emphasize && "font-medium",
+        surface,
+        isActive && "font-medium",
         hasHistory && "cursor-default",
       )}
     >
-      <span className="min-w-0 truncate">{formatFlowTrackLine(track)}</span>
-      <time className="text-muted-foreground shrink-0 text-[10px]">
+      <span className="min-w-0 truncate">{line}</span>
+      <time className="text-muted-foreground shrink-0 text-[10px] tabular-nums">
         {track.updatedAt.slice(11, 16)}
       </time>
     </div>
@@ -105,35 +148,48 @@ function FlowTrackRow({
 
   return (
     <li>
-      <HoverCard openDelay={120} closeDelay={80}>
+      <HoverCard>
         <HoverCardTrigger render={<div className="w-full">{row}</div>} />
-        <HoverCardContent side="left" align="start" className="w-56 p-0">
-          <FlowTrackHistoryPanel track={track} />
+        <HoverCardContent side="left" align="start" className="w-60 p-0">
+          <FlowTrackHistoryPanel track={track} displayOpts={displayOpts} />
         </HoverCardContent>
       </HoverCard>
     </li>
   );
 }
 
-function FlowTrackHistoryPanel({ track }: { track: FlowTrack }) {
+function FlowTrackHistoryPanel({
+  track,
+  displayOpts,
+}: {
+  track: FlowTrack;
+  displayOpts: {
+    managerAgentId?: string;
+    memberNameById?: Map<string, string>;
+    agentNameById: Map<string, string>;
+    invocationTargetById: Map<string, string>;
+  };
+}) {
+  const steps = track.steps;
+
   return (
     <div className="overflow-hidden">
-      <p className="text-muted-foreground border-border border-b px-3 py-2 text-[10px] font-medium uppercase tracking-wide">
-        流程动态
+      <p className="text-muted-foreground border-border border-b px-3 py-2 text-[10px] font-medium tracking-wide">
+        状态变化
       </p>
-      <ul className="max-h-40 space-y-1 overflow-y-auto px-3 py-2">
-        {track.steps.map((step) => (
+      <ul className="max-h-44 space-y-0.5 overflow-y-auto px-2 py-2">
+        {steps.map((step) => (
           <li
-            key={`${step.createdAt}:${step.event.id}`}
+            key={step.event.id}
             className={cn(
-              "flex items-baseline justify-between gap-2 text-xs",
+              "flex items-baseline justify-between gap-2 rounded px-1.5 py-0.5 text-xs",
               flowStepTone(step),
             )}
           >
             <span className="min-w-0 truncate">
-              {step.actorName} · {step.token}
+              {formatFlowStepLine(track, step, displayOpts)}
             </span>
-            <time className="text-muted-foreground shrink-0 text-[10px]">
+            <time className="text-muted-foreground shrink-0 text-[10px] tabular-nums">
               {step.createdAt.slice(11, 16)}
             </time>
           </li>

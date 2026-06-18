@@ -60,11 +60,12 @@ RETURNING *;
 
 -- name: CreateRoomMessageExtended :one
 INSERT INTO room_message (
-    room_id, sender_type, sender_id, content, quote_message_id,
+    id, room_id, sender_type, sender_id, content, quote_message_id,
     delivery_id, topic_id, message_kind, metadata, relay_metadata
 )
 VALUES (
-    $1, $2, sqlc.narg('sender_id'), $3,
+    sqlc.arg('id'), sqlc.arg('room_id'), sqlc.arg('sender_type'),
+    sqlc.narg('sender_id'), sqlc.arg('content'),
     sqlc.narg('quote_message_id'),
     sqlc.narg('delivery_id'), sqlc.narg('topic_id'),
     COALESCE(sqlc.narg('message_kind'), 'chat'),
@@ -84,13 +85,15 @@ WHERE id = $1;
 
 -- name: CreateMentionInvocationExtended :one
 INSERT INTO mention_invocation (
-    room_id, message_id, target_type, target_id, intent, status, priority,
+    id, room_id, message_id, target_type, target_id, intent, status, priority,
     max_retries, parent_invocation_id, chain_depth, timeout_at,
     delivery_id, topic_id
 )
 VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8,
-    sqlc.narg('parent_invocation_id'), $9, $10,
+    sqlc.arg('id'), sqlc.arg('room_id'), sqlc.arg('message_id'),
+    sqlc.arg('target_type'), sqlc.arg('target_id'), sqlc.arg('intent'),
+    sqlc.arg('status'), sqlc.arg('priority'), sqlc.arg('max_retries'),
+    sqlc.narg('parent_invocation_id'), sqlc.arg('chain_depth'), sqlc.arg('timeout_at'),
     sqlc.narg('delivery_id'), sqlc.narg('topic_id')
 )
 RETURNING *;
@@ -110,8 +113,8 @@ SELECT id, room_id, sender_type, sender_id, content, quote_message_id,
 FROM room_message
 WHERE room_id = $1
   AND deleted_at IS NULL
-  AND ($2::timestamptz IS NULL OR created_at < $2::timestamptz)
-ORDER BY created_at DESC
+  AND ($2::uuid IS NULL OR id < $2::uuid)
+ORDER BY id DESC
 LIMIT $3;
 
 -- name: UpdateRoomMessageRelayMetadata :exec

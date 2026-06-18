@@ -151,6 +151,7 @@ func (s *TaskService) dispatchRoomWorkflowInvocation(
 	}
 
 	inv, err := s.Queries.CreateMentionInvocationExtended(ctx, db.CreateMentionInvocationExtendedParams{
+		ID:                 util.MustNewUUIDv7(),
 		RoomID:             p.Room.ID,
 		MessageID:          p.Message.ID,
 		TargetType:         "agent",

@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -183,10 +182,12 @@ func (h *Handler) ListRoomFlowEvents(w http.ResponseWriter, r *http.Request) {
 			limit = int32(n)
 		}
 	}
-	var before pgtype.Timestamptz
+	var before pgtype.UUID
 	if b := r.URL.Query().Get("before"); b != "" {
-		if t, err := time.Parse(time.RFC3339, b); err == nil {
-			before = pgtype.Timestamptz{Time: t, Valid: true}
+		var ok bool
+		before, ok = parseUUIDOrBadRequest(w, b, "before")
+		if !ok {
+			return
 		}
 	}
 	topicID := chi.URLParam(r, "topicId")
@@ -198,16 +199,16 @@ func (h *Handler) ListRoomFlowEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rows, err = h.Queries.ListRoomFlowEventsByTopic(r.Context(), db.ListRoomFlowEventsByTopicParams{
-			RoomID:          room.ID,
-			TopicID:         topicUUID,
-			BeforeCreatedAt: before,
-			Limit:           limit,
+			RoomID:   room.ID,
+			TopicID:  topicUUID,
+			BeforeID: before,
+			Limit:    limit,
 		})
 	} else {
 		rows, err = h.Queries.ListRoomFlowEventsByRoom(r.Context(), db.ListRoomFlowEventsByRoomParams{
-			RoomID:          room.ID,
-			BeforeCreatedAt: before,
-			Limit:           limit,
+			RoomID:   room.ID,
+			BeforeID: before,
+			Limit:    limit,
 		})
 	}
 	if err != nil {

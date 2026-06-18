@@ -82,8 +82,12 @@ WHERE room_id = $1 AND role = 'owner' AND removed_at IS NULL;
 UPDATE room SET updated_at = now() WHERE id = $1;
 
 -- name: CreateRoomMessage :one
-INSERT INTO room_message (room_id, sender_type, sender_id, content, quote_message_id, metadata)
-VALUES ($1, $2, sqlc.narg('sender_id'), $3, sqlc.narg('quote_message_id'), COALESCE(sqlc.narg('metadata')::jsonb, '{}'::jsonb))
+INSERT INTO room_message (id, room_id, sender_type, sender_id, content, quote_message_id, metadata)
+VALUES (
+    sqlc.arg('id'), sqlc.arg('room_id'), sqlc.arg('sender_type'),
+    sqlc.narg('sender_id'), sqlc.arg('content'), sqlc.narg('quote_message_id'),
+    COALESCE(sqlc.narg('metadata')::jsonb, '{}'::jsonb)
+)
 RETURNING *;
 
 -- name: GetRoomMessage :one
@@ -137,16 +141,21 @@ RETURNING *;
 SELECT * FROM room_message
 WHERE room_id = $1
   AND deleted_at IS NULL
-  AND (sqlc.narg('before_created_at')::timestamptz IS NULL OR created_at < sqlc.narg('before_created_at')::timestamptz)
-ORDER BY created_at DESC
+  AND (sqlc.narg('before_id')::uuid IS NULL OR id < sqlc.narg('before_id')::uuid)
+ORDER BY id DESC
 LIMIT sqlc.arg('limit');
 
 -- name: CreateMentionInvocation :one
 INSERT INTO mention_invocation (
-    room_id, message_id, target_type, target_id, intent, status, priority,
+    id, room_id, message_id, target_type, target_id, intent, status, priority,
     max_retries, parent_invocation_id, chain_depth, timeout_at
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, sqlc.narg('parent_invocation_id'), $9, $10)
+VALUES (
+    sqlc.arg('id'), sqlc.arg('room_id'), sqlc.arg('message_id'),
+    sqlc.arg('target_type'), sqlc.arg('target_id'), sqlc.arg('intent'),
+    sqlc.arg('status'), sqlc.arg('priority'), sqlc.arg('max_retries'),
+    sqlc.narg('parent_invocation_id'), sqlc.arg('chain_depth'), sqlc.arg('timeout_at')
+)
 RETURNING *;
 
 -- name: GetMentionInvocation :one
@@ -179,19 +188,19 @@ WHERE id = $1 AND status NOT IN ('succeeded', 'cancelled')
 RETURNING *;
 
 -- name: ListMentionInvocationsByMessage :many
-SELECT * FROM mention_invocation WHERE message_id = $1 ORDER BY created_at ASC;
+SELECT * FROM mention_invocation WHERE message_id = $1 ORDER BY id ASC;
 
 -- name: ListActiveMentionInvocationsByRoom :many
 SELECT * FROM mention_invocation
 WHERE room_id = $1
   AND status NOT IN ('succeeded', 'cancelled')
-ORDER BY created_at DESC;
+ORDER BY id DESC;
 
 -- name: ListRoomMentionInvocations :many
 -- UI thread: include succeeded so replies stay anchored under the triggering user message.
 SELECT * FROM mention_invocation
 WHERE room_id = $1
-ORDER BY created_at ASC;
+ORDER BY id ASC;
 
 -- name: CountRunningInvocationsForAgent :one
 -- Active agent_task_queue rows for this executor (not invocation.status=queued — that blocked follow-up tasks).
@@ -211,7 +220,7 @@ WHERE mi.status = 'queued'
     (mi.target_type = 'agent' AND mi.target_id = $1)
     OR (mi.target_type = 'squad' AND s.leader_id = $1)
   )
-ORDER BY mi.created_at ASC
+ORDER BY mi.id ASC
 LIMIT $2;
 
 -- name: CreateRoomTask :one
@@ -227,7 +236,7 @@ SELECT mi.*
 FROM mention_invocation mi
 WHERE mi.room_id = $1
   AND mi.status = 'queued'
-ORDER BY mi.created_at ASC
+ORDER BY mi.id ASC
 LIMIT $2;
 
 -- name: CreateApprovalRequest :one
@@ -263,7 +272,7 @@ WHERE room_id = $1
 -- name: GetLatestInvocationForMessage :one
 SELECT * FROM mention_invocation
 WHERE message_id = $1
-ORDER BY chain_depth DESC, created_at DESC
+ORDER BY chain_depth DESC, id DESC
 LIMIT 1;
 
 -- name: ListTimedOutRunningInvocations :many
@@ -285,11 +294,11 @@ SELECT * FROM mention_invocation
 WHERE target_type = 'agent'
   AND target_id = $1
   AND status = 'queued'
-ORDER BY created_at ASC
+ORDER BY id ASC
 LIMIT $2;
 
 -- name: ListQueuedRoomInvocations :many
 SELECT * FROM mention_invocation
 WHERE status = 'queued'
-ORDER BY created_at ASC
+ORDER BY id ASC
 LIMIT $1;

@@ -266,16 +266,23 @@ func (q *Queries) UpdateRoomTopic(ctx context.Context, arg UpdateRoomTopicParams
 
 const createRoomMessageExtended = `-- name: CreateRoomMessageExtended :one
 INSERT INTO room_message (
-    room_id, sender_type, sender_id, content, quote_message_id,
+    id, room_id, sender_type, sender_id, content, quote_message_id,
     delivery_id, topic_id, message_kind, metadata, relay_metadata
 )
 VALUES (
-    $1, $2, $3, $4, $5, $6, $7, COALESCE($8, 'chat'), COALESCE($9::jsonb, '{}'::jsonb), $10::jsonb
+    $1, $2, $3,
+    $4, $5,
+    $6,
+    $7, $8,
+    COALESCE($9, 'chat'),
+    COALESCE($10::jsonb, '{}'::jsonb),
+    $11::jsonb
 )
 RETURNING id, room_id, sender_type, sender_id, content, quote_message_id, metadata, created_at, edited_at, deleted_at, delivery_id, topic_id, message_kind, relay_metadata
 `
 
 type CreateRoomMessageExtendedParams struct {
+	ID             pgtype.UUID `json:"id"`
 	RoomID         pgtype.UUID `json:"room_id"`
 	SenderType     string      `json:"sender_type"`
 	SenderID       pgtype.UUID `json:"sender_id"`
@@ -289,8 +296,15 @@ type CreateRoomMessageExtendedParams struct {
 }
 
 func (q *Queries) CreateRoomMessageExtended(ctx context.Context, arg CreateRoomMessageExtendedParams) (RoomMessage, error) {
+	if !arg.ID.Valid {
+		id, err := newUUIDv7()
+		if err != nil {
+			return RoomMessage{}, err
+		}
+		arg.ID = id
+	}
 	row := q.db.QueryRow(ctx, createRoomMessageExtended,
-		arg.RoomID, arg.SenderType, arg.SenderID, arg.Content,
+		arg.ID, arg.RoomID, arg.SenderType, arg.SenderID, arg.Content,
 		arg.QuoteMessageID, arg.DeliveryID, arg.TopicID,
 		arg.MessageKind, arg.Metadata, arg.RelayMetadata,
 	)
@@ -328,17 +342,22 @@ func (q *Queries) GetMentionInvocationExtended(ctx context.Context, id pgtype.UU
 
 const createMentionInvocationExtended = `-- name: CreateMentionInvocationExtended :one
 INSERT INTO mention_invocation (
-    room_id, message_id, target_type, target_id, intent, status, priority,
+    id, room_id, message_id, target_type, target_id, intent, status, priority,
     max_retries, parent_invocation_id, chain_depth, timeout_at,
     delivery_id, topic_id
 )
 VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+    $1, $2, $3,
+    $4, $5, $6,
+    $7, $8, $9,
+    $10, $11, $12,
+    $13, $14
 )
 RETURNING id, room_id, message_id, target_type, target_id, intent, status, priority, retry_count, max_retries, task_id, response_message_id, failure_reason, parent_invocation_id, chain_depth, timeout_at, delivered_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at, delivery_id, topic_id
 `
 
 type CreateMentionInvocationExtendedParams struct {
+	ID                 pgtype.UUID        `json:"id"`
 	RoomID             pgtype.UUID        `json:"room_id"`
 	MessageID          pgtype.UUID        `json:"message_id"`
 	TargetType         string             `json:"target_type"`
@@ -355,8 +374,15 @@ type CreateMentionInvocationExtendedParams struct {
 }
 
 func (q *Queries) CreateMentionInvocationExtended(ctx context.Context, arg CreateMentionInvocationExtendedParams) (MentionInvocation, error) {
+	if !arg.ID.Valid {
+		id, err := newUUIDv7()
+		if err != nil {
+			return MentionInvocation{}, err
+		}
+		arg.ID = id
+	}
 	row := q.db.QueryRow(ctx, createMentionInvocationExtended,
-		arg.RoomID, arg.MessageID, arg.TargetType, arg.TargetID, arg.Intent, arg.Status,
+		arg.ID, arg.RoomID, arg.MessageID, arg.TargetType, arg.TargetID, arg.Intent, arg.Status,
 		arg.Priority, arg.MaxRetries, arg.ParentInvocationID, arg.ChainDepth, arg.TimeoutAt,
 		arg.DeliveryID, arg.TopicID,
 	)
@@ -381,14 +407,14 @@ RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, c
 `
 
 type CreateRoomTaskWithContextParams struct {
-	AgentID         pgtype.UUID `json:"agent_id"`
-	RuntimeID       pgtype.UUID `json:"runtime_id"`
-	Priority        int32       `json:"priority"`
-	RoomID          pgtype.UUID `json:"room_id"`
-	RoomMessageID   pgtype.UUID `json:"room_message_id"`
-	InvocationID    pgtype.UUID `json:"invocation_id"`
-	Context         []byte      `json:"context"`
-	TriggerSummary  pgtype.Text `json:"trigger_summary"`
+	AgentID        pgtype.UUID `json:"agent_id"`
+	RuntimeID      pgtype.UUID `json:"runtime_id"`
+	Priority       int32       `json:"priority"`
+	RoomID         pgtype.UUID `json:"room_id"`
+	RoomMessageID  pgtype.UUID `json:"room_message_id"`
+	InvocationID   pgtype.UUID `json:"invocation_id"`
+	Context        []byte      `json:"context"`
+	TriggerSummary pgtype.Text `json:"trigger_summary"`
 }
 
 func (q *Queries) CreateRoomTaskWithContext(ctx context.Context, arg CreateRoomTaskWithContextParams) (AgentTaskQueue, error) {
@@ -414,19 +440,19 @@ SELECT id, room_id, sender_type, sender_id, content, quote_message_id,
 FROM room_message
 WHERE room_id = $1
   AND deleted_at IS NULL
-  AND ($2::timestamptz IS NULL OR created_at < $2::timestamptz)
-ORDER BY created_at DESC
+  AND ($2::uuid IS NULL OR id < $2::uuid)
+ORDER BY id DESC
 LIMIT $3
 `
 
 type ListRoomMessagesExtendedParams struct {
-	RoomID          pgtype.UUID        `json:"room_id"`
-	BeforeCreatedAt pgtype.Timestamptz `json:"before_created_at"`
-	Limit           int32              `json:"limit"`
+	RoomID   pgtype.UUID `json:"room_id"`
+	BeforeID pgtype.UUID `json:"before_id"`
+	Limit    int32       `json:"limit"`
 }
 
 func (q *Queries) ListRoomMessagesExtended(ctx context.Context, arg ListRoomMessagesExtendedParams) ([]RoomMessage, error) {
-	rows, err := q.db.Query(ctx, listRoomMessagesExtended, arg.RoomID, arg.BeforeCreatedAt, arg.Limit)
+	rows, err := q.db.Query(ctx, listRoomMessagesExtended, arg.RoomID, arg.BeforeID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}

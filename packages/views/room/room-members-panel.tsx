@@ -339,6 +339,7 @@ export function RoomMembersPanel({
           roomId={roomId}
           managerAgentId={managerAgentId}
           agentNameById={agentNames}
+          memberNameById={userNames}
           invocations={invocations}
         />
       </aside>

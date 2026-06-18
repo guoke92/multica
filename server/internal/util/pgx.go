@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -36,6 +37,22 @@ func MustParseUUID(s string) pgtype.UUID {
 		panic(err)
 	}
 	return u
+}
+
+func NewUUIDv7() (pgtype.UUID, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	return pgtype.UUID{Bytes: id, Valid: true}, nil
+}
+
+func MustNewUUIDv7() pgtype.UUID {
+	id, err := NewUUIDv7()
+	if err != nil {
+		panic(err)
+	}
+	return id
 }
 
 func UUIDToString(u pgtype.UUID) string {

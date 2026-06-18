@@ -82,7 +82,7 @@ export function roomMessagesOptions(wsId: string, roomId: string) {
   });
 }
 
-/** G9: cursor pagination for older messages (`before` = oldest loaded created_at). */
+/** Cursor pagination for older messages (`before` = oldest loaded message id). */
 export function roomMessagesInfiniteOptions(wsId: string, roomId: string) {
   return infiniteQueryOptions({
     queryKey: [...roomKeys.messages(wsId, roomId), "infinite"] as const,
@@ -94,7 +94,7 @@ export function roomMessagesInfiniteOptions(wsId: string, roomId: string) {
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => {
       if (lastPage.length < ROOM_MESSAGES_PAGE_SIZE) return undefined;
-      return lastPage[0]?.created_at;
+      return lastPage[0]?.id;
     },
     enabled: !!wsId && !!roomId,
   });

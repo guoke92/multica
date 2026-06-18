@@ -18,6 +18,16 @@ const (
 	// correlate with traffic patterns in the prod logs.
 	dbStatsInterval = 15 * time.Second
 
+	// dbPoolWarnEmptyAcquireDelta — only WARN when this many acquires in the
+	// sampling window had to wait for a free conn. A single empty acquire with
+	// sub-ms wait is normal daemon poll jitter in local dev; prod incidents
+	// showed hundreds per window.
+	dbPoolWarnEmptyAcquireDelta int64 = 5
+
+	// dbPoolWarnAvgAcquireMs — meaningful average wait per acquire (ms) in the
+	// sampling window. Keeps WARN focused on user-visible latency, not noise.
+	dbPoolWarnAvgAcquireMs int64 = 25
+
 	// defaultMaxConns / defaultMinConns are the per-pod pgxpool sizing
 	// defaults. They replace pgx's built-in default of max(4, NumCPU),
 	// which is far too small for our daemon-poll traffic pattern (~3800
@@ -131,11 +141,9 @@ func logPoolConfig(pool *pgxpool.Pool) {
 }
 
 // runDBStatsLogger samples pool.Stat() periodically. It always emits an INFO
-// line so operators can see baseline pressure, and emits a WARN whenever the
-// EmptyAcquireCount delta is positive — that's the direct symptom of pool
-// exhaustion (a request had to wait because no idle conn was available) and
-// the smoking gun we're looking for to confirm the slow /tasks/claim
-// hypothesis.
+// line so operators can see baseline pressure, and emits a WARN when the pool
+// shows sustained exhaustion: multiple empty acquires, canceled waits, or
+// non-trivial average acquire latency in the sampling window.
 func runDBStatsLogger(ctx context.Context, pool *pgxpool.Pool) {
 	ticker := time.NewTicker(dbStatsInterval)
 	defer ticker.Stop()
@@ -179,7 +187,9 @@ func runDBStatsLogger(ctx context.Context, pool *pgxpool.Pool) {
 			"avg_acquire_ms", avgAcquireMs,
 		}
 
-		if emptyDelta > 0 || canceledDelta > 0 {
+		if canceledDelta > 0 ||
+			emptyDelta >= dbPoolWarnEmptyAcquireDelta ||
+			(emptyDelta > 0 && avgAcquireMs >= dbPoolWarnAvgAcquireMs) {
 			slog.Warn("db pool pressure", fields...)
 		} else {
 			slog.Info("db pool stats", fields...)

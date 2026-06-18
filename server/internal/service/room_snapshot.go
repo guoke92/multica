@@ -190,6 +190,13 @@ func (s *TaskService) publishRoomFlowEventCreated(ctx context.Context, room db.R
 }
 
 func (s *TaskService) RecordRoomFlowEvent(ctx context.Context, room db.Room, params db.InsertRoomFlowEventParams) {
+	if !params.ID.Valid {
+		id, err := util.NewUUIDv7()
+		if err != nil {
+			return
+		}
+		params.ID = id
+	}
 	params = normalizeRoomFlowEventParams(params)
 	event, err := s.Queries.InsertRoomFlowEvent(ctx, params)
 	if err != nil {
@@ -322,9 +329,9 @@ func invocationStatusFlowEventType(status string) string {
 func invocationStatusDisplayToken(status string) string {
 	switch status {
 	case "pending":
-		return "pending"
+		return "待调度"
 	case "queued":
-		return "queued"
+		return "排队中"
 	case "running":
 		return "思考中"
 	case "succeeded":
@@ -408,6 +415,76 @@ func (s *TaskService) MaybeRecordInvocationStatusFlowEvent(ctx context.Context, 
 		payload["failure_reason"] = inv.FailureReason.String
 	}
 	s.RecordInvocationFlowEvent(ctx, room, inv, eventType, actorType, actorID, payload)
+}
+
+func (s *TaskService) resolveUserDisplayName(ctx context.Context, userID pgtype.UUID) string {
+	if user, err := s.Queries.GetUser(ctx, userID); err == nil {
+		if name := strings.TrimSpace(user.Name); name != "" {
+			return name
+		}
+	}
+	return "用户"
+}
+
+func (s *TaskService) resolveInvocationAgentName(ctx context.Context, inv db.MentionInvocation) string {
+	if inv.TargetType != "agent" || !inv.TargetID.Valid {
+		return "Agent"
+	}
+	name := s.resolveAgentName(ctx, inv.TargetID)
+	if name == "" {
+		return "Agent"
+	}
+	return name
+}
+
+// RecordManualInvocationCancelFlowEvent records a user-initiated stop on an agent invocation.
+func (s *TaskService) RecordManualInvocationCancelFlowEvent(ctx context.Context, room db.Room, inv db.MentionInvocation, userID pgtype.UUID) {
+	actorName := s.resolveUserDisplayName(ctx, userID)
+	agentName := s.resolveInvocationAgentName(ctx, inv)
+	payload := map[string]any{
+		"label":           actorName + " · 手动取消",
+		"agent_name":      agentName,
+		"manual_cancel":   true,
+		"target_agent_id": util.UUIDToString(inv.TargetID),
+	}
+	s.RecordInvocationFlowEvent(ctx, room, inv, "invocation_manual_cancel", "user", userID, payload)
+}
+
+// RecordManualInvocationRetryFlowEvent records a user-initiated retry on an agent invocation.
+func (s *TaskService) RecordManualInvocationRetryFlowEvent(ctx context.Context, room db.Room, inv db.MentionInvocation, userID pgtype.UUID) {
+	actorName := s.resolveUserDisplayName(ctx, userID)
+	agentName := s.resolveInvocationAgentName(ctx, inv)
+	payload := map[string]any{
+		"label":           actorName + " · 手动重试",
+		"agent_name":      agentName,
+		"manual_retry":    true,
+		"target_agent_id": util.UUIDToString(inv.TargetID),
+	}
+	s.RecordInvocationFlowEvent(ctx, room, inv, "invocation_manual_retry", "user", userID, payload)
+}
+
+func (s *TaskService) RecordUserMessageFlowEvent(ctx context.Context, room db.Room, msg db.RoomMessage, userID pgtype.UUID) {
+	senderName := s.resolveUserDisplayName(ctx, userID)
+	preview := strings.TrimSpace(msg.Content)
+	if runes := []rune(preview); len(runes) > 48 {
+		preview = string(runes[:48]) + "…"
+	}
+	payload, err := json.Marshal(map[string]string{
+		"label":       senderName + " · 发送消息",
+		"preview":     preview,
+		"sender_name": senderName,
+	})
+	if err != nil {
+		payload = []byte("{}")
+	}
+	s.RecordRoomFlowEvent(ctx, room, db.InsertRoomFlowEventParams{
+		RoomID:    room.ID,
+		Type:      "user_intent",
+		MessageID: msg.ID,
+		ActorType: "user",
+		ActorID:   userID,
+		Payload:   payload,
+	})
 }
 
 // recordLabeledWorkflowFlowEvent appends a topic flow event with a human-readable label (v2.3).

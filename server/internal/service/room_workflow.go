@@ -162,6 +162,7 @@ func (s *TaskService) ProcessRoomWorkflowOnComplete(
 			// Create a visible failure notification.
 			failContent := "\u26a0\ufe0f " + agentName + " \u56de\u7b54\u5931\u8d25\uff0c\u5df2\u901a\u77e5\u7ba1\u7406\u5458\u91cd\u65b0\u5206\u914d\u3002"
 			if failMsg, createErr := s.Queries.CreateRoomMessageExtended(ctx, db.CreateRoomMessageExtendedParams{
+				ID:         util.MustNewUUIDv7(),
 				RoomID:     room.ID,
 				SenderType: "system",
 				Content:    failContent,
@@ -211,6 +212,7 @@ func (s *TaskService) ProcessRoomWorkflowOnComplete(
 			)
 			// Notify users in chat that the manager failed to produce a routing decision.
 			if notifyMsg, createErr := s.Queries.CreateRoomMessageExtended(ctx, db.CreateRoomMessageExtendedParams{
+				ID:         util.MustNewUUIDv7(),
 				RoomID:     room.ID,
 				SenderType: "system",
 				Content:    "⚠️ 群管理未能生成有效的路由指令，请重新发送消息以重试。",
@@ -360,6 +362,7 @@ func (s *TaskService) workflowCreateTopic(
 		"checklist":         buildPhaseChecklist(tpl, ""),
 	})
 	card, err := s.Queries.CreateRoomMessageExtended(ctx, db.CreateRoomMessageExtendedParams{
+		ID:          util.MustNewUUIDv7(),
 		RoomID:      room.ID,
 		SenderType:  "system",
 		Content:     title,
@@ -707,6 +710,7 @@ func (s *TaskService) workflowNotifyUser(ctx context.Context, room db.Room, inv 
 			content = action.Title + ": " + action.Message
 		}
 		if notifyMsg, err := s.Queries.CreateRoomMessageExtended(ctx, db.CreateRoomMessageExtendedParams{
+			ID:         util.MustNewUUIDv7(),
 			RoomID:     room.ID,
 			SenderType: "system",
 			Content:    content,
@@ -980,6 +984,7 @@ func (s *TaskService) workflowEscalate(
 	}
 
 	escalateMsg, err := s.Queries.CreateRoomMessageExtended(ctx, db.CreateRoomMessageExtendedParams{
+		ID:             util.MustNewUUIDv7(),
 		RoomID:         room.ID,
 		SenderType:     "system",
 		Content:        content,

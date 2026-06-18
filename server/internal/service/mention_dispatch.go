@@ -150,6 +150,7 @@ func (s *TaskService) dispatchRoomAgentMention(
 
 	intent := s.roomMentionIntent(p.Room)
 	inv, err := s.Queries.CreateMentionInvocation(ctx, db.CreateMentionInvocationParams{
+		ID:                 util.MustNewUUIDv7(),
 		RoomID:             p.Room.ID,
 		MessageID:          p.Message.ID,
 		TargetType:         m.Type,
@@ -185,11 +186,11 @@ func (s *TaskService) dispatchRoomAgentMention(
 	}
 
 	task, err := s.EnqueueRoomInvocationTask(ctx, EnqueueRoomInvocationParams{
-		Room:        p.Room,
-		Message:     p.Message,
-		Invocation:  inv,
-		AgentID:     agentID,
-		IsLeader:    isLeader,
+		Room:       p.Room,
+		Message:    p.Message,
+		Invocation: inv,
+		AgentID:    agentID,
+		IsLeader:   isLeader,
 	})
 	if err != nil {
 		_, _ = s.Queries.UpdateMentionInvocationStatus(ctx, db.UpdateMentionInvocationStatusParams{

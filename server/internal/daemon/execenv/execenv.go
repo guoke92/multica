@@ -73,6 +73,8 @@ type TaskContextForEnv struct {
 	RoomID                  string                  // non-empty for room (ChatCollab) tasks
 	RoomContext             string                  // recent room messages for conversational context
 	RoomWorkflowIntent      string                  // orchestrate | route | execute | review | confirm | escalate
+	RoomManagerScene        string                  // route | review | confirm | escalate
+	RoomManagerBrief        string                  // manager route/relay reason for worker tasks
 	RoomWorkflowPolicy      string                  // serialized room.policy for manager brief
 	RoomAgents              string                  // JSON array of room member agents for manager routing
 	RoomDeliveryID          string

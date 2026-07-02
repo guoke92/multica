@@ -18,6 +18,15 @@ export type RoomSnapshot = {
   completed_count?: number;
   /** @deprecated */
   timed_out_count?: number;
+  active_invocation_count?: number;
+  manager_active_count?: number;
+  /** Unread messages since last visit — populated when read tracking ships. */
+  unread_message_count?: number;
+  /** Unread @mentions for the current user — populated when mention tracking ships. */
+  mention_unread_count?: number;
+  /** Latest message preview for list subtitle. */
+  last_message_preview?: string;
+  last_message_at?: string;
   /** @deprecated */
   active_graph_id?: string;
   /** @deprecated */
@@ -170,6 +179,12 @@ export type RoomMessageMention = {
   message_id: string;
   target_type: string;
   target_id: string;
+  /** How this mention originated. */
+  source_type?: "manual" | "agent_mention" | "manager_dispatch";
+  /** The manager dispatch message that produced this mention (when source_type = manager_dispatch). */
+  source_message_id?: string;
+  /** The room assignment triggered by this mention. */
+  assignment_id?: string;
   label?: string;
   span_start?: number;
   span_end?: number;
@@ -260,6 +275,7 @@ export type MentionInvocation = {
   message_id?: string;
   target_type: string;
   target_id: string;
+  assignment_id?: string;
   intent?: string;
   status: string;
   task_id?: string;

@@ -1,13 +1,28 @@
 -- Room graph: mentions, assignments, dependencies, invocations, decisions, events.
 
 -- name: CreateRoomMessageMention :one
-INSERT INTO room_message_mention (id, message_id, target_type, target_id, label, span_start, span_end)
+INSERT INTO room_message_mention (
+    id, message_id, target_type, target_id, label, span_start, span_end,
+    source_type, source_message_id, assignment_id
+)
 VALUES (
     sqlc.arg('id'), sqlc.arg('message_id'), sqlc.arg('target_type'), sqlc.arg('target_id'),
     COALESCE(sqlc.narg('label'), ''),
-    sqlc.narg('span_start'), sqlc.narg('span_end')
+    sqlc.narg('span_start'), sqlc.narg('span_end'),
+    COALESCE(sqlc.narg('source_type'), 'manual'),
+    sqlc.narg('source_message_id'),
+    sqlc.narg('assignment_id')
 )
 RETURNING *;
+
+-- name: UpdateRoomMessageMentionAssignment :one
+UPDATE room_message_mention
+SET assignment_id = sqlc.arg('assignment_id')
+WHERE id = sqlc.arg('id')
+RETURNING *;
+
+-- name: ListRoomMessageMentionsByAssignment :many
+SELECT * FROM room_message_mention WHERE assignment_id = $1 ORDER BY id ASC;
 
 -- name: ListRoomMessageMentionsByMessage :many
 SELECT * FROM room_message_mention WHERE message_id = $1 ORDER BY id ASC;
@@ -91,6 +106,30 @@ SELECT
 FROM room_assignment ra
 WHERE ra.room_id = $1
   AND ra.status NOT IN ('cancelled', 'skipped');
+
+-- name: CountActiveRoomInvocationsByRoom :one
+SELECT
+    COUNT(*) FILTER (WHERE status IN ('pending', 'queued'))::int AS queued_count,
+    COUNT(*) FILTER (WHERE status IN ('running', 'delivered'))::int AS active_running_count
+FROM room_invocation
+WHERE room_id = $1
+  AND status IN ('pending', 'queued', 'running', 'delivered');
+
+-- name: CountManagerActiveInvocationsByRoom :one
+SELECT COUNT(*)::int AS manager_active_count
+FROM room_invocation i
+JOIN room_assignment a ON a.id = i.assignment_id
+JOIN room r ON r.id = i.room_id
+WHERE i.room_id = $1
+  AND i.status IN ('pending', 'queued', 'running', 'delivered')
+  AND (
+    a.kind IN ('auto_review', 'manager_route', 'manager_relay')
+    OR (
+      a.assignee_type = 'agent'
+      AND r.manager_agent_id IS NOT NULL
+      AND a.assignee_id = r.manager_agent_id
+    )
+  );
 
 -- name: AcknowledgeRoomAssignmentFailure :one
 UPDATE room_assignment
@@ -236,6 +275,13 @@ WHERE status = 'running'
   AND timeout_at IS NOT NULL
   AND timeout_at < now()
 ORDER BY timeout_at ASC
+LIMIT $1;
+
+-- name: ListRunningRoomInvocationsForSoftWarn :many
+SELECT * FROM room_invocation
+WHERE status = 'running'
+  AND started_at IS NOT NULL
+ORDER BY started_at ASC
 LIMIT $1;
 
 -- name: GetRoomInvocationByOutputMessage :one

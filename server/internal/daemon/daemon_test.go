@@ -371,7 +371,7 @@ func TestBuildPromptRoomConversation(t *testing.T) {
 		"NO assigned issue",
 		"Do NOT run `multica issue get`",
 		"帮我看看这个方案是否合理",
-		"Recent room discussion",
+		"## 本次触发",
 		"OAuth2",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -385,6 +385,31 @@ func TestBuildPromptRoomConversation(t *testing.T) {
 	} {
 		if strings.Contains(prompt, absent) {
 			t.Fatalf("room prompt should NOT contain %q\n---\n%s", absent, prompt)
+		}
+	}
+}
+
+func TestBuildPromptRoomManagerReviewDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	prompt := BuildPrompt(Task{
+		RoomID:           "room-1",
+		RoomManagerScene: "review",
+		ChatMessage:      "做一个贪吃蛇网页",
+		RoomContext:      "agent: 已完成初版",
+		RoomAgents: []RoomAgentInfo{
+			{ID: "agent-1", Name: "前端工程师", Role: "frontend"},
+		},
+	}, "claude")
+
+	for _, want := range []string{
+		"room router & supervisor",
+		"Mode: review",
+		"workflow_action",
+		"前端工程师",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("manager review prompt missing %q\n---\n%s", want, prompt)
 		}
 	}
 }

@@ -147,14 +147,17 @@ type roomGraphMessageResponse struct {
 }
 
 type roomGraphMentionResponse struct {
-	ID         string  `json:"id"`
-	MessageID  string  `json:"message_id"`
-	TargetType string  `json:"target_type"`
-	TargetID   *string `json:"target_id,omitempty"`
-	Label      *string `json:"label,omitempty"`
-	SpanStart  *int32  `json:"span_start,omitempty"`
-	SpanEnd    *int32  `json:"span_end,omitempty"`
-	CreatedAt  string  `json:"created_at,omitempty"`
+	ID              string  `json:"id"`
+	MessageID       string  `json:"message_id"`
+	TargetType      string  `json:"target_type"`
+	TargetID        *string `json:"target_id,omitempty"`
+	SourceType      string  `json:"source_type,omitempty"`
+	SourceMessageID *string `json:"source_message_id,omitempty"`
+	AssignmentID    *string `json:"assignment_id,omitempty"`
+	Label           *string `json:"label,omitempty"`
+	SpanStart       *int32  `json:"span_start,omitempty"`
+	SpanEnd         *int32  `json:"span_end,omitempty"`
+	CreatedAt       string  `json:"created_at,omitempty"`
 }
 
 type roomGraphDependencyResponse struct {
@@ -250,6 +253,17 @@ func roomMentionsToGraphResponse(rows []db.RoomMessageMention) []roomGraphMentio
 		if m.TargetID.Valid {
 			s := uuidToString(m.TargetID)
 			item.TargetID = &s
+		}
+		if m.SourceType != "" {
+			item.SourceType = m.SourceType
+		}
+		if m.SourceMessageID.Valid {
+			s := uuidToString(m.SourceMessageID)
+			item.SourceMessageID = &s
+		}
+		if m.AssignmentID.Valid {
+			s := uuidToString(m.AssignmentID)
+			item.AssignmentID = &s
 		}
 		if m.Label != "" {
 			label := m.Label
@@ -1668,6 +1682,87 @@ func (h *Handler) RegenerateRoomAgentMessage(w http.ResponseWriter, r *http.Requ
 		"room_id": uuidToString(room.ID),
 	})
 	writeJSON(w, http.StatusOK, invocationToResponse(inv))
+}
+
+func (h *Handler) GetRoomMessage(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := ctxWorkspaceID(r.Context())
+	roomID := chi.URLParam(r, "roomId")
+	messageID := chi.URLParam(r, "messageId")
+	room, _, ok := h.loadRoomMember(w, r, userID, workspaceID, roomID)
+	if !ok {
+		return
+	}
+	msgUUID, ok := parseUUIDOrBadRequest(w, messageID, "message_id")
+	if !ok {
+		return
+	}
+	msg, err := h.Queries.GetRoomMessageInRoom(r.Context(), db.GetRoomMessageInRoomParams{
+		ID: msgUUID, RoomID: room.ID,
+	})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "message not found")
+		return
+	}
+
+	type msgResp struct {
+		ID                   string          `json:"id"`
+		RoomID               string          `json:"room_id"`
+		SenderType           string          `json:"sender_type"`
+		SenderID             *string         `json:"sender_id,omitempty"`
+		Content              string          `json:"content"`
+		QuoteMessageID       *string         `json:"quote_message_id,omitempty"`
+		Metadata             json.RawMessage `json:"metadata,omitempty"`
+		CreatedAt            string          `json:"created_at"`
+		EditedAt             *string         `json:"edited_at,omitempty"`
+		DetailedExplanation  string          `json:"detailed_explanation,omitempty"`
+		HasDetailedExplanation bool          `json:"has_detailed_explanation"`
+	}
+	var senderID, quoteID *string
+	if msg.SenderID.Valid {
+		s := uuidToString(msg.SenderID)
+		senderID = &s
+	}
+	if msg.QuoteMessageID.Valid {
+		s := uuidToString(msg.QuoteMessageID)
+		quoteID = &s
+	}
+	meta := msg.Metadata
+	if len(meta) == 0 {
+		meta = []byte("{}")
+	}
+	var editedAt *string
+	if msg.EditedAt.Valid {
+		s := timestampToString(msg.EditedAt)
+		editedAt = &s
+	}
+	detailed := ""
+	hasDetailed := false
+	if len(msg.Metadata) > 0 {
+		var metaMap map[string]any
+		if json.Unmarshal(msg.Metadata, &metaMap) == nil {
+			if d, ok := metaMap["detailed_explanation"].(string); ok && strings.TrimSpace(d) != "" {
+				detailed = d
+				hasDetailed = true
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, msgResp{
+		ID:                     uuidToString(msg.ID),
+		RoomID:                 uuidToString(room.ID),
+		SenderType:             msg.SenderType,
+		SenderID:               senderID,
+		Content:                msg.Content,
+		QuoteMessageID:         quoteID,
+		Metadata:               meta,
+		CreatedAt:              timestampToString(msg.CreatedAt),
+		EditedAt:               editedAt,
+		DetailedExplanation:    detailed,
+		HasDetailedExplanation: hasDetailed,
+	})
 }
 
 func (h *Handler) ListRoomMessages(w http.ResponseWriter, r *http.Request) {

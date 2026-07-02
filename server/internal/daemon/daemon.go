@@ -2502,6 +2502,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		RoomID:                           task.RoomID,
 		RoomContext:                      task.RoomContext,
 		RoomWorkflowIntent:               task.RoomWorkflowIntent,
+		RoomManagerScene:                 task.RoomManagerScene,
+		RoomManagerBrief:                 task.RoomManagerBrief,
 		RoomWorkflowPolicy:               string(task.RoomWorkflowPolicy),
 		RoomAgents:                       marshalRoomAgentsJSON(task.RoomAgents),
 		RoomDeliveryID:                   task.RoomDeliveryID,

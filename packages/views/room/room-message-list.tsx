@@ -14,19 +14,21 @@ import {
 } from "@multica/ui/components/ui/tooltip";
 import { isTaskMessageTaskId, taskMessagesOptions } from "@multica/core/chat/queries";
 import { RoomParticipantAvatar } from "./room-participant-avatar";
-import { buildTimeline } from "../common/task-transcript";
+import { buildTimeline, ProcessTimelineView } from "../common/task-transcript";
 import { splitTimeline } from "../chat/lib/copy-text";
 import { copyMarkdown } from "../editor";
 import { Markdown } from "../common/markdown";
 import { ApprovalCard } from "./approval-card";
 import { RoomDeliveryCard } from "./room-delivery-card";
-import { shouldHideRoomMessage } from "./room-message-visibility";
-import type { RoomMessage, RoomInvocation, RoomAssignment } from "@multica/core/types/room";
+import { shouldHideRoomMessage, isManagerDispatchMessage } from "./room-message-visibility";
+import type { RoomMessage, RoomInvocation, RoomAssignment, RoomMessageMention } from "@multica/core/types/room";
 import { useAuthStore } from "@multica/core/auth";
 import { Copy, Pencil, RefreshCw, Reply } from "lucide-react";
 import {
   extractRoomAgentCopyText,
-  stripWorkflowActionFooter,
+  resolveAgentMessageAttribution,
+  resolveRoomAgentChatSummary,
+  roomAgentHasExpandableProcess,
   truncatePreview,
 } from "./room-utils";
 import {
@@ -36,6 +38,9 @@ import {
   type InvocationChatItem,
 } from "./room-flow-utils";
 import { ManagerStatusInline, RoomInvocationChatItem } from "./room-processing-slot";
+import { RoomAttributionPill } from "./room-attribution-pill";
+import { RoomActivityFooter } from "./room-activity-footer";
+import { RoomManagerSlot } from "./room-manager-slot";
 
 function isOptimisticMessageId(id: string): boolean {
   return id.startsWith("optimistic-");
@@ -73,8 +78,10 @@ type Props = {
   onLoadOlderMessages?: () => void;
   agentNameById: Map<string, string>;
   memberNameById: Map<string, string>;
+  mentions?: RoomMessageMention[];
   scrollToMessageId?: string | null;
   onScrollToMessageDone?: () => void;
+  onNavigateToQuote?: (messageId: string) => void;
 };
 
 export function RoomMessageList({
@@ -96,8 +103,10 @@ export function RoomMessageList({
   onLoadOlderMessages,
   agentNameById,
   memberNameById,
+  mentions = [],
   scrollToMessageId,
   onScrollToMessageDone,
+  onNavigateToQuote,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const fadeStyle = useScrollFade(scrollRef);
@@ -113,6 +122,23 @@ export function RoomMessageList({
     () => messages.filter((m) => !shouldHideRoomMessage(m, managerAgentId)),
     [messages, managerAgentId],
   );
+
+  /** Latest manager dispatch per source message, plus total count for folding. */
+  const managerDispatchBySource = useMemo(() => {
+    const map = new Map<string, { latest: RoomMessage; count: number }>();
+    for (const m of visibleMessages) {
+      if (!isManagerDispatchMessage(m)) continue;
+      const sourceId = m.quote_message_id;
+      if (!sourceId) continue;
+      const existing = map.get(sourceId);
+      if (!existing || m.id > existing.latest.id) {
+        map.set(sourceId, { latest: m, count: (existing?.count ?? 0) + 1 });
+      } else {
+        map.set(sourceId, { latest: existing.latest, count: existing.count + 1 });
+      }
+    }
+    return map;
+  }, [visibleMessages]);
 
   const { chatTimeline, managerStatusMap } = useMemo(() => {
     const items = buildInvocationChatItems(
@@ -156,14 +182,37 @@ export function RoomMessageList({
     return () => cancelAnimationFrame(frame);
   }, [lastSelfOptimisticId, scrollToBottom]);
 
+  const activeStreamTaskId = useMemo(() => {
+    for (let i = chatTimeline.length - 1; i >= 0; i -= 1) {
+      const entry = chatTimeline[i]!;
+      if (entry.kind !== "invocation") continue;
+      if (entry.item.phase !== "running" && entry.item.phase !== "queued") continue;
+      const taskId = entry.item.invocation.task_id;
+      if (taskId && isTaskMessageTaskId(taskId)) return taskId;
+    }
+    return null;
+  }, [chatTimeline]);
+
+  const { data: activeStreamMessages = [] } = useQuery({
+    ...taskMessagesOptions(activeStreamTaskId ?? ""),
+    enabled: !!activeStreamTaskId,
+  });
+
   const chatTailKey = useMemo(() => {
     const last = chatTimeline[chatTimeline.length - 1];
     if (!last) return "";
     if (last.kind === "message") {
       return `msg:${last.message.id}:${last.message.content.length}`;
     }
-    return `inv:${last.item.invocation.id}:${last.item.phase}:${last.item.invocation.status}`;
-  }, [chatTimeline]);
+    const taskId = last.item.invocation.task_id;
+    const streamLen =
+      taskId && taskId === activeStreamTaskId ? activeStreamMessages.length : 0;
+    const lastSeq =
+      taskId && taskId === activeStreamTaskId
+        ? (activeStreamMessages[activeStreamMessages.length - 1]?.seq ?? 0)
+        : 0;
+    return `inv:${last.item.invocation.id}:${last.item.phase}:${streamLen}:${lastSeq}`;
+  }, [chatTimeline, activeStreamTaskId, activeStreamMessages]);
 
   useEffect(() => {
     scrollToBottom();
@@ -178,7 +227,7 @@ export function RoomMessageList({
         `[data-room-message-id="${scrollToMessageId}"]`,
       );
       if (target instanceof HTMLElement) {
-        target.scrollIntoView({ block: "center", behavior: "smooth" });
+        target.scrollIntoView({ block: "start", behavior: "smooth" });
       }
       onScrollToMessageDone?.();
     });
@@ -186,83 +235,111 @@ export function RoomMessageList({
   }, [scrollToMessageId, onScrollToMessageDone]);
 
   return (
-    <div
-      ref={scrollRef}
-      data-tab-scroll-root
-      style={fadeStyle}
-      className="flex-1 overflow-y-auto"
-    >
-      <div className="mx-auto w-full max-w-3xl space-y-4 px-5 py-4">
-        {hasOlderMessages ? (
-          <div className="flex justify-center pb-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="text-muted-foreground text-xs"
-              disabled={isLoadingOlderMessages}
-              onClick={onLoadOlderMessages}
-            >
-              {isLoadingOlderMessages ? "加载中…" : "加载更早消息"}
-            </Button>
-          </div>
-        ) : null}
-        {chatTimeline.map((entry) => {
-          if (entry.kind === "invocation") {
-            return (
-              <RoomInvocationChatItem
-                key={`inv:${entry.item.invocation.id}`}
-                item={entry.item}
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div
+        ref={scrollRef}
+        data-tab-scroll-root
+        style={fadeStyle}
+        className="min-h-0 flex-1 overflow-y-auto"
+      >
+        <div className="mx-auto w-full max-w-3xl space-y-4 px-5 py-4">
+          {hasOlderMessages ? (
+            <div className="flex justify-center pb-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="text-muted-foreground text-xs"
+                disabled={isLoadingOlderMessages}
+                onClick={onLoadOlderMessages}
+              >
+                {isLoadingOlderMessages ? "加载中…" : "加载更早消息"}
+              </Button>
+            </div>
+          ) : null}
+          {chatTimeline.map((entry) => {
+            if (entry.kind === "invocation") {
+              return (
+                <RoomInvocationChatItem
+                  key={`inv:${entry.item.invocation.id}`}
+                  item={entry.item}
+                  onRetryAssignment={onRetryAssignment}
+                  onCancelAssignment={onCancelAssignment}
+                  retryingAssignmentId={retryingAssignmentId}
+                  cancellingAssignmentId={cancellingAssignmentId}
+                />
+              );
+            }
+
+            const m = entry.message;
+            const isSelf =
+              m.sender_type === "user" && m.sender_id === currentUserId;
+            const displayName = resolveSenderName(m, agentNameById, memberNameById);
+            const quoted = m.quote_message_id
+              ? messagesById.get(m.quote_message_id)
+              : undefined;
+            const canEdit =
+              isSelf &&
+              onEditMessage &&
+              !isOptimisticMessageId(m.id);
+
+            if (isManagerDispatchMessage(m)) {
+              return null;
+            }
+
+            const managerSlot = m.id ? managerDispatchBySource.get(m.id) : undefined;
+
+            return [
+              <RoomMessageRow
+                key={m.id}
+                message={m}
+                isSelf={isSelf}
+                displayName={displayName}
+                roomId={roomId}
+                quotedMessage={quoted}
+                quotedSenderName={
+                  quoted
+                    ? resolveSenderName(quoted, agentNameById, memberNameById)
+                    : undefined
+                }
+                managerStatus={managerStatusMap.get(m.id)}
+                assignments={assignments}
+                mentions={mentions}
+                onEdit={canEdit ? () => onEditMessage(m) : undefined}
+                onReply={
+                  m.sender_type !== "system" && onReplyToMessage
+                    ? () => onReplyToMessage(m, displayName)
+                    : undefined
+                }
+                onRegenerate={
+                  m.sender_type === "agent" && onRegenerateAgentMessage
+                    ? () => onRegenerateAgentMessage(m)
+                    : undefined
+                }
+                isRegenerating={regeneratingMessageId === m.id}
+                onNavigateToQuote={onNavigateToQuote}
                 onRetryAssignment={onRetryAssignment}
-                onCancelAssignment={onCancelAssignment}
                 retryingAssignmentId={retryingAssignmentId}
-                cancellingAssignmentId={cancellingAssignmentId}
-              />
-            );
-          }
-
-          const m = entry.message;
-          const isSelf =
-            m.sender_type === "user" && m.sender_id === currentUserId;
-          const displayName = resolveSenderName(m, agentNameById, memberNameById);
-          const quoted = m.quote_message_id
-            ? messagesById.get(m.quote_message_id)
-            : undefined;
-          const canEdit =
-            isSelf &&
-            onEditMessage &&
-            !isOptimisticMessageId(m.id);
-
-          return (
-            <RoomMessageRow
-              key={m.id}
-              message={m}
-              isSelf={isSelf}
-              displayName={displayName}
-              roomId={roomId}
-              quotedMessage={quoted}
-              quotedSenderName={
-                quoted
-                  ? resolveSenderName(quoted, agentNameById, memberNameById)
-                  : undefined
-              }
-              managerStatus={managerStatusMap.get(m.id)}
-              onEdit={canEdit ? () => onEditMessage(m) : undefined}
-              onReply={
-                m.sender_type !== "system" && onReplyToMessage
-                  ? () => onReplyToMessage(m, displayName)
-                  : undefined
-              }
-              onRegenerate={
-                m.sender_type === "agent" && onRegenerateAgentMessage
-                  ? () => onRegenerateAgentMessage(m)
-                  : undefined
-              }
-              isRegenerating={regeneratingMessageId === m.id}
-            />
-          );
-        })}
+              />,
+              managerSlot ? (
+                <RoomManagerSlot
+                  key={`slot:${m.id}`}
+                  message={managerSlot.latest}
+                  hiddenCount={managerSlot.count - 1}
+                />
+              ) : null,
+            ];
+          })}
+        </div>
       </div>
+      <RoomActivityFooter
+        invocations={invocations}
+        agentNameById={agentNameById}
+        onRetryAssignment={onRetryAssignment}
+        retryingAssignmentId={retryingAssignmentId}
+        onCancelAssignment={onCancelAssignment}
+        cancellingAssignmentId={cancellingAssignmentId}
+      />
     </div>
   );
 }
@@ -283,23 +360,40 @@ function QuoteBlock({
   senderName,
   preview,
   align = "start",
+  quotedMessageId,
+  onNavigateToQuote,
 }: {
   senderName: string;
   preview: string;
   align?: "start" | "end";
+  quotedMessageId?: string;
+  onNavigateToQuote?: (messageId: string) => void;
 }) {
-  return (
-    <div
-      className={cn(
-        "border-border/80 text-muted-foreground max-w-[80%] border-l-2 pl-2 text-[11px] leading-snug",
-        align === "end" ? "ml-auto text-right" : "",
-      )}
-    >
-      <p className="line-clamp-2">
-        回复 {senderName}：{preview}
-      </p>
-    </div>
+  const isClickable = Boolean(quotedMessageId && onNavigateToQuote);
+  const className = cn(
+    "border-border/80 text-muted-foreground max-w-[80%] border-l-2 pl-2 text-[11px] leading-snug",
+    align === "end" ? "ml-auto text-right" : "",
+    isClickable && "hover:bg-muted/40 cursor-pointer rounded-sm transition-colors",
   );
+  const content = (
+    <p className="line-clamp-2">
+      回复 {senderName}：{preview}
+    </p>
+  );
+
+  if (isClickable) {
+    return (
+      <button
+        type="button"
+        className={cn(className, align === "end" ? "text-right" : "text-left")}
+        onClick={() => onNavigateToQuote!(quotedMessageId!)}
+      >
+        {content}
+      </button>
+    );
+  }
+
+  return <div className={className}>{content}</div>;
 }
 
 function MessageActionBar({
@@ -366,10 +460,15 @@ function RoomMessageRow({
   quotedMessage,
   quotedSenderName,
   managerStatus,
+  assignments,
+  mentions,
   onEdit,
   onReply,
   onRegenerate,
   isRegenerating,
+  onNavigateToQuote,
+  onRetryAssignment,
+  retryingAssignmentId,
 }: {
   message: RoomMessage;
   isSelf: boolean;
@@ -378,14 +477,22 @@ function RoomMessageRow({
   quotedMessage?: RoomMessage;
   quotedSenderName?: string;
   managerStatus?: InvocationChatItem;
+  assignments?: RoomAssignment[];
+  mentions?: RoomMessageMention[];
   onEdit?: () => void;
   onReply?: () => void;
   onRegenerate?: () => void;
   isRegenerating?: boolean;
+  onNavigateToQuote?: (messageId: string) => void;
+  onRetryAssignment?: (assignmentId: string) => void;
+  retryingAssignmentId?: string | null;
 }) {
   const meta = parseMessageMetadata(m.metadata);
   const isSystem = m.sender_type === "system";
   const isAgent = m.sender_type === "agent";
+  const attribution = isAgent
+    ? resolveAgentMessageAttribution(m, assignments ?? [], mentions ?? [])
+    : undefined;
 
   if (m.message_kind === "card") {
     return (
@@ -436,6 +543,8 @@ function RoomMessageRow({
             <QuoteBlock
               align="end"
               senderName={quotedSenderName}
+              quotedMessageId={quotedMessage.id}
+              onNavigateToQuote={onNavigateToQuote}
               preview={truncatePreview(
                 quotedMessage.sender_type === "agent"
                   ? extractRoomAgentCopyText(quotedMessage)
@@ -454,7 +563,15 @@ function RoomMessageRow({
         </div>
         <MessageActionBar
           align="end"
-          leading={managerStatus ? <ManagerStatusInline item={managerStatus} /> : undefined}
+          leading={
+            managerStatus ? (
+              <ManagerStatusInline
+                item={managerStatus}
+                onRetry={onRetryAssignment}
+                retrying={retryingAssignmentId === managerStatus.assignment.id}
+              />
+            ) : undefined
+          }
         >
           {onReply ? (
             <ActionIconButton label="引用回复" onClick={onReply} icon={Reply} />
@@ -473,14 +590,16 @@ function RoomMessageRow({
         <RoomParticipantAvatar
           actorType={isAgent ? "agent" : "member"}
           actorId={m.sender_id ?? ""}
-          size={24}
-          showStatusDot={isAgent}
+          size={28}
         />
         <span className="text-muted-foreground text-xs font-medium">{displayName}</span>
+        {attribution ? <RoomAttributionPill text={attribution} /> : null}
       </div>
       {quotedMessage && quotedSenderName ? (
         <QuoteBlock
           senderName={quotedSenderName}
+          quotedMessageId={quotedMessage.id}
+          onNavigateToQuote={onNavigateToQuote}
           preview={truncatePreview(
             quotedMessage.sender_type === "agent"
               ? extractRoomAgentCopyText(quotedMessage)
@@ -504,7 +623,15 @@ function RoomMessageRow({
         )}
       </div>
       <MessageActionBar
-        leading={managerStatus ? <ManagerStatusInline item={managerStatus} /> : undefined}
+        leading={
+          managerStatus ? (
+            <ManagerStatusInline
+              item={managerStatus}
+              onRetry={onRetryAssignment}
+              retrying={retryingAssignmentId === managerStatus.assignment.id}
+            />
+          ) : undefined
+        }
       >
         {onReply ? (
           <ActionIconButton label="引用回复" onClick={onReply} icon={Reply} />
@@ -550,25 +677,26 @@ function AgentMessageBody({ message }: { message: RoomMessage }) {
     enabled: !!taskId && isTaskMessageTaskId(taskId),
   });
   const timeline = buildTimeline(taskMessages);
-  const { preface, final } = splitTimeline(timeline);
-  const text = [...preface, ...final]
+  const { middle } = splitTimeline(timeline);
+  const transcriptText = timeline
+    .filter((i) => i.type === "text" || i.type === "thinking")
     .map((i) => i.content ?? "")
     .join("");
 
-  const raw =
-    text ||
-    (typeof message.metadata === "object" &&
-    message.metadata &&
-    "detailed_explanation" in message.metadata &&
-    typeof (message.metadata as { detailed_explanation?: string })
-      .detailed_explanation === "string"
-      ? (message.metadata as { detailed_explanation: string }).detailed_explanation
-      : message.content);
-  const display = stripWorkflowActionFooter(raw);
+  const summary = resolveRoomAgentChatSummary(message, transcriptText);
+  const expandable = roomAgentHasExpandableProcess(message, {
+    transcriptText,
+    processStepCount: middle.length,
+  });
 
   return (
-    <div className="text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none">
-      <Markdown>{display}</Markdown>
+    <div className="space-y-2">
+      <div className="text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none">
+        <Markdown>{summary || "已完成"}</Markdown>
+      </div>
+      {expandable && middle.length > 0 ? (
+        <ProcessTimelineView items={timeline} processOnly />
+      ) : null}
     </div>
   );
 }

@@ -81,6 +81,7 @@ export function RoomView({ roomId, onArchived }: Props) {
   const assignmentDependencies = graph?.assignment_dependencies ?? [];
   const invocations = graph?.invocations ?? [];
   const invocationEvents = graph?.invocation_events ?? [];
+  const decisions = graph?.decisions ?? [];
 
   const sendMessage = useSendRoomMessage(wsId, roomId);
   const updateMessage = useUpdateRoomMessage(wsId, roomId);
@@ -246,7 +247,7 @@ export function RoomView({ roomId, onArchived }: Props) {
     });
   };
 
-  const handleFlowNavigateToMessage = (messageId: string, _assignmentId?: string) => {
+  const handleNavigateToMessage = (messageId: string, _assignmentId?: string) => {
     if (!messageId) return;
     setScrollToMessageId(messageId);
   };
@@ -292,9 +293,11 @@ export function RoomView({ roomId, onArchived }: Props) {
           roomId={roomId}
           managerAgentId={room?.manager_agent_id}
           assignments={assignments}
+          mentions={graph?.mentions ?? []}
           invocations={invocations}
           scrollToMessageId={scrollToMessageId}
           onScrollToMessageDone={() => setScrollToMessageId(null)}
+          onNavigateToQuote={handleNavigateToMessage}
           onRetryAssignment={handleRetryAssignment}
           onCancelAssignment={handleCancelAssignment}
           retryingAssignmentId={
@@ -329,6 +332,7 @@ export function RoomView({ roomId, onArchived }: Props) {
           isSending={isSending}
           quoteReply={quoteReply}
           onCancelQuote={() => setQuoteReply(null)}
+          onNavigateToQuote={handleNavigateToMessage}
           editingMessageId={editingMessage?.id ?? null}
           onCancelEdit={() => {
             setEditingMessage(null);
@@ -356,10 +360,11 @@ export function RoomView({ roomId, onArchived }: Props) {
         assignmentDependencies={assignmentDependencies}
         invocations={invocations}
         invocationEvents={invocationEvents}
+        decisions={decisions}
         messages={messages}
         flowFailuresOnly={flowFailuresOnly}
         onFlowFailuresOnlyChange={setFlowFailuresOnly}
-        onFlowNavigateToMessage={handleFlowNavigateToMessage}
+        onFlowNavigateToMessage={handleNavigateToMessage}
         onAckAssignmentFailure={handleAckAssignmentFailure}
         acknowledgingAssignmentId={
           ackAssignmentFailure.isPending

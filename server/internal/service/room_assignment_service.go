@@ -16,6 +16,8 @@ import (
 	"github.com/multica-ai/multica/server/pkg/redact"
 )
 
+const roomMessageSummaryMaxLen = 320
+
 // CompleteAssignment marks an assignment completed and resolves join dependencies.
 func (s *TaskService) CompleteAssignment(
 	ctx context.Context,
@@ -281,7 +283,7 @@ func (s *TaskService) CompleteInvocationWithOutput(
 	}
 
 	now := time.Now()
-	short := truncateForSummary(body, 500)
+	short := truncateForSummary(body, roomMessageSummaryMaxLen)
 	meta, _ := json.Marshal(map[string]string{
 		"detailed_explanation": body,
 		"task_id":              util.UUIDToString(task.ID),
@@ -363,9 +365,12 @@ func (s *TaskService) continueGraphAfterAgentOutput(
 	}
 
 	if len(agentMentions) > 0 {
-		_ = s.ParseAndPersistMentions(ctx, room, outputMsg, outputMsg.Content)
+		_, _ = s.ParseAndPersistMentions(ctx, room, outputMsg, outputMsg.Content)
 		_, _, err := s.createMentionAssignments(ctx, p, agentMentions, 30*time.Minute)
 		return err
+	}
+	if s.exceedsAgentChainDepth(ctx, room, outputMsg) {
+		return nil
 	}
 	_, _, err = s.maybeCreateManagerAutoReview(ctx, p, 30*time.Minute)
 	return err

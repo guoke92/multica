@@ -19,8 +19,12 @@ func BuildPrompt(task Task, provider string) string {
 		return buildChatPrompt(task)
 	}
 	if task.RoomID != "" {
-		if task.RoomWorkflowIntent == "orchestrate" || task.RoomWorkflowIntent == "route" || task.RoomWorkflowIntent == "review" || task.RoomWorkflowIntent == "confirm" || task.RoomWorkflowIntent == "escalate" {
-			return buildRoomManagerPrompt(task)
+		scene := task.RoomManagerScene
+		if scene == "" {
+			scene = task.RoomWorkflowIntent
+		}
+		if scene == "orchestrate" || scene == "route" || scene == "review" || scene == "confirm" || scene == "escalate" {
+			return buildRoomManagerPrompt(task, scene)
 		}
 		return buildRoomPrompt(task)
 	}
@@ -184,78 +188,139 @@ func buildChatPrompt(task Task) string {
 	return buildConversationalPrompt(task, "A user is chatting with you directly. Respond to their message.")
 }
 
-// buildRoomPrompt constructs a prompt for room (ChatCollab) @mention tasks.
-// Ordinary asks are conversational — no assigned issue. Issue APIs are only
-// relevant when the user explicitly asks to look up or create an issue.
+// buildRoomPrompt constructs a prompt for room (ChatCollab) role worker tasks.
 func buildRoomPrompt(task Task) string {
 	intro := "A user @mentioned you in a collaboration room. Respond to their message."
 	if task.RoomWorkflowIntent == "execute" {
 		intro = "You are a role worker in a collaboration room workflow. Complete the assigned phase work."
+		if task.RoomManagerBrief != "" {
+			intro += " Follow the manager brief below — do not repeat planning if the brief asks for concrete delivery (files, code, verification)."
+		}
 	}
-	return buildConversationalPrompt(task, intro)
+	return buildRoomWorkerPrompt(task, intro+" Keep the room-visible reply concise: a short summary (a few sentences). Do not paste full file contents, long command output, or step-by-step tool logs — the UI stores the execution transcript separately.")
 }
 
-// buildRoomManagerPrompt constructs a prompt for the room manager agent.
-func buildRoomManagerPrompt(task Task) string {
+func buildRoomWorkerPrompt(task Task, intro string) string {
 	var b strings.Builder
-	b.WriteString("You are the **room router & supervisor** for a Multica collaboration room.\n")
-	b.WriteString("Your job: route user requests to the right agent, evaluate agent output, relay to the next agent when needed, and escalate when stuck.\n")
-	b.WriteString("You MUST NOT create or update Issues yourself — the platform rejects manager agents on `multica issue create` / `multica issue update`. @ role agents (e.g. requirements analyst) to create and maintain Issues.\n\n")
+	b.WriteString("You are running as a chat assistant for a Multica workspace.\n")
+	b.WriteString(intro)
+	b.WriteString("\n")
+	b.WriteString("There is NO assigned issue for this run. Do NOT run `multica issue get` unless the user explicitly asks you to look up or work on a specific issue.\n\n")
+	if task.RoomManagerBrief != "" {
+		b.WriteString("## 群管指派\n")
+		b.WriteString(task.RoomManagerBrief)
+		b.WriteString("\n\n")
+	}
+	fmt.Fprintf(&b, "## 本次触发\n%s\n", task.ChatMessage)
+	if task.RoomContext != "" {
+		b.WriteString("\n")
+		b.WriteString(task.RoomContext)
+		b.WriteString("\n")
+	}
+	if len(task.ChatMessageAttachments) > 0 {
+		b.WriteString("\nAttachments on this message:\n")
+		for _, a := range task.ChatMessageAttachments {
+			if a.ContentType != "" {
+				fmt.Fprintf(&b, "- id=%s filename=%q content_type=%s\n", a.ID, a.Filename, a.ContentType)
+			} else {
+				fmt.Fprintf(&b, "- id=%s filename=%q\n", a.ID, a.Filename)
+			}
+		}
+		b.WriteString("Use `multica attachment download <id>` to fetch each file locally before referring to it.\n")
+	}
+	return b.String()
+}
 
-	// Inject room agent roster so the manager knows who to route to.
+// buildRoomManagerPrompt constructs a prompt for the room manager agent by scene.
+func buildRoomManagerPrompt(task Task, scene string) string {
+	switch scene {
+	case "review":
+		return buildRoomManagerReviewPrompt(task)
+	case "confirm":
+		return buildRoomManagerConfirmPrompt(task)
+	case "escalate":
+		return buildRoomManagerEscalatePrompt(task)
+	default:
+		return buildRoomManagerRoutePrompt(task)
+	}
+}
+
+func buildRoomManagerPromptHeader(b *strings.Builder, task Task) {
+	b.WriteString("You are the **room router & supervisor** for a Multica collaboration room.\n")
+	b.WriteString("You MUST NOT create or update Issues yourself — the platform rejects manager agents on `multica issue create` / `multica issue update`. @ role agents to create and maintain Issues.\n\n")
 	if len(task.RoomAgents) > 0 {
 		b.WriteString("## Room agents (route to these by ID)\n\n")
 		b.WriteString("| Name | ID | Role |\n|------|----|------|\n")
 		for _, ag := range task.RoomAgents {
 			if ag.Role == "manager" {
-				continue // skip self
+				continue
 			}
-			fmt.Fprintf(&b, "| %s | `%s` | %s |\n", ag.Name, ag.ID, ag.Role)
+			fmt.Fprintf(b, "| %s | `%s` | %s |\n", ag.Name, ag.ID, ag.Role)
 		}
-		b.WriteString("\nUse the exact **ID** value (backtick-wrapped) in `route_to` / `relay_to`.\n\n")
+		b.WriteString("\nUse the exact **ID** value in `route_to` / `relay_to`.\n\n")
 	}
+}
 
-	switch task.RoomWorkflowIntent {
-	case "review":
-		b.WriteString("**Mode: review** — An agent just finished. Evaluate their output against the original request. Decide: done, relay to next agent, or escalate.\n\n")
-	case "confirm":
-		b.WriteString("**Mode: confirm** — Ask the user a clarifying question. They can reply without @mentioning you.\n\n")
-	case "escalate":
-		b.WriteString("**Mode: escalate** — Agents are stuck or need expert help. Introduce a senior agent with context.\n\n")
-	default:
-		b.WriteString("**Mode: route** — Analyze the user message, pick the best agent from the roster above, and emit a route_to action.\n\n")
-	}
+func appendRoomManagerContext(b *strings.Builder, task Task) {
 	b.WriteString("There is NO assigned issue. Do NOT run `multica issue get` unless explicitly needed.\n\n")
-	fmt.Fprintf(&b, "User message:\n%s\n", task.ChatMessage)
+	fmt.Fprintf(b, "Trigger message:\n%s\n", task.ChatMessage)
 	if task.RoomContext != "" {
-		b.WriteString("\nRecent room discussion:\n")
+		b.WriteString("\n")
 		b.WriteString(task.RoomContext)
 		b.WriteString("\n")
 	}
+}
 
-	// Hard rule: JSON footer is MANDATORY.
+func appendRoomManagerFooter(b *strings.Builder) {
 	b.WriteString("\n## ⚠️ MANDATORY: workflow_action footer\n\n")
-	b.WriteString("You **MUST** end every response with a fenced JSON block. ")
-	b.WriteString("Without this footer the system will NOT dispatch any agent and the workflow will stall.\n")
-	b.WriteString("Write a brief explanation first, then append the JSON block.\n\n")
-	b.WriteString("**Route work:**\n")
-	b.WriteString("```json\n{\"workflow_action\":{\"action\":\"route_to\",\"route_to\":\"<agent_id>\",\"title\":\"<brief reason>\"}}\n```\n\n")
-	b.WriteString("**Relay to next agent (after review):**\n")
-	b.WriteString("```json\n{\"workflow_action\":{\"action\":\"relay_to\",\"relay_to\":\"<agent_id>\",\"relay_reason\":\"<why>\"}}\n```\n\n")
-	b.WriteString("**Escalate (stuck / expert help needed):**\n")
-	b.WriteString("```json\n{\"workflow_action\":{\"action\":\"escalate\",\"escalate_to\":\"<agent_id>\",\"escalate_reason\":\"<why>\"}}\n```\n\n")
-	b.WriteString("**User-facing status (only when no dispatch needed):**\n")
-	b.WriteString("```json\n{\"workflow_action\":{\"action\":\"notify_user\",\"message\":\"<status line>\"}}\n```\n\n")
-	b.WriteString("Legacy actions also supported: `create_delivery`, `dispatch_agent`, `advance_phase`, `update_progress`, `complete_delivery`.\n")
-	b.WriteString("Never skip the footer. If you are unsure which agent to route to, pick the most relevant one — do not omit the footer.\n")
-	b.WriteString("\n**CRITICAL EXAMPLE — your response MUST end with exactly this format:**\n")
-	b.WriteString("```\n")
-	b.WriteString("... your analysis text ...\n\n")
-	b.WriteString("```json\n")
-	b.WriteString(`{"workflow_action":{"action":"route_to","route_to":"<agent_id_from_table>","title":"<reason>"}}` + "\n")
-	b.WriteString("```\n")
-	b.WriteString("```\n")
-	b.WriteString("If the user's request is simple and can be answered directly, use `notify_user` action instead of routing.\n")
+	b.WriteString("You **MUST** end every response with a fenced JSON block. Without it the workflow will stall.\n\n")
+	b.WriteString("**Route:** `{\"workflow_action\":{\"action\":\"route_to\",\"route_to\":\"<agent_id>\",\"title\":\"<reason>\"}}`\n")
+	b.WriteString("**Relay:** `{\"workflow_action\":{\"action\":\"relay_to\",\"relay_to\":\"<agent_id>\",\"relay_reason\":\"<concrete gap>\"}}`\n")
+	b.WriteString("**Escalate:** `{\"workflow_action\":{\"action\":\"escalate\",\"escalate_to\":\"<agent_id>\",\"escalate_reason\":\"<why>\"}}`\n")
+	b.WriteString("**Notify user:** `{\"workflow_action\":{\"action\":\"notify_user\",\"message\":\"<status>\"}}`\n")
+}
+
+func buildRoomManagerRoutePrompt(task Task) string {
+	var b strings.Builder
+	buildRoomManagerPromptHeader(&b, task)
+	b.WriteString("**Mode: route** — Analyze the user message and pick the best agent from the roster.\n")
+	b.WriteString("- User messages with explicit @agent do not reach you; only unmentioned routing.\n")
+	b.WriteString("- Emit `route_to` with a short title explaining why.\n\n")
+	appendRoomManagerContext(&b, task)
+	appendRoomManagerFooter(&b)
+	return b.String()
+}
+
+func buildRoomManagerReviewPrompt(task Task) string {
+	var b strings.Builder
+	buildRoomManagerPromptHeader(&b, task)
+	b.WriteString("**Mode: review** — An agent just finished. Compare the deliverable to the **original user request**.\n")
+	b.WriteString("- Satisfied → `notify_user` to close the loop.\n")
+	b.WriteString("- Next step for a **different** agent → `relay_to` with **required** `relay_reason` stating the concrete gap.\n")
+	b.WriteString("- **Never** relay back to the **same** agent who just completed without a new gap.\n\n")
+	appendRoomManagerContext(&b, task)
+	appendRoomManagerFooter(&b)
+	return b.String()
+}
+
+func buildRoomManagerConfirmPrompt(task Task) string {
+	var b strings.Builder
+	buildRoomManagerPromptHeader(&b, task)
+	b.WriteString("**Mode: confirm** — Ask the user one clarifying question. They can reply without @mentioning you.\n")
+	b.WriteString("- Use `notify_user` with the question.\n\n")
+	appendRoomManagerContext(&b, task)
+	appendRoomManagerFooter(&b)
+	return b.String()
+}
+
+func buildRoomManagerEscalatePrompt(task Task) string {
+	var b strings.Builder
+	buildRoomManagerPromptHeader(&b, task)
+	b.WriteString("**Mode: escalate** — A role assignment failed or the chain is stuck. Pick the right agent to recover.\n")
+	b.WriteString("- Use `reassign` / `escalate` / `route_to` as appropriate.\n")
+	b.WriteString("- State the failure and what must happen next.\n\n")
+	appendRoomManagerContext(&b, task)
+	appendRoomManagerFooter(&b)
 	return b.String()
 }
 

@@ -764,8 +764,26 @@ export function useRealtimeSync(
             ...payload.snapshot,
           }),
         );
+        qc.setQueryData<import("../types/room").Room[] | undefined>(
+          roomKeys.list(wsId),
+          (old) => {
+            if (!old) return old;
+            const idx = old.findIndex((r) => r.id === payload.room_id);
+            if (idx < 0) return old;
+            const rooms = [...old];
+            rooms[idx] = {
+              ...rooms[idx]!,
+              snapshot: {
+                ...(rooms[idx]!.snapshot ?? {}),
+                ...payload.snapshot,
+              },
+            };
+            return rooms;
+          },
+        );
       } else {
         void qc.invalidateQueries({ queryKey: roomKeys.workboard(wsId, payload.room_id) });
+        void qc.invalidateQueries({ queryKey: roomKeys.list(wsId) });
       }
     });
 

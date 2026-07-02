@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useElapsedSeconds } from "./room-elapsed-timer";
 import { isTaskMessageTaskId } from "@multica/core/chat/queries";
 import type { InvocationChatItem } from "./room-flow-utils";
 import { UnicodeSpinner } from "@multica/ui/components/common/unicode-spinner";
@@ -39,33 +39,79 @@ export function RoomInvocationChatItem({
 }
 
 /** Inline manager status — sits in the message action row, before copy/reply tools. */
-export function ManagerStatusInline({ item }: { item: InvocationChatItem }) {
+export function ManagerStatusInline({
+  item,
+  onRetry,
+  retrying,
+}: {
+  item: InvocationChatItem;
+  onRetry?: (assignmentId: string) => void;
+  retrying?: boolean;
+}) {
   const elapsed = useElapsedSeconds(item.invocation.id, item.invocation.created_at);
-  const label = item.phase === "queued" ? "排队中" : item.phase === "failed" ? "失败" : "思考中";
+  const isSoftWarn =
+    (item.phase === "running" || item.phase === "queued") &&
+    elapsed !== null &&
+    elapsed >= MANAGER_SOFT_WARN_SECONDS;
+  const label =
+    item.phase === "queued"
+      ? isSoftWarn
+        ? "排队中·可能稍慢"
+        : "排队中"
+      : item.phase === "failed"
+        ? "失败"
+        : isSoftWarn
+          ? "思考中·可能稍慢"
+          : "思考中";
 
   return (
     <span
       className={cn(
         "inline-flex items-center gap-1 text-[11px]",
-        item.phase === "failed" ? "text-destructive" : "text-muted-foreground",
+        item.phase === "failed"
+          ? "text-destructive"
+          : isSoftWarn
+            ? "text-amber-600 dark:text-amber-400"
+            : "text-muted-foreground",
       )}
       data-invocation-id={item.invocation.id}
       data-assignment-id={item.assignment.id}
+      data-soft-warn={isSoftWarn ? "true" : undefined}
       aria-live="polite"
       aria-busy={item.phase !== "failed"}
     >
       {item.phase !== "failed" ? (
         <UnicodeSpinner name="breathe" className="size-3 opacity-70" />
       ) : null}
-      <span className={cn(item.phase === "running" && "animate-chat-text-shimmer")}>
+      <span
+        className={cn(
+          (item.phase === "running" || item.phase === "queued") && !isSoftWarn && "animate-chat-text-shimmer",
+        )}
+      >
         群管 {label}
       </span>
       {elapsed !== null && item.phase !== "failed" ? (
         <span className="opacity-70 tabular-nums">· {elapsed}s</span>
       ) : null}
+      {item.phase === "failed" && onRetry ? (
+        <Button
+          type="button"
+          size="xs"
+          variant="ghost"
+          className="text-destructive hover:text-destructive h-5 px-1.5 text-[11px]"
+          disabled={retrying}
+          onClick={() => onRetry(item.assignment.id)}
+          data-action="manager-retry"
+        >
+          <RefreshCw className={cn("mr-1 size-3", retrying && "animate-spin")} />
+          {retrying ? "重试中…" : "重试"}
+        </Button>
+      ) : null}
     </span>
   );
 }
+
+const MANAGER_SOFT_WARN_SECONDS = 90;
 
 function AgentInvocationBubble({
   item,
@@ -77,7 +123,7 @@ function AgentInvocationBubble({
   const { invocation, assignment, agentId, agentName, phase } = item;
   const taskId = invocation.task_id;
   const canStream =
-    phase === "running" && !!taskId && isTaskMessageTaskId(taskId);
+    phase !== "failed" && !!taskId && isTaskMessageTaskId(taskId);
   const elapsed = useElapsedSeconds(invocation.id, invocation.created_at);
 
   return (
@@ -228,31 +274,4 @@ function WaitingBody({
       </span>
     </div>
   );
-}
-
-const waitAnchors = new Map<string, number>();
-
-function waitAnchorMs(key: string, createdAt?: string): number {
-  const existing = waitAnchors.get(key);
-  if (existing !== undefined) return existing;
-  const parsed = createdAt ? Date.parse(createdAt) : NaN;
-  const anchor = Number.isFinite(parsed) ? parsed : Date.now();
-  waitAnchors.set(key, anchor);
-  return anchor;
-}
-
-function useElapsedSeconds(anchorKey: string, createdAt?: string): number | null {
-  const anchor = useMemo(
-    () => waitAnchorMs(anchorKey, createdAt),
-    [anchorKey, createdAt],
-  );
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  if (!createdAt) return null;
-  return Math.max(0, Math.floor((now - anchor) / 1000));
 }

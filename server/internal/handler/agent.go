@@ -209,6 +209,8 @@ type AgentTaskResponse struct {
 	RoomID                  string                `json:"room_id,omitempty"`                   // non-empty for room (ChatCollab) tasks
 	RoomContext             string                `json:"room_context,omitempty"`              // recent room transcript for context
 	RoomWorkflowIntent      string                `json:"room_workflow_intent,omitempty"`      // orchestrate | route | execute | review | confirm | escalate
+	RoomManagerScene        string                `json:"room_manager_scene,omitempty"`        // route | review | confirm | escalate
+	RoomManagerBrief        string                `json:"room_manager_brief,omitempty"`        // manager route/relay reason for worker tasks
 	RoomWorkflowPolicy      json.RawMessage       `json:"room_workflow_policy,omitempty"`      // room.policy for manager runs
 	RoomAgents              []RoomAgentInfo       `json:"room_agents,omitempty"`               // room member agents for manager routing
 	RoomDeliveryID          string                `json:"room_delivery_id,omitempty"`

@@ -725,6 +725,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/leave", h.LeaveRoom)
 					r.Post("/messages", h.SendRoomMessage)
 					r.Get("/messages", h.ListRoomMessages)
+					r.Get("/messages/{messageId}", h.GetRoomMessage)
 					r.Patch("/messages/{messageId}", h.UpdateRoomMessage)
 					r.Post("/messages/{messageId}/regenerate", h.RegenerateRoomAgentMessage)
 					r.Get("/invocations", h.ListRoomInvocations)

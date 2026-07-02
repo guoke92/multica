@@ -18,10 +18,22 @@ func (s *TaskService) buildRoomSnapshotJSON(ctx context.Context, room db.Room, c
 	}
 	base["pending_count"] = int(counts.PendingCount)
 	base["blocked_count"] = int(counts.BlockedCount)
-	base["queued_count"] = 0
 	base["running_count"] = int(counts.RunningCount)
 	base["failed_count"] = int(counts.FailedCount)
 	base["completed_count"] = int(counts.CompletedCount)
+
+	if invCounts, err := s.Queries.CountActiveRoomInvocationsByRoom(ctx, room.ID); err == nil {
+		base["queued_count"] = int(invCounts.QueuedCount)
+		base["active_invocation_count"] = int(invCounts.ActiveRunningCount)
+	} else {
+		base["queued_count"] = 0
+		base["active_invocation_count"] = 0
+	}
+	if mgrCounts, err := s.Queries.CountManagerActiveInvocationsByRoom(ctx, room.ID); err == nil {
+		base["manager_active_count"] = int(mgrCounts)
+	} else {
+		base["manager_active_count"] = 0
+	}
 
 	events, _ := s.Queries.ListRoomInvocationEventsByRoom(ctx, db.ListRoomInvocationEventsByRoomParams{
 		RoomID: room.ID, Limit: 1,

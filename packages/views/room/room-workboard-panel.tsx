@@ -6,6 +6,7 @@ import type {
   RoomAssignmentDependency,
   RoomInvocation,
   RoomInvocationEvent,
+  RoomManagerDecision,
   RoomMessage,
 } from "@multica/core/types/room";
 import { cn } from "@multica/ui/lib/utils";
@@ -17,6 +18,7 @@ type Props = {
   assignmentDependencies: RoomAssignmentDependency[];
   invocations: RoomInvocation[];
   invocationEvents: RoomInvocationEvent[];
+  decisions?: RoomManagerDecision[];
   messages: RoomMessage[];
   managerAgentId?: string;
   agentNameById: Map<string, string>;
@@ -33,6 +35,7 @@ export function RoomWorkboardPanel({
   assignmentDependencies,
   invocations,
   invocationEvents,
+  decisions = [],
   messages,
   managerAgentId,
   agentNameById,
@@ -64,26 +67,6 @@ export function RoomWorkboardPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col px-3 py-3">
-      {statItems.length > 0 ? (
-        <div className="mb-2 flex shrink-0 flex-wrap gap-1.5">
-          {statItems.map((item) => (
-            <StatusChip
-              key={item.key}
-              label={item.label}
-              value={item.value}
-              active={item.key === "failed" && failuresOnly}
-              clickable={item.clickable}
-              onClick={
-                item.key === "failed" && onFailuresOnlyChange
-                  ? () => onFailuresOnlyChange(!failuresOnly)
-                  : undefined
-              }
-            />
-          ))}
-        </div>
-      ) : (
-        <p className="text-muted-foreground mb-2 shrink-0 text-xs">当前无活跃任务</p>
-      )}
       {failuresOnly ? (
         <div className="mb-1.5 flex shrink-0 items-center justify-between gap-2">
           <p className="text-destructive text-xs font-medium">待确认失败</p>
@@ -98,9 +81,29 @@ export function RoomWorkboardPanel({
           ) : null}
         </div>
       ) : (
-        <h3 className="text-muted-foreground mb-1.5 shrink-0 text-xs font-medium uppercase tracking-wide">
-          流程动态
-        </h3>
+        <div className="mb-1.5 flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1.5">
+          <h3 className="text-muted-foreground shrink-0 text-xs font-medium uppercase tracking-wide">
+            流程动态
+          </h3>
+          {statItems.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {statItems.map((item) => (
+                <StatusChip
+                  key={item.key}
+                  label={item.label}
+                  value={item.value}
+                  active={item.key === "failed" && failuresOnly}
+                  clickable={item.clickable}
+                  onClick={
+                    item.key === "failed" && onFailuresOnlyChange
+                      ? () => onFailuresOnlyChange(!failuresOnly)
+                      : undefined
+                  }
+                />
+              ))}
+            </div>
+          ) : null}
+        </div>
       )}
       <RoomFlowTimeline
         className="min-h-0 flex-1"
@@ -108,6 +111,7 @@ export function RoomWorkboardPanel({
         assignments={assignments}
         assignmentDependencies={assignmentDependencies}
         invocations={invocations}
+        decisions={decisions}
         messages={messages}
         managerAgentId={managerAgentId}
         agentNameById={agentNameById}

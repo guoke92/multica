@@ -27,6 +27,16 @@ import (
 	"github.com/multica-ai/multica/server/pkg/redact"
 )
 
+type roomGraphClaimContext struct {
+	Type              string `json:"type"`
+	AssignmentID      string `json:"assignment_id"`
+	Intent            string `json:"intent"`
+	Kind              string `json:"kind,omitempty"`
+	ManagerScene      string `json:"manager_scene,omitempty"`
+	ManagerBrief      string `json:"manager_brief,omitempty"`
+	DispatchMessageID string `json:"dispatch_message_id,omitempty"`
+}
+
 // ---------------------------------------------------------------------------
 // Daemon workspace ownership helpers
 // ---------------------------------------------------------------------------
@@ -1391,7 +1401,9 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		if room, err := h.Queries.GetRoom(r.Context(), task.RoomID); err == nil {
 			resp.WorkspaceID = uuidToString(room.WorkspaceID)
 			resp.RoomID = uuidToString(room.ID)
+			var triggerMsg db.RoomMessage
 			if msg, err := h.Queries.GetRoomMessage(r.Context(), task.RoomMessageID); err == nil {
+				triggerMsg = msg
 				resp.ChatMessage = msg.Content
 				resp.RoomSenderType = msg.SenderType
 				if msg.SenderID.Valid {
@@ -1401,27 +1413,49 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 					resp.RoomQuoteMessageID = uuidToString(msg.QuoteMessageID)
 				}
 			}
-			if msgs, err := h.Queries.ListRoomMessages(r.Context(), db.ListRoomMessagesParams{
-				RoomID: room.ID,
-				Limit:  30,
-			}); err == nil && len(msgs) > 0 {
-				var parts []string
-				for i := len(msgs) - 1; i >= 0; i-- {
-					m := msgs[i]
-					var line strings.Builder
-					fmt.Fprintf(&line, "[%s", m.SenderType)
-					if m.SenderID.Valid {
-						fmt.Fprintf(&line, " id=%s", util.UUIDToString(m.SenderID))
+			var graphCtx roomGraphClaimContext
+			if len(task.Context) > 0 {
+				_ = json.Unmarshal(task.Context, &graphCtx)
+			}
+			if graphCtx.Type == "room_graph" {
+				resp.RoomWorkflowIntent = graphCtx.Intent
+				resp.RoomManagerScene = graphCtx.ManagerScene
+				resp.RoomManagerBrief = graphCtx.ManagerBrief
+				if graphCtx.AssignmentID != "" && h.TaskService != nil && triggerMsg.ID.Valid {
+					if assignment, aErr := h.Queries.GetRoomAssignmentInRoom(r.Context(), db.GetRoomAssignmentInRoomParams{
+						ID: parseUUID(graphCtx.AssignmentID), RoomID: room.ID,
+					}); aErr == nil {
+						if rendered, _, cErr := h.TaskService.RenderRoomPromptContext(
+							r.Context(), room, assignment, triggerMsg, graphCtx.Intent,
+						); cErr == nil && rendered != "" {
+							resp.RoomContext = rendered
+						}
 					}
-					fmt.Fprintf(&line, " msg_id=%s", util.UUIDToString(m.ID))
-					if m.QuoteMessageID.Valid {
-						fmt.Fprintf(&line, " quote=%s", util.UUIDToString(m.QuoteMessageID))
-					}
-					line.WriteString("] ")
-					line.WriteString(m.Content)
-					parts = append(parts, line.String())
 				}
-				resp.RoomContext = strings.Join(parts, "\n---\n")
+			}
+			if resp.RoomContext == "" {
+				if msgs, err := h.Queries.ListRoomMessages(r.Context(), db.ListRoomMessagesParams{
+					RoomID: room.ID,
+					Limit:  30,
+				}); err == nil && len(msgs) > 0 {
+					var parts []string
+					for i := len(msgs) - 1; i >= 0; i-- {
+						m := msgs[i]
+						var line strings.Builder
+						fmt.Fprintf(&line, "[%s", m.SenderType)
+						if m.SenderID.Valid {
+							fmt.Fprintf(&line, " id=%s", util.UUIDToString(m.SenderID))
+						}
+						fmt.Fprintf(&line, " msg_id=%s", util.UUIDToString(m.ID))
+						if m.QuoteMessageID.Valid {
+							fmt.Fprintf(&line, " quote=%s", util.UUIDToString(m.QuoteMessageID))
+						}
+						line.WriteString("] ")
+						line.WriteString(m.Content)
+						parts = append(parts, line.String())
+					}
+					resp.RoomContext = strings.Join(parts, "\n---\n")
+				}
 			}
 			if len(room.Policy) > 0 {
 				resp.RoomWorkflowPolicy = json.RawMessage(room.Policy)
@@ -1441,17 +1475,6 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 							Role: m.Role,
 						})
 					}
-				}
-			}
-			if len(task.Context) > 0 {
-				var graph struct {
-					Type         string `json:"type"`
-					AssignmentID string `json:"assignment_id"`
-					Intent       string `json:"intent"`
-					Kind         string `json:"kind"`
-				}
-				if json.Unmarshal(task.Context, &graph) == nil && graph.Type == "room_graph" {
-					resp.RoomWorkflowIntent = graph.Intent
 				}
 			}
 		}

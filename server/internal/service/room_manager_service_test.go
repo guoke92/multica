@@ -26,6 +26,37 @@ func TestParseManagerDecisionFromOutput_Complete(t *testing.T) {
 	}
 }
 
+func TestStripManagerWorkflowFooter(t *testing.T) {
+	raw := "极简贪吃蛇已交付，说一下你的偏好。\n\n```json\n{\"workflow_action\":{\"action\":\"notify_user\",\"message\":\"done\"}}\n```"
+	got := stripManagerWorkflowFooter(raw)
+	want := "极简贪吃蛇已交付，说一下你的偏好。"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestManagerUserNotifyContent(t *testing.T) {
+	raw := "请确认是否继续简化。\n```json\n{\"workflow_action\":{\"action\":\"notify_user\",\"message\":\"fallback\"}}\n```"
+	got := managerUserNotifyContent(raw, ManagerDecision{Message: "fallback"})
+	if got != "请确认是否继续简化。" {
+		t.Fatalf("got %q", got)
+	}
+	if got := managerUserNotifyContent("", ManagerDecision{Message: "仅 JSON 摘要"}); got != "仅 JSON 摘要" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestManagerDispatchIntent(t *testing.T) {
+	user := RoomMentionDispatchParams{AuthorType: "user"}
+	if got := managerDispatchIntent(user); got != "route" {
+		t.Fatalf("user message: got %q want route", got)
+	}
+	agent := RoomMentionDispatchParams{AuthorType: "agent"}
+	if got := managerDispatchIntent(agent); got != "review" {
+		t.Fatalf("agent output: got %q want review", got)
+	}
+}
+
 func TestRoomMentionIntent(t *testing.T) {
 	svc := &TaskService{}
 	room := dbRoomWithManager()

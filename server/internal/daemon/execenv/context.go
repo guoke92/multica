@@ -448,6 +448,11 @@ func renderConversationalContext(ctx TaskContextForEnv) string {
 		fmt.Fprintf(&b, "**Chat session ID:** `%s`\n\n", ctx.ChatSessionID)
 	}
 	b.WriteString("**Trigger:** Direct message — no assigned issue.\n\n")
+	if strings.TrimSpace(ctx.RoomManagerBrief) != "" {
+		b.WriteString("## Manager brief\n\n")
+		b.WriteString(ctx.RoomManagerBrief)
+		b.WriteString("\n\n")
+	}
 	if strings.TrimSpace(ctx.ChatMessage) != "" {
 		b.WriteString("## User message\n\n")
 		b.WriteString("> ")
@@ -455,7 +460,6 @@ func renderConversationalContext(ctx TaskContextForEnv) string {
 		b.WriteString("\n\n")
 	}
 	if strings.TrimSpace(ctx.RoomContext) != "" {
-		b.WriteString("## Recent room discussion\n\n")
 		b.WriteString(ctx.RoomContext)
 		b.WriteString("\n\n")
 	}

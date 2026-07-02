@@ -37,6 +37,15 @@ type RoomPolicyFallback struct {
 	RoleTaskMaxRetries int    `json:"role_task_max_retries"`
 	OnRoleFailure      string `json:"on_role_failure"`
 	OnAmbiguousIntake  string `json:"on_ambiguous_intake"`
+	// ManagerMaxRetries caps how many times a failed manager invocation on
+	// the same source message can be auto-retried before the user must
+	// intervene. Defaults to 1; set 0 to disable auto-retry.
+	ManagerMaxRetries int `json:"manager_max_retries"`
+	// ManagerSoftWarnSeconds emits a soft-warn "思考中·可能稍慢" hint in the
+	// UI when a manager invocation has been running longer than this without
+	// any task message. Default 90s; the actual hard timeout is still the
+	// per-invocation timeout_at (default 30min).
+	ManagerSoftWarnSeconds int `json:"manager_soft_warn_seconds"`
 }
 
 func DefaultRoomPolicy(template string) RoomPolicy {
@@ -52,9 +61,11 @@ func DefaultRoomPolicy(template string) RoomPolicy {
 			OnChainDepthLimit:        "pause",
 		},
 		Fallback: RoomPolicyFallback{
-			RoleTaskMaxRetries: 1,
-			OnRoleFailure:      "manager_replan",
-			OnAmbiguousIntake:  "manager_ask_user",
+			RoleTaskMaxRetries:     1,
+			OnRoleFailure:          "manager_replan",
+			OnAmbiguousIntake:      "manager_ask_user",
+			ManagerMaxRetries:      1,
+			ManagerSoftWarnSeconds: 90,
 		},
 	}
 }
@@ -94,7 +105,31 @@ func ParseRoomPolicy(raw []byte) RoomPolicy {
 	if p.Fallback.RoleTaskMaxRetries == 0 {
 		p.Fallback.RoleTaskMaxRetries = 1
 	}
+	if p.Fallback.ManagerMaxRetries < 0 {
+		p.Fallback.ManagerMaxRetries = 0
+	}
+	if p.Fallback.ManagerSoftWarnSeconds <= 0 {
+		p.Fallback.ManagerSoftWarnSeconds = 90
+	}
 	return p
+}
+
+// RoomManagerMaxRetries returns the configured manager auto-retry budget.
+func RoomManagerMaxRetries(room db.Room) int {
+	r := ParseRoomPolicy(room.Policy).Fallback.ManagerMaxRetries
+	if r < 0 {
+		return 0
+	}
+	return r
+}
+
+// RoomManagerSoftWarnSeconds returns the configured soft-warn threshold.
+func RoomManagerSoftWarnSeconds(room db.Room) int {
+	s := ParseRoomPolicy(room.Policy).Fallback.ManagerSoftWarnSeconds
+	if s <= 0 {
+		return 90
+	}
+	return s
 }
 
 // RoomMaxChainDepth returns the configured agent-to-agent chain cap for a room.

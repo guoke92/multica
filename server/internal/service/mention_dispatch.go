@@ -74,3 +74,12 @@ func (s *TaskService) roomMentionIntent(room db.Room) string {
 	}
 	return "ask"
 }
+
+// managerDispatchIntent picks the manager daemon prompt mode for unmentioned routing.
+// User messages need route/confirm; agent completions need review.
+func managerDispatchIntent(p RoomMentionDispatchParams) string {
+	if p.AuthorType == "user" {
+		return "route"
+	}
+	return "review"
+}

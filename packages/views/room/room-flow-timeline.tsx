@@ -6,6 +6,7 @@ import type {
   RoomAssignmentDependency,
   RoomInvocation,
   RoomInvocationEvent,
+  RoomManagerDecision,
   RoomMessage,
 } from "@multica/core/types/room";
 import { cn } from "@multica/ui/lib/utils";
@@ -25,16 +26,26 @@ import {
   groupFlowTracks,
   isActiveFlowTrack,
   isFlowTrackAttentionFailure,
+  isFlowTrackLiveForTimer,
   resolveFlowScrollMessageId,
+  resolveFlowTrackElapsedSeconds,
+  resolveFlowTrackTimerAnchor,
+  resolveManagerDecisionForTrack,
   type FlowGraphContext,
   type FlowTrack,
 } from "./room-flow-utils";
+import {
+  formatElapsedSeconds,
+  formatFlowClockTime,
+  useElapsedSeconds,
+} from "./room-elapsed-timer";
 
 type Props = {
   events: RoomInvocationEvent[];
   assignments: RoomAssignment[];
   assignmentDependencies: RoomAssignmentDependency[];
   invocations: RoomInvocation[];
+  decisions?: RoomManagerDecision[];
   messages: RoomMessage[];
   managerAgentId?: string;
   agentNameById: Map<string, string>;
@@ -51,6 +62,7 @@ export function RoomFlowTimeline({
   assignments,
   assignmentDependencies,
   invocations,
+  decisions = [],
   messages,
   managerAgentId,
   agentNameById,
@@ -66,8 +78,9 @@ export function RoomFlowTimeline({
       assignments,
       assignment_dependencies: assignmentDependencies,
       invocations,
+      decisions,
     }),
-    [assignments, assignmentDependencies, invocations],
+    [assignments, assignmentDependencies, invocations, decisions],
   );
 
   const displayOpts = useMemo(
@@ -166,8 +179,10 @@ function FlowTrackRow({
   const isActive = isActiveFlowTrack(track, graph);
   const hasHistory = track.steps.length > 1;
   const line = formatFlowTrackLine(track, displayOpts);
+  const managerDetail = resolveManagerDecisionForTrack(track, graph);
   const needsAck = isFlowTrackAttentionFailure(track, graph);
   const isAcking = acknowledgingAssignmentId === track.assignmentId;
+  const startedAtLabel = formatFlowClockTime(track.startedAt);
 
   const handleNavigate = () => {
     if (!onNavigateToMessage) return;
@@ -193,38 +208,47 @@ function FlowTrackRow({
           : undefined
       }
       className={cn(
-        "flex items-center justify-between gap-2 rounded-md px-2 py-1 text-xs transition-colors",
+        "flex items-center gap-2 rounded-md px-2 py-1 text-xs transition-colors",
         tone,
         surface,
         isActive && "font-medium",
         onNavigateToMessage && "hover:bg-muted/40 cursor-pointer",
       )}
     >
-      <span className="min-w-0 flex-1 truncate">{line}</span>
-      <div className="flex shrink-0 items-center gap-1.5">
-        {failuresOnly && needsAck && onAckFailure ? (
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            className="h-5 px-1.5 text-[10px]"
-            disabled={isAcking}
-            onClick={(e) => {
-              e.stopPropagation();
-              onAckFailure(track.assignmentId);
-            }}
-          >
-            {isAcking ? "…" : "确认"}
-          </Button>
-        ) : null}
-        <time className="text-muted-foreground text-[10px] tabular-nums">
-          {track.updatedAt.slice(11, 16)}
+      {startedAtLabel ? (
+        <time
+          dateTime={track.startedAt}
+          className="text-muted-foreground shrink-0 text-[10px] tabular-nums"
+        >
+          {startedAtLabel}
         </time>
-      </div>
+      ) : null}
+      <span
+        className="min-w-0 flex-1 truncate"
+        title={managerDetail?.reason}
+      >
+        {line}
+        <FlowTrackDuration track={track} graph={graph} inline />
+      </span>
+      {failuresOnly && needsAck && onAckFailure ? (
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          className="h-5 shrink-0 px-1.5 text-[10px]"
+          disabled={isAcking}
+          onClick={(e) => {
+            e.stopPropagation();
+            onAckFailure(track.assignmentId);
+          }}
+        >
+          {isAcking ? "…" : "确认"}
+        </Button>
+      ) : null}
     </div>
   );
 
-  if (!hasHistory) {
+  if (!hasHistory && !managerDetail?.reason) {
     return <li>{row}</li>;
   }
 
@@ -232,10 +256,11 @@ function FlowTrackRow({
     <li>
       <HoverCard>
         <HoverCardTrigger render={<div className="w-full">{row}</div>} />
-        <HoverCardContent side="left" align="start" className="w-60 p-0">
+        <HoverCardContent side="left" align="start" className="w-72 p-0">
           <FlowTrackHistoryPanel
             track={track}
             displayOpts={displayOpts}
+            managerDetail={managerDetail}
             onNavigateToMessage={onNavigateToMessage}
             messages={messages}
             graph={graph}
@@ -249,6 +274,7 @@ function FlowTrackRow({
 function FlowTrackHistoryPanel({
   track,
   displayOpts,
+  managerDetail,
   onNavigateToMessage,
   messages,
   graph,
@@ -260,6 +286,7 @@ function FlowTrackHistoryPanel({
     agentNameById: Map<string, string>;
     graph: FlowGraphContext;
   };
+  managerDetail?: ReturnType<typeof resolveManagerDecisionForTrack>;
   onNavigateToMessage?: (messageId: string, assignmentId: string) => void;
   messages: RoomMessage[];
   graph: FlowGraphContext;
@@ -288,24 +315,107 @@ function FlowTrackHistoryPanel({
           </button>
         ) : null}
       </div>
+      {managerDetail?.reason ? (
+        <div className="border-border bg-muted/30 border-b px-3 py-2">
+          <p className="text-muted-foreground text-[10px] font-medium">
+            群管决策原因
+          </p>
+          <p className="text-foreground mt-1 text-xs leading-relaxed whitespace-pre-wrap break-words">
+            {managerDetail.reason}
+          </p>
+        </div>
+      ) : null}
       <ul className="max-h-44 space-y-0.5 overflow-y-auto px-2 py-2">
-        {track.steps.map((step) => (
+        {track.steps.map((step) => {
+          const stepTime = formatFlowClockTime(step.createdAt);
+          return (
           <li
             key={step.event.id}
             className={cn(
-              "flex items-baseline justify-between gap-2 rounded px-1.5 py-0.5 text-xs",
+              "flex items-baseline gap-1.5 rounded px-1.5 py-0.5 text-xs",
               flowStepTone(step),
             )}
           >
+            {stepTime ? (
+              <time
+                dateTime={step.createdAt}
+                className="text-muted-foreground shrink-0 text-[10px] tabular-nums"
+              >
+                {stepTime}
+              </time>
+            ) : null}
             <span className="min-w-0 truncate">
               {formatFlowStepLine(track, step, displayOpts)}
+              <FlowStepDuration
+                track={track}
+                stepCreatedAt={step.createdAt}
+                graph={graph}
+                inline
+              />
             </span>
-            <time className="text-muted-foreground shrink-0 text-[10px] tabular-nums">
-              {step.createdAt.slice(11, 16)}
-            </time>
           </li>
-        ))}
+          );
+        })}
       </ul>
     </div>
+  );
+}
+
+function FlowTrackDuration({
+  track,
+  graph,
+  inline = false,
+}: {
+  track: FlowTrack;
+  graph: FlowGraphContext;
+  inline?: boolean;
+}) {
+  const anchor = resolveFlowTrackTimerAnchor(track, graph);
+  const live = isFlowTrackLiveForTimer(track, graph);
+  const elapsedLive = useElapsedSeconds(anchor?.key ?? track.key, anchor?.createdAt);
+  const elapsedStatic = live ? null : resolveFlowTrackElapsedSeconds(track, graph);
+  const elapsed = live ? elapsedLive : elapsedStatic;
+
+  if (elapsed === null) return null;
+  return (
+    <span
+      className={cn(
+        "tabular-nums",
+        inline ? "text-muted-foreground/80 ml-1" : "text-muted-foreground text-[10px]",
+      )}
+    >
+      {formatElapsedSeconds(elapsed)}
+    </span>
+  );
+}
+
+function FlowStepDuration({
+  track,
+  stepCreatedAt,
+  graph,
+  inline = false,
+}: {
+  track: FlowTrack;
+  stepCreatedAt: string;
+  graph: FlowGraphContext;
+  inline?: boolean;
+}) {
+  const anchor = resolveFlowTrackTimerAnchor(track, graph);
+  if (!anchor) return null;
+
+  const start = Date.parse(anchor.createdAt);
+  const end = Date.parse(stepCreatedAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+
+  const seconds = Math.max(0, Math.floor((end - start) / 1000));
+  return (
+    <span
+      className={cn(
+        "tabular-nums",
+        inline ? "text-muted-foreground/80 ml-1" : "text-muted-foreground text-[10px]",
+      )}
+    >
+      {formatElapsedSeconds(seconds)}
+    </span>
   );
 }

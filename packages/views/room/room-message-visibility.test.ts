@@ -22,4 +22,50 @@ describe("shouldHideRoomMessage", () => {
   it("shows generic system notifications", () => {
     expect(shouldHideRoomMessage(systemMessage("chat"))).toBe(false);
   });
+
+  it("hides manager agent messages except notify_user", () => {
+    const managerId = "mgr-1";
+    expect(
+      shouldHideRoomMessage(
+        {
+          id: "1",
+          sender_type: "agent",
+          sender_id: managerId,
+          content: "routing",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+        managerId,
+      ),
+    ).toBe(true);
+    expect(
+      shouldHideRoomMessage(
+        {
+          id: "2",
+          sender_type: "agent",
+          sender_id: managerId,
+          content: "[@dev](mention://member/u1) 请确认是否继续简化",
+          metadata: { manager_notify_user: true },
+          created_at: "2026-01-01T00:00:00Z",
+        },
+        managerId,
+      ),
+    ).toBe(false);
+  });
+
+  it("shows manager dispatch messages in chat timeline", () => {
+    const managerId = "mgr-1";
+    expect(
+      shouldHideRoomMessage(
+        {
+          id: "3",
+          sender_type: "agent",
+          sender_id: managerId,
+          content: "[@fe](mention://agent/fe-1) 请继续：创建文件",
+          metadata: { manager_dispatch: true },
+          created_at: "2026-01-01T00:00:00Z",
+        },
+        managerId,
+      ),
+    ).toBe(false);
+  });
 });

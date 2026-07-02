@@ -34,10 +34,13 @@ type RoomGraphSnapshot struct {
 const roomGraphContextType = "room_graph"
 
 type roomGraphTaskContext struct {
-	Type         string `json:"type"`
-	AssignmentID string `json:"assignment_id"`
-	Intent       string `json:"intent"`
-	Kind         string `json:"kind,omitempty"`
+	Type              string `json:"type"`
+	AssignmentID      string `json:"assignment_id"`
+	Intent            string `json:"intent"`
+	Kind              string `json:"kind,omitempty"`
+	ManagerScene      string `json:"manager_scene,omitempty"`
+	ManagerBrief      string `json:"manager_brief,omitempty"`
+	DispatchMessageID string `json:"dispatch_message_id,omitempty"`
 }
 
 func marshalRoomGraphContext(ctx roomGraphTaskContext) []byte {
@@ -51,19 +54,19 @@ func (s *TaskService) ProcessRoomMessageAfterCreate(
 	ctx context.Context,
 	p RoomMentionDispatchParams,
 ) (RoomGraphProcessResult, error) {
-	if err := s.ParseAndPersistMentions(ctx, p.Room, p.Message, p.MentionContent); err != nil {
+	if _, err := s.ParseAndPersistMentions(ctx, p.Room, p.Message, p.MentionContent); err != nil {
 		return RoomGraphProcessResult{}, err
 	}
 	return s.ProcessMessageForAssignments(ctx, p)
 }
 
-// ParseAndPersistMentions stores structured mentions for a message.
+// ParseAndPersistMentions stores structured mentions for a message and returns them.
 func (s *TaskService) ParseAndPersistMentions(
 	ctx context.Context,
 	room db.Room,
 	msg db.RoomMessage,
 	mentionContentOverride string,
-) error {
+) ([]db.RoomMessageMention, error) {
 	source := msg.Content
 	if strings.TrimSpace(mentionContentOverride) != "" {
 		source = mentionContentOverride
@@ -71,11 +74,20 @@ func (s *TaskService) ParseAndPersistMentions(
 	structured := util.ParseMentions(source)
 	plain, err := s.plainAgentMentionsInRoom(ctx, room, source)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	mentions := append(structured, plain...)
+	rawMentions := append(structured, plain...)
 	seen := make(map[string]struct{})
-	for _, m := range mentions {
+	out := make([]db.RoomMessageMention, 0, len(rawMentions))
+
+	sourceType := mentionSourceTypeForMessage(msg)
+	var sourceMessageID pgtype.UUID
+	if isManagerDispatchMessage(msg) {
+		sourceType = "manager_dispatch"
+		sourceMessageID = msg.ID
+	}
+
+	for _, m := range rawMentions {
 		if m.Type != "agent" && m.Type != "squad" && m.Type != "member" && m.Type != "all" {
 			continue
 		}
@@ -88,18 +100,59 @@ func (s *TaskService) ParseAndPersistMentions(
 		if !targetID.Valid && m.Type != "all" {
 			continue
 		}
-		_, err := s.Queries.CreateRoomMessageMention(ctx, db.CreateRoomMessageMentionParams{
-			ID:         util.MustNewUUIDv7(),
-			MessageID:  msg.ID,
-			TargetType: m.Type,
-			TargetID:   targetID,
+		row, err := s.Queries.CreateRoomMessageMention(ctx, db.CreateRoomMessageMentionParams{
+			ID:              util.MustNewUUIDv7(),
+			MessageID:       msg.ID,
+			TargetType:      m.Type,
+			TargetID:        targetID,
+			SourceType:      sourceType,
+			SourceMessageID: sourceMessageID,
 		})
 		if err != nil {
 			slog.Warn("persist room mention failed", "message_id", util.UUIDToString(msg.ID), "error", err)
+			continue
 		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+func mentionSourceTypeForMessage(msg db.RoomMessage) string {
+	switch msg.SenderType {
+	case "user":
+		return "manual"
+	case "agent":
+		return "agent_mention"
+	default:
+		return "manual"
+	}
+}
+
+// linkAssignmentToMention backfills assignment_id on the mention that triggered it.
+func (s *TaskService) linkAssignmentToMention(ctx context.Context, assignment db.RoomAssignment) error {
+	mentions, err := s.Queries.ListRoomMessageMentionsByMessage(ctx, assignment.SourceMessageID)
+	if err != nil {
+		return err
+	}
+	for _, m := range mentions {
+		if m.AssignmentID.Valid {
+			continue
+		}
+		if m.TargetID != assignment.AssigneeID {
+			continue
+		}
+		if m.SourceType != "manual" && m.SourceType != "agent_mention" {
+			continue
+		}
+		_, err := s.Queries.UpdateRoomMessageMentionAssignment(ctx, db.UpdateRoomMessageMentionAssignmentParams{
+			ID:           m.ID,
+			AssignmentID: assignment.ID,
+		})
+		return err
 	}
 	return nil
 }
+
 
 // ProcessMessageForAssignments creates mention or auto_review assignments from a message.
 func (s *TaskService) ProcessMessageForAssignments(
@@ -190,6 +243,9 @@ func (s *TaskService) createMentionAssignments(
 		if inv.ID.Valid {
 			invocations = append(invocations, inv)
 		}
+		if err := s.linkAssignmentToMention(ctx, assignment); err != nil {
+			slog.Warn("link mention to assignment failed", "assignment_id", util.UUIDToString(assignment.ID), "error", err)
+		}
 	}
 	return assignments, invocations, nil
 }
@@ -225,7 +281,7 @@ func (s *TaskService) maybeCreateManagerAutoReview(
 		AssigneeID:    p.Room.ManagerAgentID,
 		Kind:          "auto_review",
 		CreatedByType: "system",
-		Intent:        "review",
+		Intent:        managerDispatchIntent(p),
 		TimeoutAt:     time.Now().Add(timeout),
 		CanAccessAgent: func(_ context.Context, _ db.Agent, _, _, _ string) bool {
 			return true
@@ -410,10 +466,18 @@ func (s *TaskService) enqueueRoomGraphInvocationTask(
 		return db.AgentTaskQueue{}, err
 	}
 	summary := truncateForSummary(sourceMessage.Content, triggerSummaryMaxLen)
+	if assignment.Reason.Valid && strings.TrimSpace(assignment.Reason.String) != "" {
+		if brief := formatManagerBrief(assignment, room); brief != "" {
+			summary = truncateForSummary(brief, triggerSummaryMaxLen)
+		}
+	}
+	managerScene := resolveManagerScene(assignment, inv.Intent)
 	taskCtx := marshalRoomGraphContext(roomGraphTaskContext{
 		AssignmentID: util.UUIDToString(assignment.ID),
 		Intent:       inv.Intent,
 		Kind:         assignment.Kind,
+		ManagerScene: managerScene,
+		ManagerBrief: formatManagerBrief(assignment, room),
 	})
 	task, err := s.Queries.CreateRoomTaskForInvocation(ctx, db.CreateRoomTaskForInvocationParams{
 		AgentID:        agentID,

@@ -1,5 +1,17 @@
 import type { RoomMessage } from "@multica/core/types/room";
 
+/** notify_user posts from the manager agent but must appear as a user-facing chat row. */
+export function isManagerNotifyUserMessage(message: RoomMessage): boolean {
+  if (message.metadata?.manager_notify_user === true) return true;
+  // Server only persists manager-agent rows for notify_user; older rows lack metadata.
+  return message.content.includes("mention://member/");
+}
+
+/** Manager route/relay/escalate dispatch — rendered as a manager slot below the source message. */
+export function isManagerDispatchMessage(message: RoomMessage): boolean {
+  return message.metadata?.manager_dispatch === true;
+}
+
 /** Workflow/system noise that should not appear in the chat timeline. */
 export function shouldHideRoomMessage(
   message: RoomMessage,
@@ -8,7 +20,9 @@ export function shouldHideRoomMessage(
   if (
     managerAgentId &&
     message.sender_type === "agent" &&
-    message.sender_id === managerAgentId
+    message.sender_id === managerAgentId &&
+    !isManagerNotifyUserMessage(message) &&
+    !isManagerDispatchMessage(message)
   ) {
     return true;
   }

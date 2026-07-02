@@ -3,6 +3,7 @@ import type {
   RoomAssignmentDependency,
   RoomInvocation,
   RoomInvocationEvent,
+  RoomManagerDecision,
   RoomMessage,
 } from "@multica/core/types/room";
 
@@ -29,6 +30,7 @@ export type FlowGraphContext = {
   assignments: RoomAssignment[];
   assignment_dependencies: RoomAssignmentDependency[];
   invocations: RoomInvocation[];
+  decisions?: RoomManagerDecision[];
 };
 
 export type FlowDisplayOpts = {
@@ -669,10 +671,178 @@ function assignmentKindLabel(kind: string): string {
     case "manager_route":
       return "群管路由";
     case "auto_review":
-      return "自动审阅";
+      return "路由审阅";
     default:
       return kind || "任务";
   }
+}
+
+type AssignmentEscalationReason = {
+  escalation?: string;
+  failed_assignment_id?: string;
+  failed_agent_id?: string;
+  failure_reason?: string;
+};
+
+function parseAssignmentEscalationReason(
+  reason?: string,
+): AssignmentEscalationReason | null {
+  if (!reason?.trim()) return null;
+  try {
+    const parsed = JSON.parse(reason) as AssignmentEscalationReason;
+    if (parsed.escalation === "role_failure") return parsed;
+  } catch {
+    // Not JSON escalation payload.
+  }
+  return null;
+}
+
+function payloadString(
+  payload: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const value = payload?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function managerDecisionForAssignment(
+  assignmentId: string,
+  graph?: FlowGraphContext,
+): RoomManagerDecision | undefined {
+  if (!graph?.decisions?.length) return undefined;
+  const inv = invocationForAssignment(graph, assignmentId);
+  if (inv) {
+    const byInvocation = graph.decisions.find((d) => d.invocation_id === inv.id);
+    if (byInvocation) return byInvocation;
+  }
+  const assignment = assignmentById(graph, assignmentId);
+  if (!assignment?.source_message_id) return undefined;
+  const candidates = graph.decisions.filter(
+    (d) => d.source_message_id === assignment.source_message_id,
+  );
+  return candidates[candidates.length - 1];
+}
+
+function truncateDecisionReason(text: string, max = 28): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  if (oneLine.length <= max) return oneLine;
+  return `${oneLine.slice(0, max)}…`;
+}
+
+export function resolveManagerDecisionReason(
+  decision: RoomManagerDecision,
+): string | undefined {
+  const payload = decision.payload ?? {};
+  return (
+    payloadString(payload, "relay_reason") ||
+    payloadString(payload, "reason") ||
+    payloadString(payload, "title") ||
+    payloadString(payload, "escalate_reason") ||
+    (decision.action === "complete" ||
+    decision.action === "ask_user" ||
+    decision.action === "wait" ||
+    decision.action === "skip"
+      ? payloadString(payload, "message")
+      : undefined)
+  );
+}
+
+function formatManagerDecisionTaskLabel(
+  decision: RoomManagerDecision,
+  opts?: FlowDisplayOpts,
+): string {
+  const payload = decision.payload ?? {};
+  const relayTo = payloadString(payload, "relay_to");
+  const routeTo =
+    payloadString(payload, "route_to") ||
+    payloadString(payload, "agent_id");
+  const reassignTo = payloadString(payload, "reassign_to");
+  const targetId = relayTo || routeTo || reassignTo;
+  const targetName = targetId ? opts?.agentNameById?.get(targetId) : undefined;
+  const reason = resolveManagerDecisionReason(decision);
+  const reasonSuffix = reason ? `（${truncateDecisionReason(reason)}）` : "";
+
+  let task: string;
+  switch (decision.action) {
+    case "assign":
+      if (relayTo) {
+        task = targetName ? `转派 ${targetName}` : "转派";
+      } else {
+        task = targetName ? `分配 ${targetName}` : "分配任务";
+      }
+      break;
+    case "retry":
+      task = "重试";
+      break;
+    case "reassign":
+      task = targetName ? `改派 ${targetName}` : "改派";
+      break;
+    case "complete":
+      task = "审阅完成";
+      break;
+    case "wait":
+      task = "等待";
+      break;
+    case "skip":
+      task = "跳过";
+      break;
+    case "ask_user":
+      task = "询问用户";
+      break;
+    default:
+      task = decision.action || "审阅";
+  }
+  return `${task}${reasonSuffix}`;
+}
+
+export function resolveManagerDecisionForTrack(
+  track: FlowTrack,
+  graph?: FlowGraphContext,
+): { decision: RoomManagerDecision; reason?: string } | undefined {
+  const decision = managerDecisionForAssignment(track.assignmentId, graph);
+  if (!decision) return undefined;
+  return {
+    decision,
+    reason: resolveManagerDecisionReason(decision),
+  };
+}
+
+export function resolveManagerTaskLabel(
+  track: FlowTrack,
+  assignment: RoomAssignment | undefined,
+  opts?: FlowDisplayOpts,
+): string {
+  const decision = managerDecisionForAssignment(track.assignmentId, opts?.graph);
+  if (decision) {
+    return formatManagerDecisionTaskLabel(decision, opts);
+  }
+
+  const escalation = parseAssignmentEscalationReason(assignment?.reason);
+  if (escalation) {
+    const failedAgentName = escalation.failed_agent_id
+      ? opts?.agentNameById?.get(escalation.failed_agent_id)
+      : undefined;
+    if (failedAgentName) {
+      return `处置 ${failedAgentName} 失败`;
+    }
+    return "失败处置";
+  }
+
+  if (assignment?.kind === "auto_review") {
+    return "路由审阅";
+  }
+
+  return assignmentKindLabel(assignment?.kind ?? "审阅");
+}
+
+function formatManagerFlowLine(
+  track: FlowTrack,
+  step: FlowStep,
+  opts?: FlowDisplayOpts,
+): string {
+  const assignment = assignmentById(opts?.graph, track.assignmentId);
+  const task = resolveManagerTaskLabel(track, assignment, opts);
+  return `群管 · ${task} · ${step.token}`;
 }
 
 function formatJoinLine(
@@ -728,7 +898,7 @@ export function formatFlowStepLine(
   }
 
   if (opts?.managerAgentId && step.actorId === opts.managerAgentId) {
-    return `群管 · ${step.token}`;
+    return formatManagerFlowLine(track, step, opts);
   }
   if (isHumanAssignmentStep(step)) {
     return `${step.actorName} · ${step.token}`;
@@ -744,7 +914,7 @@ export function formatFlowStepLine(
       return `${resolveTrackAgentName(track, step, opts)} · ${step.token}`;
     }
     if (assignment.kind === "auto_review") {
-      return `群管 · ${step.token}`;
+      return formatManagerFlowLine(track, step, opts);
     }
     return `${assignmentKindLabel(assignment.kind)} · ${step.token}`;
   }
@@ -918,6 +1088,66 @@ export function isActiveFlowTrack(
     return true;
   }
   return false;
+}
+
+export type FlowTrackTimerAnchor = {
+  key: string;
+  createdAt: string;
+};
+
+/** Timer anchor aligned with chat invocation timers when possible. */
+export function resolveFlowTrackTimerAnchor(
+  track: FlowTrack,
+  graph?: FlowGraphContext,
+): FlowTrackTimerAnchor | null {
+  const inv = invocationForAssignment(graph, track.assignmentId);
+  if (inv?.created_at) {
+    return { key: inv.id, createdAt: inv.created_at };
+  }
+  if (track.startedAt) {
+    return { key: track.assignmentId, createdAt: track.startedAt };
+  }
+  return null;
+}
+
+/** Whether the track should tick live (in-flight), not terminal failure/completed. */
+export function isFlowTrackLiveForTimer(
+  track: FlowTrack,
+  graph?: FlowGraphContext,
+): boolean {
+  const inv = invocationForAssignment(graph, track.assignmentId);
+  if (inv && ["pending", "queued", "running", "delivered"].includes(inv.status)) {
+    return true;
+  }
+  const assignment = assignmentById(graph, track.assignmentId);
+  if (assignment && ["pending", "blocked", "running"].includes(assignment.status)) {
+    return true;
+  }
+  const last = flowTrackLatestStep(track);
+  if (!last) return false;
+  const type = last.event.type;
+  return (
+    type === "invocation_running" ||
+    type === "invocation_pending" ||
+    type === "invocation_queued" ||
+    type === "assignment_created"
+  );
+}
+
+export function resolveFlowTrackElapsedSeconds(
+  track: FlowTrack,
+  graph?: FlowGraphContext,
+): number | null {
+  if (isFlowTrackLiveForTimer(track, graph)) return null;
+  const anchor = resolveFlowTrackTimerAnchor(track, graph);
+  if (!anchor) return null;
+  const inv = invocationForAssignment(graph, track.assignmentId);
+  const endAt = inv?.completed_at ?? track.updatedAt;
+  if (!endAt) return null;
+  const start = Date.parse(anchor.createdAt);
+  const end = Date.parse(endAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return Math.max(0, Math.floor((end - start) / 1000));
 }
 
 export function flowTrackTone(track: FlowTrack, graph?: FlowGraphContext): string {

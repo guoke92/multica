@@ -1,4 +1,4 @@
-import type { MentionInvocation, RoomMessage } from "@multica/core/types/room";
+import type { MentionInvocation, RoomMessage, RoomAssignment, RoomMessageMention } from "@multica/core/types/room";
 
 export type QuoteReplyTarget = {
   messageId: string;
@@ -41,6 +41,38 @@ export function stripWorkflowActionFooter(content: string): string {
     text = text.slice(0, tail).trim();
   }
   return text;
+}
+
+function readDetailedExplanation(metadata: unknown): string {
+  if (!metadata || typeof metadata !== "object") return "";
+  const detailed = (metadata as { detailed_explanation?: unknown }).detailed_explanation;
+  return typeof detailed === "string" ? detailed.trim() : "";
+}
+
+/** Short text for the room chat bubble — prefer server summary over full transcript. */
+export function resolveRoomAgentChatSummary(
+  message: RoomMessage,
+  transcriptText?: string,
+): string {
+  const summary = stripWorkflowActionFooter(message.content.trim());
+  if (summary) return summary;
+  const fromTranscript = stripWorkflowActionFooter((transcriptText ?? "").trim());
+  if (fromTranscript) return fromTranscript;
+  const detailed = stripWorkflowActionFooter(readDetailedExplanation(message.metadata));
+  if (detailed) return truncatePreview(detailed, 400);
+  return "";
+}
+
+export function roomAgentHasExpandableProcess(
+  message: RoomMessage,
+  options?: { transcriptText?: string; processStepCount?: number },
+): boolean {
+  const summary = resolveRoomAgentChatSummary(message, options?.transcriptText);
+  if ((options?.processStepCount ?? 0) > 0) return true;
+  const detailed = readDetailedExplanation(message.metadata);
+  const transcript = (options?.transcriptText ?? "").trim();
+  const full = detailed || transcript;
+  return full.length > summary.length + 80;
 }
 
 export function extractRoomAgentCopyText(message: RoomMessage): string {
@@ -99,6 +131,39 @@ export function resolveInvocationAttribution(
   }
 
   return undefined;
+}
+
+/** Attribution for an agent reply message using the authoritative assignment + mention data. */
+export function resolveAgentMessageAttribution(
+  message: RoomMessage,
+  assignments: Array<Pick<RoomAssignment, "id" | "output_message_id" | "source_message_id" | "kind">>,
+  mentions: RoomMessageMention[],
+): string | undefined {
+  if (message.sender_type !== "agent") return undefined;
+  if (message.metadata?.manager_notify_user === true) return undefined;
+
+  const assignment = assignments.find((a) => a.output_message_id === message.id);
+  if (!assignment) return undefined;
+
+  switch (assignment.kind) {
+    case "manager_route":
+    case "manager_relay":
+    case "reassign":
+      return "由群管分配指定";
+    case "mention": {
+      const mention = mentions.find(
+        (mn) =>
+          mn.assignment_id === assignment.id &&
+          mn.target_id === message.sender_id,
+      );
+      if (mention?.source_type === "agent_mention") {
+        return "由角色 Agent 指定";
+      }
+      return "用户 @ 指定";
+    }
+    default:
+      return undefined;
+  }
 }
 
 export type RoomViewMode = "timeline" | "thread";

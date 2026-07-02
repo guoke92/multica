@@ -4,6 +4,7 @@ import type {
   RoomAssignmentDependency,
   RoomInvocation,
   RoomInvocationEvent,
+  RoomManagerDecision,
   RoomMessage,
 } from "@multica/core/types/room";
 import {
@@ -22,6 +23,9 @@ import {
   needsAttentionFailure,
   projectFlowEvents,
   resolveFlowScrollMessageId,
+  resolveFlowTrackElapsedSeconds,
+  resolveFlowTrackTimerAnchor,
+  isFlowTrackLiveForTimer,
 } from "./room-flow-utils";
 
 function ev(
@@ -583,6 +587,234 @@ describe("graph helpers", () => {
     expect(collapsed.map((s) => s.token)).toEqual(["已创建", "思考中", "完成"]);
   });
 
+  it("formats manager auto_review tracks with task and status", () => {
+    const graph = {
+      assignments: [
+        assignment({
+          id: "asgn-mgr",
+          kind: "auto_review",
+          status: "completed",
+          assignee_id: "mgr",
+          source_message_id: "msg-user",
+        }),
+      ],
+      assignment_dependencies: [] as RoomAssignmentDependency[],
+      invocations: [
+        {
+          id: "inv-mgr",
+          assignment_id: "asgn-mgr",
+          source_message_id: "msg-user",
+          agent_id: "mgr",
+          status: "succeeded",
+        },
+      ],
+      decisions: [] as RoomManagerDecision[],
+    };
+    const events: RoomInvocationEvent[] = [
+      ev({
+        id: "100",
+        type: "invocation_running",
+        created_at: "2026-06-18T10:00:00Z",
+        assignment_id: "asgn-mgr",
+        invocation_id: "inv-mgr",
+        actor_id: "mgr",
+      }),
+      ev({
+        id: "200",
+        type: "invocation_succeeded",
+        created_at: "2026-06-18T10:00:30Z",
+        assignment_id: "asgn-mgr",
+        invocation_id: "inv-mgr",
+        actor_id: "mgr",
+      }),
+    ];
+    const tracks = groupFlowTracks(events, {
+      agentNameById: new Map([["mgr", "群管"], ["fe", "前端工程师"]]),
+      managerAgentId: "mgr",
+      graph,
+    });
+    expect(
+      formatFlowTrackLine(tracks[0]!, {
+        agentNameById: new Map([["mgr", "群管"], ["fe", "前端工程师"]]),
+        managerAgentId: "mgr",
+        graph,
+      }),
+    ).toBe("群管 · 路由审阅 · 完成");
+  });
+
+  it("shows manager decision action in flow timeline", () => {
+    const graph = {
+      assignments: [
+        assignment({
+          id: "asgn-mgr",
+          kind: "auto_review",
+          status: "completed",
+          assignee_id: "mgr",
+          source_message_id: "msg-user",
+        }),
+      ],
+      assignment_dependencies: [] as RoomAssignmentDependency[],
+      invocations: [
+        {
+          id: "inv-mgr",
+          assignment_id: "asgn-mgr",
+          source_message_id: "msg-user",
+          agent_id: "mgr",
+          status: "succeeded",
+        },
+      ],
+      decisions: [
+        {
+          id: "dec-1",
+          room_id: "room-1",
+          source_message_id: "msg-user",
+          invocation_id: "inv-mgr",
+          action: "assign",
+          payload: { route_to: "fe" },
+        },
+      ] satisfies RoomManagerDecision[],
+    };
+    const tracks = groupFlowTracks(
+      [
+        ev({
+          id: "200",
+          type: "invocation_succeeded",
+          created_at: "2026-06-18T10:00:30Z",
+          assignment_id: "asgn-mgr",
+          invocation_id: "inv-mgr",
+          actor_id: "mgr",
+        }),
+      ],
+      {
+        agentNameById: new Map([["mgr", "群管"], ["fe", "前端工程师"]]),
+        managerAgentId: "mgr",
+        graph,
+      },
+    );
+    expect(
+      formatFlowTrackLine(tracks[0]!, {
+        agentNameById: new Map([["mgr", "群管"], ["fe", "前端工程师"]]),
+        managerAgentId: "mgr",
+        graph,
+      }),
+    ).toBe("群管 · 分配 前端工程师 · 完成");
+  });
+
+  it("shows manager relay reason in flow timeline", () => {
+    const graph = {
+      assignments: [
+        assignment({
+          id: "asgn-mgr",
+          kind: "auto_review",
+          status: "completed",
+          assignee_id: "mgr",
+          source_message_id: "msg-user",
+        }),
+      ],
+      assignment_dependencies: [] as RoomAssignmentDependency[],
+      invocations: [
+        {
+          id: "inv-mgr",
+          assignment_id: "asgn-mgr",
+          source_message_id: "msg-user",
+          agent_id: "mgr",
+          status: "succeeded",
+        },
+      ],
+      decisions: [
+        {
+          id: "dec-1",
+          room_id: "room-1",
+          source_message_id: "msg-user",
+          invocation_id: "inv-mgr",
+          action: "assign",
+          payload: {
+            relay_to: "fe",
+            relay_reason: "需补充单元测试与落盘验证",
+          },
+        },
+      ] satisfies RoomManagerDecision[],
+    };
+    const tracks = groupFlowTracks(
+      [
+        ev({
+          id: "200",
+          type: "invocation_succeeded",
+          created_at: "2026-06-18T10:00:30Z",
+          assignment_id: "asgn-mgr",
+          invocation_id: "inv-mgr",
+          actor_id: "mgr",
+        }),
+      ],
+      {
+        agentNameById: new Map([["mgr", "群管"], ["fe", "前端工程师"]]),
+        managerAgentId: "mgr",
+        graph,
+      },
+    );
+    expect(
+      formatFlowTrackLine(tracks[0]!, {
+        agentNameById: new Map([["mgr", "群管"], ["fe", "前端工程师"]]),
+        managerAgentId: "mgr",
+        graph,
+      }),
+    ).toBe("群管 · 转派 前端工程师（需补充单元测试与落盘验证） · 完成");
+  });
+
+  it("shows failure escalation task while manager is replanning", () => {
+    const graph = {
+      assignments: [
+        assignment({
+          id: "asgn-mgr",
+          kind: "auto_review",
+          status: "running",
+          assignee_id: "mgr",
+          source_message_id: "msg-user",
+          reason: JSON.stringify({
+            escalation: "role_failure",
+            failed_assignment_id: "asgn-fe",
+            failed_agent_id: "fe",
+          }),
+        }),
+      ],
+      assignment_dependencies: [] as RoomAssignmentDependency[],
+      invocations: [
+        {
+          id: "inv-mgr",
+          assignment_id: "asgn-mgr",
+          source_message_id: "msg-user",
+          agent_id: "mgr",
+          status: "running",
+        },
+      ],
+      decisions: [] as RoomManagerDecision[],
+    };
+    const tracks = groupFlowTracks(
+      [
+        ev({
+          id: "100",
+          type: "invocation_running",
+          created_at: "2026-06-18T10:00:00Z",
+          assignment_id: "asgn-mgr",
+          invocation_id: "inv-mgr",
+          actor_id: "mgr",
+        }),
+      ],
+      {
+        agentNameById: new Map([["mgr", "群管"], ["fe", "前端工程师"]]),
+        managerAgentId: "mgr",
+        graph,
+      },
+    );
+    expect(
+      formatFlowTrackLine(tracks[0]!, {
+        agentNameById: new Map([["mgr", "群管"], ["fe", "前端工程师"]]),
+        managerAgentId: "mgr",
+        graph,
+      }),
+    ).toBe("群管 · 处置 前端工程师 失败 · 思考中");
+  });
+
   it("shows assignee name for manager_route assignment failures in flow timeline", () => {
     const graph = {
       assignments: [
@@ -702,5 +934,81 @@ describe("resolveFlowScrollMessageId", () => {
       updatedAt: "",
     };
     expect(resolveFlowScrollMessageId(track, messages)).toBe("200");
+  });
+});
+
+describe("flow track timer", () => {
+  const graph = {
+    assignments: [
+      assignment({ id: "asgn-1", kind: "mention", status: "completed" }),
+      assignment({ id: "asgn-live", kind: "mention", status: "running" }),
+    ],
+    assignment_dependencies: [],
+    invocations: [
+      {
+        id: "inv-1",
+        assignment_id: "asgn-1",
+        source_message_id: "msg-1",
+        agent_id: "req",
+        status: "succeeded",
+        created_at: "2026-06-18T10:00:00Z",
+        completed_at: "2026-06-18T10:00:45Z",
+      },
+      {
+        id: "inv-live",
+        assignment_id: "asgn-live",
+        source_message_id: "msg-1",
+        agent_id: "arch",
+        status: "running",
+        created_at: "2026-06-18T10:05:00Z",
+      },
+    ] as RoomInvocation[],
+  };
+
+  const doneTrack = {
+    key: "asgn:asgn-1",
+    assignmentId: "asgn-1",
+    kind: "mention",
+    steps: [],
+    startedAt: "2026-06-18T10:00:00Z",
+    updatedAt: "2026-06-18T10:00:45Z",
+  };
+
+  const liveTrack = {
+    key: "asgn:asgn-live",
+    assignmentId: "asgn-live",
+    kind: "mention",
+    steps: [
+      {
+        token: "思考中",
+        createdAt: "2026-06-18T10:05:01Z",
+        actorId: "arch",
+        actorName: "系统架构师",
+        event: ev({
+          id: "900",
+          type: "invocation_running",
+          created_at: "2026-06-18T10:05:01Z",
+          assignment_id: "asgn-live",
+        }),
+      },
+    ],
+    startedAt: "2026-06-18T10:05:00Z",
+    updatedAt: "2026-06-18T10:05:01Z",
+  };
+
+  it("uses invocation created_at as timer anchor", () => {
+    expect(resolveFlowTrackTimerAnchor(doneTrack, graph)).toEqual({
+      key: "inv-1",
+      createdAt: "2026-06-18T10:00:00Z",
+    });
+  });
+
+  it("computes static elapsed for completed tracks", () => {
+    expect(resolveFlowTrackElapsedSeconds(doneTrack, graph)).toBe(45);
+  });
+
+  it("marks running invocations as live", () => {
+    expect(isFlowTrackLiveForTimer(liveTrack, graph)).toBe(true);
+    expect(resolveFlowTrackElapsedSeconds(liveTrack, graph)).toBeNull();
   });
 });

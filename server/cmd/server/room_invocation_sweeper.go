@@ -19,9 +19,11 @@ func runRoomInvocationSweeper(ctx context.Context, taskSvc *service.TaskService)
 			return
 		case <-ticker.C:
 			taskSvc.ProcessQueuedRoomInvocations(ctx)
-			n := taskSvc.SweepTimedOutRoomInvocations(ctx)
-			if n > 0 {
+			if n := taskSvc.SweepTimedOutRoomInvocations(ctx); n > 0 {
 				slog.Info("room invocation sweeper: timed out invocations", "count", n)
+			}
+			if n := taskSvc.SweepManagerSoftWarnings(ctx); n > 0 {
+				slog.Info("room invocation sweeper: manager soft warn", "count", n)
 			}
 		}
 	}

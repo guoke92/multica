@@ -41,6 +41,7 @@ import type {
   RoomAssignmentDependency,
   RoomInvocation,
   RoomInvocationEvent,
+  RoomManagerDecision,
   RoomMember,
   RoomMessage,
 } from "@multica/core/types/room";
@@ -61,6 +62,7 @@ type Props = {
   assignmentDependencies?: RoomAssignmentDependency[];
   invocations?: RoomInvocation[];
   invocationEvents?: RoomInvocationEvent[];
+  decisions?: RoomManagerDecision[];
   onRetryAssignment?: (assignmentId: string) => void;
   onCancelAssignment?: (assignmentId: string) => void;
   retryingAssignmentId?: string | null;
@@ -101,6 +103,7 @@ export function RoomMembersPanel({
   assignmentDependencies = [],
   invocations = [],
   invocationEvents = [],
+  decisions = [],
   onRetryAssignment: _onRetryAssignment,
   onCancelAssignment: _onCancelAssignment,
   retryingAssignmentId: _retryingAssignmentId,
@@ -397,6 +400,7 @@ export function RoomMembersPanel({
               assignmentDependencies={assignmentDependencies}
               invocations={invocations}
               invocationEvents={invocationEvents}
+              decisions={decisions}
               messages={messages}
               managerAgentId={managerAgentId}
               agentNameById={agentNames}

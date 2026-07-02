@@ -522,7 +522,11 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 	if ctx.ChatSessionID != "" || ctx.RoomID != "" {
 		// Chat / room task: conversational assistant mode — no assigned issue.
 		if ctx.RoomID != "" {
-			if ctx.RoomWorkflowIntent == "orchestrate" || ctx.RoomWorkflowIntent == "route" || ctx.RoomWorkflowIntent == "review" || ctx.RoomWorkflowIntent == "confirm" || ctx.RoomWorkflowIntent == "escalate" {
+			scene := ctx.RoomManagerScene
+			if scene == "" {
+				scene = ctx.RoomWorkflowIntent
+			}
+			if scene == "orchestrate" || scene == "route" || scene == "review" || scene == "confirm" || scene == "escalate" {
 				b.WriteString("**You are the room router & supervisor.** Route user requests to the right agent, evaluate output, relay when needed, and escalate when stuck.\n")
 				b.WriteString("Do NOT run `multica issue create` or `multica issue update` — manager agents are forbidden from Issue mutations. @ role agents to create/update Issues.\n\n")
 				if strings.TrimSpace(ctx.RoomWorkflowPolicy) != "" {
@@ -537,8 +541,8 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 				}
 				b.WriteString("Emit a fenced JSON footer with `workflow_action` on every completion (see per-turn prompt).\n")
 				b.WriteString("This footer is **MANDATORY** — without it the system will NOT dispatch any agent.\n\n")
-			} else if ctx.RoomWorkflowIntent == "execute" {
-				b.WriteString("**You are a room workflow role worker.** Complete your assigned phase; the manager will review automatically.\n\n")
+			} else if ctx.RoomWorkflowIntent == "execute" || ctx.RoomManagerBrief != "" {
+				b.WriteString("**You are a room workflow role worker.** Complete your assigned phase; follow the manager brief when present.\n\n")
 				if ctx.RoomRoleKey != "" {
 					fmt.Fprintf(&b, "Assigned role: `%s`\n", ctx.RoomRoleKey)
 				}

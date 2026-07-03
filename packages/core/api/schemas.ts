@@ -872,6 +872,17 @@ export const EMPTY_ROOM: import("../types/room").Room = {
 
 export const EMPTY_ROOM_LIST: import("../types/room").Room[] = [];
 
+export const RoomInvocationOutcomeSchema = z
+  .object({
+    type: z.string(),
+    target_agent_id: z.string().optional(),
+    target_assignment_id: z.string().optional(),
+    reason: z.string().optional(),
+    conclusion: z.string().optional(),
+    message_id: z.string().optional(),
+  })
+  .loose();
+
 export const RoomInvocationSchema = z
   .object({
     id: z.string(),
@@ -886,6 +897,7 @@ export const RoomInvocationSchema = z
     max_retries: z.number().optional(),
     task_id: z.string().optional(),
     output_message_id: z.string().optional(),
+    outcome: RoomInvocationOutcomeSchema.optional(),
     failure_reason: z.string().optional(),
     timeout_at: z.string().optional(),
     started_at: z.string().optional(),

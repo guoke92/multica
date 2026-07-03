@@ -3,5 +3,11 @@ export { RoomView } from "./room-view";
 export { ApprovalCard } from "./approval-card";
 export { CreateRoomDialog } from "./create-room-dialog";
 export { RoomActivityFooter } from "./room-activity-footer";
-export { RoomEscalationBanner } from "./room-escalation-banner";
 export { RoomAttributionPill } from "./room-attribution-pill";
+export {
+  invocationItemsForMessage,
+  RoleAgentInvocationSlots,
+  ManagerHistoryBelowBar,
+} from "./room-invocation-thread";
+export { ManagerInvocationSkin, ManagerStatusLeading } from "./manager-invocation-skin";
+export { RoleAgentInvocationSkin } from "./role-agent-invocation-skin";

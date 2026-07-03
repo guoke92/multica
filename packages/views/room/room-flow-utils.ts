@@ -266,7 +266,15 @@ function latestByMonotonicId<T extends { id: string }>(items: T[]): T | undefine
 }
 
 export type InvocationChatPresentation = "manager_status" | "agent_bubble";
-export type InvocationChatPhase = "running" | "queued" | "failed";
+
+/** Canonical user-facing phase for an invocation slot. */
+export type UserVisiblePhase =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "cancelled"
+  | "failed"
+  | "waiting_user";
 
 export type InvocationChatItem = {
   invocation: RoomInvocation;
@@ -275,7 +283,7 @@ export type InvocationChatItem = {
   agentName: string;
   sourceMessageId: string;
   presentation: InvocationChatPresentation;
-  phase: InvocationChatPhase;
+  phase: UserVisiblePhase;
   failureReason?: string;
 };
 
@@ -288,11 +296,10 @@ export type ActiveInvocationSlot = {
   invocation: RoomInvocation;
   agentId: string;
   agentName: string;
-  phase: "running" | "queued";
+  phase: UserVisiblePhase;
 };
 
 const activeInvocationStatuses = new Set(["running", "delivered", "queued", "pending"]);
-const failedInvocationStatuses = new Set(["failed", "timed_out", "cancelled"]);
 
 function assignmentMap(assignments: RoomAssignment[]): Map<string, RoomAssignment> {
   return new Map(assignments.map((a) => [a.id, a]));
@@ -315,17 +322,41 @@ function resolveInvocationPresentation(
   return "agent_bubble";
 }
 
-function resolveInvocationPhase(
+type BuildInvocationOptions = {
+  includeManagerSucceeded?: boolean;
+};
+
+/** Role-agent slot is redundant once its final room_message is in the timeline. */
+export function isRoleAgentOutputInTimeline(
   inv: RoomInvocation,
   assignment: RoomAssignment,
-): InvocationChatPhase | null {
+  messageIds: Set<string>,
+): boolean {
+  if (inv.output_message_id && messageIds.has(inv.output_message_id)) return true;
+  if (assignment.output_message_id && messageIds.has(assignment.output_message_id)) {
+    return true;
+  }
+  return false;
+}
+
+/** Derive the single user-visible phase for an invocation. */
+export function deriveUserVisiblePhase(
+  inv: RoomInvocation,
+  assignment: RoomAssignment,
+): UserVisiblePhase | null {
   if (["running", "delivered"].includes(inv.status)) return "running";
   if (["queued", "pending"].includes(inv.status)) return "queued";
-  if (failedInvocationStatuses.has(inv.status)) return "failed";
+
+  if (inv.status === "cancelled" || assignment.status === "cancelled") return "cancelled";
+  if (["failed", "timed_out"].includes(inv.status)) return "failed";
   if (assignment.status === "failed") return "failed";
-  if (activeInvocationStatuses.has(inv.status)) {
-    return assignment.status === "running" ? "running" : "queued";
+
+  if (inv.status === "succeeded") {
+    const t = inv.outcome?.type;
+    if (t === "ask_user") return "waiting_user";
+    return "succeeded";
   }
+
   return null;
 }
 
@@ -336,6 +367,7 @@ export function buildInvocationChatItems(
   messages: RoomMessage[],
   agentNameById: Map<string, string>,
   managerAgentId?: string,
+  _opts?: BuildInvocationOptions,
 ): InvocationChatItem[] {
   const messageIds = new Set(messages.map((m) => m.id));
   const byAssignment = assignmentMap(assignments);
@@ -352,17 +384,22 @@ export function buildInvocationChatItems(
   for (const inv of latestByAssignment.values()) {
     const assignment = byAssignment.get(inv.assignment_id);
     if (!assignment) continue;
-    if (inv.output_message_id && messageIds.has(inv.output_message_id)) continue;
-    if (assignment.output_message_id && messageIds.has(assignment.output_message_id)) {
+
+    const presentation = resolveInvocationPresentation(assignment, managerAgentId);
+    if (
+      presentation === "agent_bubble" &&
+      isRoleAgentOutputInTimeline(inv, assignment, messageIds)
+    ) {
       continue;
     }
 
-    const phase = resolveInvocationPhase(inv, assignment);
+    const phase = deriveUserVisiblePhase(inv, assignment);
     if (!phase) continue;
+    if (presentation === "agent_bubble" && phase === "succeeded") continue;
 
     const agentId =
       assignment.assignee_type === "agent" ? assignment.assignee_id : inv.agent_id;
-    items.push({
+    const item: InvocationChatItem = {
       invocation: inv,
       assignment,
       agentId,
@@ -371,10 +408,11 @@ export function buildInvocationChatItems(
         agentNameById.get(inv.agent_id) ??
         "Agent",
       sourceMessageId: assignment.source_message_id || inv.source_message_id,
-      presentation: resolveInvocationPresentation(assignment, managerAgentId),
+      presentation: presentation,
       phase,
       failureReason: inv.failure_reason ?? assignment.reason,
-    });
+    };
+    items.push(item);
   }
 
   return items.sort((a, b) => compareMonotonicId(a.invocation.id, b.invocation.id));

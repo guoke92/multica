@@ -105,6 +105,9 @@ func ParseRoomPolicy(raw []byte) RoomPolicy {
 	if p.Fallback.RoleTaskMaxRetries == 0 {
 		p.Fallback.RoleTaskMaxRetries = 1
 	}
+	if p.Fallback.ManagerMaxRetries == 0 {
+		p.Fallback.ManagerMaxRetries = 1
+	}
 	if p.Fallback.ManagerMaxRetries < 0 {
 		p.Fallback.ManagerMaxRetries = 0
 	}

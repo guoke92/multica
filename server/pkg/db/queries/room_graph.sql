@@ -201,13 +201,21 @@ FOR UPDATE OF a;
 -- name: CreateRoomInvocation :one
 INSERT INTO room_invocation (
     id, room_id, assignment_id, source_message_id, agent_id, intent, status,
-    priority, max_retries, timeout_at
+    priority, max_retries, timeout_at, outcome
 )
 VALUES (
     sqlc.arg('id'), sqlc.arg('room_id'), sqlc.arg('assignment_id'), sqlc.arg('source_message_id'),
     sqlc.arg('agent_id'), sqlc.arg('intent'), sqlc.arg('status'),
-    COALESCE(sqlc.narg('priority'), 'normal'), sqlc.arg('max_retries'), sqlc.arg('timeout_at')
+    COALESCE(sqlc.narg('priority'), 'normal'), sqlc.arg('max_retries'), sqlc.arg('timeout_at'),
+    COALESCE(sqlc.narg('outcome')::jsonb, '{}'::jsonb)
 )
+RETURNING *;
+
+-- name: UpdateRoomInvocationOutcome :one
+UPDATE room_invocation
+SET outcome = COALESCE(sqlc.narg('outcome')::jsonb, outcome),
+    updated_at = now()
+WHERE id = sqlc.arg('id')
 RETURNING *;
 
 -- name: GetRoomInvocation :one

@@ -81,12 +81,6 @@ func (s *TaskService) ParseAndPersistMentions(
 	out := make([]db.RoomMessageMention, 0, len(rawMentions))
 
 	sourceType := mentionSourceTypeForMessage(msg)
-	var sourceMessageID pgtype.UUID
-	if isManagerDispatchMessage(msg) {
-		sourceType = "manager_dispatch"
-		sourceMessageID = msg.ID
-	}
-
 	for _, m := range rawMentions {
 		if m.Type != "agent" && m.Type != "squad" && m.Type != "member" && m.Type != "all" {
 			continue
@@ -101,12 +95,11 @@ func (s *TaskService) ParseAndPersistMentions(
 			continue
 		}
 		row, err := s.Queries.CreateRoomMessageMention(ctx, db.CreateRoomMessageMentionParams{
-			ID:              util.MustNewUUIDv7(),
-			MessageID:       msg.ID,
-			TargetType:      m.Type,
-			TargetID:        targetID,
-			SourceType:      sourceType,
-			SourceMessageID: sourceMessageID,
+			ID:         util.MustNewUUIDv7(),
+			MessageID:  msg.ID,
+			TargetType: m.Type,
+			TargetID:   targetID,
+			SourceType: sourceType,
 		})
 		if err != nil {
 			slog.Warn("persist room mention failed", "message_id", util.UUIDToString(msg.ID), "error", err)

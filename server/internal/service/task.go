@@ -1351,7 +1351,6 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 		} else {
 			failureText := roomInvocationFailureText(errMsg, failureReason)
 			s.finalizeRoomInvocation(ctx, task, "failed", "", failureText)
-			s.maybePostManagerFailureNotice(ctx, task, failureText)
 		}
 	}
 
@@ -1376,34 +1375,6 @@ func roomInvocationFailureText(errMsg, failureReason string) string {
 	return "agent_error"
 }
 
-// maybePostManagerFailureNotice surfaces a manager failure as a system
-// message in the room when auto-retry is exhausted, so the user sees the
-// failure and can click retry. Non-manager failures are no-ops here.
-func (s *TaskService) maybePostManagerFailureNotice(
-	ctx context.Context,
-	task db.AgentTaskQueue,
-	failureText string,
-) {
-	if !task.RoomID.Valid || !task.InvocationID.Valid {
-		return
-	}
-	room, err := s.Queries.GetRoom(ctx, task.RoomID)
-	if err != nil || !room.ManagerAgentID.Valid {
-		return
-	}
-	if task.AgentID.Bytes != room.ManagerAgentID.Bytes {
-		return
-	}
-	inv, err := s.Queries.GetRoomInvocation(ctx, task.InvocationID)
-	if err != nil {
-		return
-	}
-	assignment, err := s.Queries.GetRoomAssignment(ctx, inv.AssignmentID)
-	if err != nil {
-		return
-	}
-	s.PostManagerFailureNotice(ctx, room, assignment, failureText)
-}
 
 // retryableReasons enumerates failure reasons that the auto-retry path is
 // allowed to act on. Agent-side errors (compile failures, model rejections,

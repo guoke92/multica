@@ -96,14 +96,15 @@ type AssignmentResponse struct {
 }
 
 type InvocationResponse struct {
-	ID              string  `json:"id"`
-	AssignmentID    string  `json:"assignment_id"`
-	SourceMessageID string  `json:"source_message_id"`
-	AgentID         string  `json:"agent_id"`
-	Intent          string  `json:"intent,omitempty"`
-	Status          string  `json:"status"`
-	TaskID          *string `json:"task_id,omitempty"`
-	OutputMessageID *string `json:"output_message_id,omitempty"`
+	ID              string          `json:"id"`
+	AssignmentID    string          `json:"assignment_id"`
+	SourceMessageID string          `json:"source_message_id"`
+	AgentID         string          `json:"agent_id"`
+	Intent          string          `json:"intent,omitempty"`
+	Status          string          `json:"status"`
+	TaskID          *string         `json:"task_id,omitempty"`
+	OutputMessageID *string         `json:"output_message_id,omitempty"`
+	Outcome         json.RawMessage `json:"outcome,omitempty"`
 }
 
 type RoomMemberResponse struct {
@@ -123,7 +124,7 @@ func invocationToResponse(inv db.RoomInvocation) InvocationResponse {
 		s := uuidToString(inv.OutputMessageID)
 		outputMessageID = &s
 	}
-	return InvocationResponse{
+	resp := InvocationResponse{
 		ID:              uuidToString(inv.ID),
 		AssignmentID:    uuidToString(inv.AssignmentID),
 		SourceMessageID: uuidToString(inv.SourceMessageID),
@@ -133,6 +134,10 @@ func invocationToResponse(inv db.RoomInvocation) InvocationResponse {
 		TaskID:          taskID,
 		OutputMessageID: outputMessageID,
 	}
+	if len(inv.Outcome) > 0 {
+		resp.Outcome = inv.Outcome
+	}
+	return resp
 }
 
 type roomGraphMessageResponse struct {
@@ -168,17 +173,18 @@ type roomGraphDependencyResponse struct {
 }
 
 type roomGraphInvocationResponse struct {
-	ID              string  `json:"id"`
-	RoomID          string  `json:"room_id,omitempty"`
-	AssignmentID    string  `json:"assignment_id"`
-	SourceMessageID string  `json:"source_message_id"`
-	AgentID         string  `json:"agent_id"`
-	Intent          string  `json:"intent,omitempty"`
-	Status          string  `json:"status"`
-	TaskID          *string `json:"task_id,omitempty"`
-	OutputMessageID *string `json:"output_message_id,omitempty"`
-	CreatedAt       string  `json:"created_at,omitempty"`
-	UpdatedAt       string  `json:"updated_at,omitempty"`
+	ID              string          `json:"id"`
+	RoomID          string          `json:"room_id,omitempty"`
+	AssignmentID    string          `json:"assignment_id"`
+	SourceMessageID string          `json:"source_message_id"`
+	AgentID         string          `json:"agent_id"`
+	Intent          string          `json:"intent,omitempty"`
+	Status          string          `json:"status"`
+	TaskID          *string         `json:"task_id,omitempty"`
+	OutputMessageID *string         `json:"output_message_id,omitempty"`
+	Outcome         json.RawMessage `json:"outcome,omitempty"`
+	CreatedAt       string          `json:"created_at,omitempty"`
+	UpdatedAt       string          `json:"updated_at,omitempty"`
 }
 
 type roomGraphInvocationEventResponse struct {

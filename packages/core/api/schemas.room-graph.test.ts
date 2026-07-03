@@ -69,6 +69,35 @@ describe("RoomGraphSnapshotSchema", () => {
     );
   });
 
+  it("preserves invocation outcome from API", () => {
+    const raw = {
+      messages: [],
+      mentions: [],
+      assignments: [],
+      assignment_dependencies: [],
+      invocations: [
+        {
+          id: "inv-1",
+          assignment_id: "asgn-1",
+          source_message_id: "msg-1",
+          agent_id: "mgr-1",
+          status: "succeeded",
+          outcome: { type: "dispatch", target_agent_id: "agent-fe" },
+        },
+      ],
+      decisions: [],
+      invocation_events: [],
+    };
+    const result = RoomGraphSnapshotSchema.safeParse(raw);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.invocations[0]?.outcome).toEqual({
+        type: "dispatch",
+        target_agent_id: "agent-fe",
+      });
+    }
+  });
+
   it("rejects raw DB byte payloads (base64 strings)", () => {
     const rawDbShape = {
       messages: [],

@@ -544,6 +544,7 @@ type RoomInvocation struct {
 	MaxRetries      int32              `json:"max_retries"`
 	TaskID          pgtype.UUID        `json:"task_id"`
 	OutputMessageID pgtype.UUID        `json:"output_message_id"`
+	Outcome         []byte             `json:"outcome"`
 	FailureReason   pgtype.Text        `json:"failure_reason"`
 	TimeoutAt       pgtype.Timestamptz `json:"timeout_at"`
 	StartedAt       pgtype.Timestamptz `json:"started_at"`
@@ -607,13 +608,13 @@ type RoomMessageMention struct {
 	MessageID       pgtype.UUID        `json:"message_id"`
 	TargetType      string             `json:"target_type"`
 	TargetID        pgtype.UUID        `json:"target_id"`
+	SourceType      string             `json:"source_type"`
+	SourceMessageID pgtype.UUID        `json:"source_message_id"`
+	AssignmentID    pgtype.UUID        `json:"assignment_id"`
 	Label           string             `json:"label"`
 	SpanStart       pgtype.Int4        `json:"span_start"`
 	SpanEnd         pgtype.Int4        `json:"span_end"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	SourceType      string             `json:"source_type"`
-	SourceMessageID pgtype.UUID        `json:"source_message_id"`
-	AssignmentID    pgtype.UUID        `json:"assignment_id"`
 }
 
 type Skill struct {

@@ -18,6 +18,15 @@ import (
 
 const roomMessageSummaryMaxLen = 320
 
+func (s *TaskService) writeInvocationOutcome(ctx context.Context, inv db.RoomInvocation, outcome RoomInvocationOutcome) error {
+	b, _ := json.Marshal(outcome)
+	_, err := s.Queries.UpdateRoomInvocationOutcome(ctx, db.UpdateRoomInvocationOutcomeParams{
+		ID:      inv.ID,
+		Outcome: b,
+	})
+	return err
+}
+
 // CompleteAssignment marks an assignment completed and resolves join dependencies.
 func (s *TaskService) CompleteAssignment(
 	ctx context.Context,
@@ -69,7 +78,9 @@ func (s *TaskService) CancelAssignment(ctx context.Context, room db.Room, assign
 	if assignment.Status == "completed" || assignment.Status == "cancelled" {
 		return nil
 	}
+	var cancelledInv *db.RoomInvocation
 	if inv, invErr := s.Queries.GetActiveRoomInvocationForAssignment(ctx, assignment.ID); invErr == nil {
+		cancelledInv = &inv
 		if inv.TaskID.Valid {
 			_, _ = s.CancelTask(ctx, inv.TaskID)
 		}
@@ -80,6 +91,12 @@ func (s *TaskService) CancelAssignment(ctx context.Context, room db.Room, assign
 	updated, err := s.Queries.UpdateRoomAssignmentStatus(ctx, db.UpdateRoomAssignmentStatusParams{
 		ID: assignment.ID, Status: "cancelled",
 	})
+	if err != nil {
+		return err
+	}
+	if cancelledInv != nil {
+		_ = s.writeInvocationOutcome(ctx, *cancelledInv, cancelledOutcome())
+	}
 	if err != nil {
 		return err
 	}
@@ -330,6 +347,9 @@ func (s *TaskService) CompleteInvocationWithOutput(
 	}
 
 	if outputMsg.ID.Valid {
+		if err := s.writeInvocationOutcome(ctx, inv, roleOutcome(util.UUIDToString(outputMsg.ID))); err != nil {
+			slog.Warn("write role agent invocation outcome failed", "invocation_id", util.UUIDToString(inv.ID), "error", err)
+		}
 		return s.continueGraphAfterAgentOutput(ctx, room, outputMsg, task.AgentID)
 	}
 	return nil

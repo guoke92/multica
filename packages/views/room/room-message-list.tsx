@@ -18,9 +18,7 @@ import { buildTimeline, ProcessTimelineView } from "../common/task-transcript";
 import { splitTimeline } from "../chat/lib/copy-text";
 import { copyMarkdown } from "../editor";
 import { Markdown } from "../common/markdown";
-import { ApprovalCard } from "./approval-card";
-import { RoomDeliveryCard } from "./room-delivery-card";
-import { shouldHideRoomMessage, isManagerDispatchMessage } from "./room-message-visibility";
+import { shouldHideRoomMessage } from "./room-message-visibility";
 import type { RoomMessage, RoomInvocation, RoomAssignment, RoomMessageMention } from "@multica/core/types/room";
 import { useAuthStore } from "@multica/core/auth";
 import { Copy, Pencil, RefreshCw, Reply } from "lucide-react";
@@ -31,16 +29,14 @@ import {
   roomAgentHasExpandableProcess,
   truncatePreview,
 } from "./room-utils";
-import {
-  buildChatTimeline,
-  buildInvocationChatItems,
-  managerStatusByMessageId,
-  type InvocationChatItem,
-} from "./room-flow-utils";
-import { ManagerStatusInline, RoomInvocationChatItem } from "./room-processing-slot";
 import { RoomAttributionPill } from "./room-attribution-pill";
 import { RoomActivityFooter } from "./room-activity-footer";
-import { RoomManagerSlot } from "./room-manager-slot";
+import { ManagerStatusLeading } from "./manager-invocation-skin";
+import {
+  invocationItemsForMessage,
+  ManagerHistoryBelowBar,
+  RoleAgentInvocationSlots,
+} from "./room-invocation-thread";
 
 function isOptimisticMessageId(id: string): boolean {
   return id.startsWith("optimistic-");
@@ -123,44 +119,6 @@ export function RoomMessageList({
     [messages, managerAgentId],
   );
 
-  /** Latest manager dispatch per source message, plus total count for folding. */
-  const managerDispatchBySource = useMemo(() => {
-    const map = new Map<string, { latest: RoomMessage; count: number }>();
-    for (const m of visibleMessages) {
-      if (!isManagerDispatchMessage(m)) continue;
-      const sourceId = m.quote_message_id;
-      if (!sourceId) continue;
-      const existing = map.get(sourceId);
-      if (!existing || m.id > existing.latest.id) {
-        map.set(sourceId, { latest: m, count: (existing?.count ?? 0) + 1 });
-      } else {
-        map.set(sourceId, { latest: existing.latest, count: existing.count + 1 });
-      }
-    }
-    return map;
-  }, [visibleMessages]);
-
-  const { chatTimeline, managerStatusMap } = useMemo(() => {
-    const items = buildInvocationChatItems(
-      invocations,
-      assignments,
-      messages,
-      agentNameById,
-      managerAgentId,
-    );
-    return {
-      chatTimeline: buildChatTimeline(visibleMessages, items),
-      managerStatusMap: managerStatusByMessageId(items),
-    };
-  }, [
-    invocations,
-    assignments,
-    messages,
-    visibleMessages,
-    agentNameById,
-    managerAgentId,
-  ]);
-
   const lastSelfOptimisticId = useMemo(() => {
     for (let i = visibleMessages.length - 1; i >= 0; i -= 1) {
       const m = visibleMessages[i]!;
@@ -183,15 +141,16 @@ export function RoomMessageList({
   }, [lastSelfOptimisticId, scrollToBottom]);
 
   const activeStreamTaskId = useMemo(() => {
-    for (let i = chatTimeline.length - 1; i >= 0; i -= 1) {
-      const entry = chatTimeline[i]!;
-      if (entry.kind !== "invocation") continue;
-      if (entry.item.phase !== "running" && entry.item.phase !== "queued") continue;
-      const taskId = entry.item.invocation.task_id;
-      if (taskId && isTaskMessageTaskId(taskId)) return taskId;
-    }
-    return null;
-  }, [chatTimeline]);
+    const running = invocations
+      .filter(
+        (inv) =>
+          inv.status === "running" || inv.status === "queued" || inv.status === "pending",
+      )
+      .filter((inv) => inv.task_id && isTaskMessageTaskId(inv.task_id))
+      .sort((a, b) => (a.id < b.id ? -1 : 1));
+    const latest = running[running.length - 1];
+    return latest?.task_id ?? null;
+  }, [invocations]);
 
   const { data: activeStreamMessages = [] } = useQuery({
     ...taskMessagesOptions(activeStreamTaskId ?? ""),
@@ -199,20 +158,15 @@ export function RoomMessageList({
   });
 
   const chatTailKey = useMemo(() => {
-    const last = chatTimeline[chatTimeline.length - 1];
-    if (!last) return "";
-    if (last.kind === "message") {
-      return `msg:${last.message.id}:${last.message.content.length}`;
-    }
-    const taskId = last.item.invocation.task_id;
-    const streamLen =
-      taskId && taskId === activeStreamTaskId ? activeStreamMessages.length : 0;
-    const lastSeq =
-      taskId && taskId === activeStreamTaskId
-        ? (activeStreamMessages[activeStreamMessages.length - 1]?.seq ?? 0)
-        : 0;
-    return `inv:${last.item.invocation.id}:${last.item.phase}:${streamLen}:${lastSeq}`;
-  }, [chatTimeline, activeStreamTaskId, activeStreamMessages]);
+    const lastMessage = visibleMessages[visibleMessages.length - 1];
+    const lastTaskId = activeStreamTaskId;
+    const streamLen = lastTaskId ? activeStreamMessages.length : 0;
+    const lastSeq = lastTaskId
+      ? (activeStreamMessages[activeStreamMessages.length - 1]?.seq ?? 0)
+      : 0;
+    if (!lastMessage) return "";
+    return `msg:${lastMessage.id}:${lastMessage.content.length}:stream:${streamLen}:${lastSeq}`;
+  }, [visibleMessages, activeStreamTaskId, activeStreamMessages]);
 
   useEffect(() => {
     scrollToBottom();
@@ -242,7 +196,7 @@ export function RoomMessageList({
         style={fadeStyle}
         className="min-h-0 flex-1 overflow-y-auto"
       >
-        <div className="mx-auto w-full max-w-3xl space-y-4 px-5 py-4">
+        <div className="mx-auto w-full max-w-3xl space-y-2.5 px-5 py-3">
           {hasOlderMessages ? (
             <div className="flex justify-center pb-2">
               <Button
@@ -257,21 +211,7 @@ export function RoomMessageList({
               </Button>
             </div>
           ) : null}
-          {chatTimeline.map((entry) => {
-            if (entry.kind === "invocation") {
-              return (
-                <RoomInvocationChatItem
-                  key={`inv:${entry.item.invocation.id}`}
-                  item={entry.item}
-                  onRetryAssignment={onRetryAssignment}
-                  onCancelAssignment={onCancelAssignment}
-                  retryingAssignmentId={retryingAssignmentId}
-                  cancellingAssignmentId={cancellingAssignmentId}
-                />
-              );
-            }
-
-            const m = entry.message;
+          {visibleMessages.map((m) => {
             const isSelf =
               m.sender_type === "user" && m.sender_id === currentUserId;
             const displayName = resolveSenderName(m, agentNameById, memberNameById);
@@ -283,13 +223,7 @@ export function RoomMessageList({
               onEditMessage &&
               !isOptimisticMessageId(m.id);
 
-            if (isManagerDispatchMessage(m)) {
-              return null;
-            }
-
-            const managerSlot = m.id ? managerDispatchBySource.get(m.id) : undefined;
-
-            return [
+            return (
               <RoomMessageRow
                 key={m.id}
                 message={m}
@@ -302,9 +236,16 @@ export function RoomMessageList({
                     ? resolveSenderName(quoted, agentNameById, memberNameById)
                     : undefined
                 }
-                managerStatus={managerStatusMap.get(m.id)}
                 assignments={assignments}
                 mentions={mentions}
+                timelineMessages={visibleMessages}
+                invocations={invocations}
+                managerAgentId={managerAgentId}
+                agentNameById={agentNameById}
+                onRetryAssignment={onRetryAssignment}
+                onCancelAssignment={onCancelAssignment}
+                retryingAssignmentId={retryingAssignmentId}
+                cancellingAssignmentId={cancellingAssignmentId}
                 onEdit={canEdit ? () => onEditMessage(m) : undefined}
                 onReply={
                   m.sender_type !== "system" && onReplyToMessage
@@ -318,17 +259,8 @@ export function RoomMessageList({
                 }
                 isRegenerating={regeneratingMessageId === m.id}
                 onNavigateToQuote={onNavigateToQuote}
-                onRetryAssignment={onRetryAssignment}
-                retryingAssignmentId={retryingAssignmentId}
-              />,
-              managerSlot ? (
-                <RoomManagerSlot
-                  key={`slot:${m.id}`}
-                  message={managerSlot.latest}
-                  hiddenCount={managerSlot.count - 1}
-                />
-              ) : null,
-            ];
+              />
+            );
           })}
         </div>
       </div>
@@ -337,8 +269,6 @@ export function RoomMessageList({
         agentNameById={agentNameById}
         onRetryAssignment={onRetryAssignment}
         retryingAssignmentId={retryingAssignmentId}
-        onCancelAssignment={onCancelAssignment}
-        cancellingAssignmentId={cancellingAssignmentId}
       />
     </div>
   );
@@ -396,25 +326,53 @@ function QuoteBlock({
   return <div className={className}>{content}</div>;
 }
 
+/** Bubble + action bar share one column; track width = max(bubble, bar content). */
+function MessageBubbleAnchor({
+  align,
+  children,
+}: {
+  align: "start" | "end";
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "grid max-w-[80%] grid-cols-1 gap-0.5",
+        align === "end" ? "ml-auto justify-items-end" : "justify-items-start",
+      )}
+      data-message-anchor
+    >
+      {children}
+    </div>
+  );
+}
+
 function MessageActionBar({
   children,
-  align = "start",
   leading,
 }: {
   children: ReactNode;
-  align?: "start" | "end";
   leading?: ReactNode;
 }) {
   if (!leading && !children) return null;
-  const showOnHover = !leading;
+
   return (
-    <div
-      className={`flex items-center gap-2 ${showOnHover ? "opacity-0 transition group-hover:opacity-100" : ""} ${
-        align === "end" ? "justify-end" : ""
-      }`}
-    >
-      {leading}
-      {children ? <div className="flex gap-0.5">{children}</div> : null}
+    <div className="flex w-full min-w-0 min-h-5 items-center justify-between gap-1.5">
+      {leading ? (
+        <div className="min-w-0 shrink">{leading}</div>
+      ) : (
+        <span className="sr-only" aria-hidden />
+      )}
+      {children ? (
+        <div
+          className={cn(
+            "flex shrink-0 gap-0.5",
+            !leading && "opacity-0 transition group-hover:opacity-100",
+          )}
+        >
+          {children}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -459,16 +417,21 @@ function RoomMessageRow({
   roomId,
   quotedMessage,
   quotedSenderName,
-  managerStatus,
   assignments,
   mentions,
+  timelineMessages,
+  invocations,
+  managerAgentId,
+  agentNameById,
+  onRetryAssignment,
+  onCancelAssignment,
+  retryingAssignmentId,
+  cancellingAssignmentId,
   onEdit,
   onReply,
   onRegenerate,
   isRegenerating,
   onNavigateToQuote,
-  onRetryAssignment,
-  retryingAssignmentId,
 }: {
   message: RoomMessage;
   isSelf: boolean;
@@ -476,59 +439,88 @@ function RoomMessageRow({
   roomId: string;
   quotedMessage?: RoomMessage;
   quotedSenderName?: string;
-  managerStatus?: InvocationChatItem;
   assignments?: RoomAssignment[];
   mentions?: RoomMessageMention[];
+  timelineMessages: RoomMessage[];
+  invocations?: RoomInvocation[];
+  managerAgentId?: string;
+  agentNameById: Map<string, string>;
+  onRetryAssignment?: (assignmentId: string) => void;
+  onCancelAssignment?: (assignmentId: string) => void;
+  retryingAssignmentId?: string | null;
+  cancellingAssignmentId?: string | null;
   onEdit?: () => void;
   onReply?: () => void;
   onRegenerate?: () => void;
   isRegenerating?: boolean;
   onNavigateToQuote?: (messageId: string) => void;
-  onRetryAssignment?: (assignmentId: string) => void;
-  retryingAssignmentId?: string | null;
 }) {
   const meta = parseMessageMetadata(m.metadata);
+  void roomId;
+  void meta;
   const isSystem = m.sender_type === "system";
   const isAgent = m.sender_type === "agent";
   const attribution = isAgent
     ? resolveAgentMessageAttribution(m, assignments ?? [], mentions ?? [])
     : undefined;
 
-  if (m.message_kind === "card") {
-    return (
-      <div className="mx-auto max-w-[90%]" data-room-message-id={m.id}>
-        <RoomDeliveryCard message={m} />
-      </div>
-    );
-  }
+  const invocationItems = useMemo(
+    () =>
+      invocationItemsForMessage(m.id, {
+        timelineMessages,
+        invocations,
+        assignments,
+        agentNameById,
+        managerAgentId,
+      }),
+    [m.id, timelineMessages, invocations, assignments, agentNameById, managerAgentId],
+  );
+
+  const latestManager = invocationItems.find((item) => item.presentation === "manager_status");
+  const actionAlign = isSelf ? "end" : "start";
+
+  const managerLeading = latestManager ? (
+    <ManagerStatusLeading
+      item={latestManager}
+      items={[latestManager]}
+      agentNameById={agentNameById}
+      onRetryAssignment={onRetryAssignment}
+      onCancelAssignment={onCancelAssignment}
+      retryingAssignmentId={retryingAssignmentId}
+      cancellingAssignmentId={cancellingAssignmentId}
+    />
+  ) : undefined;
+
+  const roleSlots = (
+    <RoleAgentInvocationSlots
+      items={invocationItems}
+      agentNameById={agentNameById}
+      onRetryAssignment={onRetryAssignment}
+      onCancelAssignment={onCancelAssignment}
+      retryingAssignmentId={retryingAssignmentId}
+      cancellingAssignmentId={cancellingAssignmentId}
+    />
+  );
+
+  const managerHistory = (
+    <ManagerHistoryBelowBar
+      items={invocationItems}
+      agentNameById={agentNameById}
+      onRetryAssignment={onRetryAssignment}
+      onCancelAssignment={onCancelAssignment}
+      retryingAssignmentId={retryingAssignmentId}
+      cancellingAssignmentId={cancellingAssignmentId}
+      align={actionAlign}
+    />
+  );
 
   if (isSystem) {
-    const dispatchStyle =
-      m.message_kind === "system_dispatch" || m.message_kind === "system_milestone";
     return (
-      <div className="space-y-2" data-room-message-id={m.id}>
-        <p className="text-muted-foreground text-center text-xs">
-          {dispatchStyle ? "编排" : displayName}
-        </p>
+      <div className="space-y-1" data-room-message-id={m.id}>
+        <p className="text-muted-foreground text-xs">{displayName}</p>
         {m.content.trim() ? (
-          <div
-            className={
-              dispatchStyle
-                ? "border-primary/20 bg-primary/5 mx-auto max-w-[90%] rounded-lg border px-3 py-2 text-sm"
-                : "bg-muted/50 mx-auto max-w-[90%] rounded-2xl px-3.5 py-2 text-sm"
-            }
-          >
+          <div className="bg-muted/50 max-w-[80%] rounded-2xl px-3.5 py-2 text-sm">
             <Markdown>{m.content}</Markdown>
-          </div>
-        ) : null}
-        {(meta.human_action_id || meta.approval_id) ? (
-          <div className="mx-auto max-w-[90%]">
-            <ApprovalCard
-              roomId={roomId}
-              humanActionId={meta.human_action_id}
-              approvalId={meta.approval_id}
-              actionType={meta.action_type}
-            />
           </div>
         ) : null}
       </div>
@@ -537,56 +529,59 @@ function RoomMessageRow({
 
   if (isSelf) {
     return (
-      <div className="group space-y-1" data-room-message-id={m.id}>
-        <div className="flex flex-col items-end gap-1.5">
-          {quotedMessage && quotedSenderName ? (
-            <QuoteBlock
-              align="end"
-              senderName={quotedSenderName}
-              quotedMessageId={quotedMessage.id}
-              onNavigateToQuote={onNavigateToQuote}
-              preview={truncatePreview(
-                quotedMessage.sender_type === "agent"
-                  ? extractRoomAgentCopyText(quotedMessage)
-                  : quotedMessage.content,
-              )}
-            />
-          ) : null}
-          <div className="rounded-2xl bg-muted px-3.5 py-2 text-sm max-w-[80%] break-words">
+      <div
+        className="group flex w-full flex-col items-end gap-0.5"
+        data-room-message-block={m.id}
+        data-room-message-id={m.id}
+      >
+        {quotedMessage && quotedSenderName ? (
+          <QuoteBlock
+            align="end"
+            senderName={quotedSenderName}
+            quotedMessageId={quotedMessage.id}
+            onNavigateToQuote={onNavigateToQuote}
+            preview={truncatePreview(
+              quotedMessage.sender_type === "agent"
+                ? extractRoomAgentCopyText(quotedMessage)
+                : quotedMessage.content,
+            )}
+          />
+        ) : null}
+        <MessageBubbleAnchor align="end">
+          <div className="w-fit max-w-full rounded-2xl bg-muted px-3.5 py-2 text-sm break-words">
             <div className="prose prose-sm dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
               <Markdown>{m.content}</Markdown>
             </div>
             {m.edited_at ? (
-              <p className="text-muted-foreground mt-1 text-[10px]">已编辑</p>
+              <p className="text-muted-foreground mt-0.5 text-[10px]">已编辑</p>
             ) : null}
           </div>
-        </div>
-        <MessageActionBar
-          align="end"
-          leading={
-            managerStatus ? (
-              <ManagerStatusInline
-                item={managerStatus}
-                onRetry={onRetryAssignment}
-                retrying={retryingAssignmentId === managerStatus.assignment.id}
-              />
-            ) : undefined
-          }
-        >
-          {onReply ? (
-            <ActionIconButton label="引用回复" onClick={onReply} icon={Reply} />
-          ) : null}
-          {onEdit ? (
-            <ActionIconButton label="编辑" onClick={onEdit} icon={Pencil} />
-          ) : null}
-        </MessageActionBar>
+          <MessageActionBar leading={managerLeading}>
+            {onReply ? (
+              <ActionIconButton label="引用回复" onClick={onReply} icon={Reply} />
+            ) : null}
+            {onEdit ? (
+              <ActionIconButton label="编辑" onClick={onEdit} icon={Pencil} />
+            ) : null}
+          </MessageActionBar>
+        </MessageBubbleAnchor>
+        {roleSlots ? (
+          <div className="flex w-full justify-end">
+            <div className="w-full max-w-[80%]">{roleSlots}</div>
+          </div>
+        ) : null}
+        {managerHistory}
       </div>
     );
   }
 
   return (
-    <div className="group w-full space-y-1.5" data-room-message-id={m.id}>
-      <div className="flex items-center gap-2">
+    <div
+      className="group flex w-full flex-col gap-1"
+      data-room-message-block={m.id}
+      data-room-message-id={m.id}
+    >
+      <div className="flex items-center gap-1.5">
         <RoomParticipantAvatar
           actorType={isAgent ? "agent" : "member"}
           actorId={m.sender_id ?? ""}
@@ -607,49 +602,42 @@ function RoomMessageRow({
           )}
         />
       ) : null}
-      <div
-        className={
-          isAgent
-            ? "bg-card border-border/60 rounded-2xl border px-3.5 py-2"
-            : undefined
-        }
-      >
-        {isAgent ? (
-          <AgentMessageBody message={m} />
-        ) : (
-          <div className="text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none">
-            <Markdown>{m.content}</Markdown>
-          </div>
-        )}
-      </div>
-      <MessageActionBar
-        leading={
-          managerStatus ? (
-            <ManagerStatusInline
-              item={managerStatus}
-              onRetry={onRetryAssignment}
-              retrying={retryingAssignmentId === managerStatus.assignment.id}
-            />
-          ) : undefined
-        }
-      >
-        {onReply ? (
-          <ActionIconButton label="引用回复" onClick={onReply} icon={Reply} />
-        ) : null}
-        {isAgent ? (
-          <>
-            <AgentCopyButton message={m} />
-            {onRegenerate ? (
-              <ActionIconButton
-                label="重新生成"
-                onClick={onRegenerate}
-                disabled={isRegenerating}
-                icon={RefreshCw}
-              />
-            ) : null}
-          </>
-        ) : null}
-      </MessageActionBar>
+      <MessageBubbleAnchor align="start">
+        <div
+          className={cn(
+            "w-fit max-w-full",
+            isAgent && "bg-card border-border/60 rounded-2xl border px-3.5 py-2",
+          )}
+        >
+          {isAgent ? (
+            <AgentMessageBody message={m} />
+          ) : (
+            <div className="text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none">
+              <Markdown>{m.content}</Markdown>
+            </div>
+          )}
+        </div>
+        <MessageActionBar leading={managerLeading}>
+          {onReply ? (
+            <ActionIconButton label="引用回复" onClick={onReply} icon={Reply} />
+          ) : null}
+          {isAgent ? (
+            <>
+              <AgentCopyButton message={m} />
+              {onRegenerate ? (
+                <ActionIconButton
+                  label="重新生成"
+                  onClick={onRegenerate}
+                  disabled={isRegenerating}
+                  icon={RefreshCw}
+                />
+              ) : null}
+            </>
+          ) : null}
+        </MessageActionBar>
+      </MessageBubbleAnchor>
+      {roleSlots}
+      {managerHistory}
     </div>
   );
 }
@@ -690,8 +678,8 @@ function AgentMessageBody({ message }: { message: RoomMessage }) {
   });
 
   return (
-    <div className="space-y-2">
-      <div className="text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none">
+    <div className="space-y-1.5">
+      <div className="text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
         <Markdown>{summary || "已完成"}</Markdown>
       </div>
       {expandable && middle.length > 0 ? (

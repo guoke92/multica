@@ -7,11 +7,6 @@ export function isManagerNotifyUserMessage(message: RoomMessage): boolean {
   return message.content.includes("mention://member/");
 }
 
-/** Manager route/relay/escalate dispatch — rendered as a manager slot below the source message. */
-export function isManagerDispatchMessage(message: RoomMessage): boolean {
-  return message.metadata?.manager_dispatch === true;
-}
-
 /** Workflow/system noise that should not appear in the chat timeline. */
 export function shouldHideRoomMessage(
   message: RoomMessage,
@@ -21,14 +16,12 @@ export function shouldHideRoomMessage(
     managerAgentId &&
     message.sender_type === "agent" &&
     message.sender_id === managerAgentId &&
-    !isManagerNotifyUserMessage(message) &&
-    !isManagerDispatchMessage(message)
+    !isManagerNotifyUserMessage(message)
   ) {
     return true;
   }
 
   if (message.sender_type !== "system") {
-    if (message.message_kind === "card") return true;
     return false;
   }
 
@@ -41,17 +34,6 @@ export function shouldHideRoomMessage(
     kind === "relay_hint" ||
     kind === "agent_at" ||
     kind === "escalate_hint"
-  ) {
-    return true;
-  }
-
-  const content = message.content.trim();
-  if (
-    content.startsWith("派单：") ||
-    content.startsWith("阶段推进：") ||
-    content.startsWith("已开启交付：") ||
-    content.startsWith("交付已完成") ||
-    content.startsWith("已创建 Issue ")
   ) {
     return true;
   }

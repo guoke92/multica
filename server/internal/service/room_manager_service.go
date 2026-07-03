@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
@@ -12,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/redact"
 )
 
 // ManagerDecision is the structured decision a manager agent emits.
@@ -141,14 +139,6 @@ func (s *TaskService) ApplyManagerDecisionFromOutput(
 	if err := s.ApplyManagerDecision(ctx, room, inv, assignment, decision); err != nil {
 		return err
 	}
-	if decision.Action == "complete" || decision.Action == "ask_user" {
-		if err := s.postManagerUserNotifyMessage(ctx, room, assignment, output, decision); err != nil {
-			slog.Warn("post manager notify_user message failed",
-				"room_id", util.UUIDToString(room.ID),
-				"error", err,
-			)
-		}
-	}
 	return nil
 }
 
@@ -178,77 +168,8 @@ func stripManagerWorkflowFooter(output string) string {
 	return strings.TrimSpace(s)
 }
 
-func managerUserNotifyContent(output string, decision ManagerDecision) string {
-	if prose := stripManagerWorkflowFooter(output); prose != "" {
-		return prose
-	}
-	return strings.TrimSpace(decision.Message)
-}
 
-func formatMemberMentionLink(displayName, memberID string) string {
-	name := strings.TrimSpace(displayName)
-	if name == "" {
-		name = "你"
-	}
-	return fmt.Sprintf("[@%s](mention://member/%s)", name, memberID)
-}
-
-func (s *TaskService) postManagerUserNotifyMessage(
-	ctx context.Context,
-	room db.Room,
-	assignment db.RoomAssignment,
-	output string,
-	decision ManagerDecision,
-) error {
-	if !room.ManagerAgentID.Valid {
-		return nil
-	}
-	body := managerUserNotifyContent(output, decision)
-	if body == "" {
-		body = "当前阶段已完成，如需继续请直接回复。"
-	}
-
-	sourceMsg, err := s.Queries.GetRoomMessageInRoom(ctx, db.GetRoomMessageInRoomParams{
-		ID: assignment.SourceMessageID, RoomID: room.ID,
-	})
-	if err != nil {
-		return err
-	}
-
-	if sourceMsg.SenderType == "user" && sourceMsg.SenderID.Valid && !strings.Contains(body, "mention://member/") {
-		userID := util.UUIDToString(sourceMsg.SenderID)
-		name := "你"
-		if user, uErr := s.Queries.GetUser(ctx, sourceMsg.SenderID); uErr == nil {
-			if trimmed := strings.TrimSpace(user.Name); trimmed != "" {
-				name = trimmed
-			}
-		}
-		body = formatMemberMentionLink(name, userID) + " " + body
-	}
-
-	notifyMeta, _ := json.Marshal(map[string]any{
-		"manager_notify_user": true,
-	})
-
-	msg, err := s.Queries.CreateRoomMessage(ctx, db.CreateRoomMessageParams{
-		ID:             util.MustNewUUIDv7(),
-		RoomID:         room.ID,
-		SenderType:     "agent",
-		SenderID:       room.ManagerAgentID,
-		Content:        redact.Text(body),
-		QuoteMessageID: sourceMsg.ID,
-		Metadata:       notifyMeta,
-	})
-	if err != nil {
-		return err
-	}
-	_, _ = s.ParseAndPersistMentions(ctx, room, msg, "")
-	s.publishRoomMessage(ctx, room, msg, db.AgentTaskQueue{})
-	s.RefreshRoomSnapshot(ctx, room.ID)
-	return nil
-}
-
-// ApplyManagerDecision records the decision and creates downstream assignments.
+// ApplyManagerDecision records the decision, writes the invocation outcome, and creates downstream assignments.
 func (s *TaskService) ApplyManagerDecision(
 	ctx context.Context,
 	room db.Room,
@@ -280,23 +201,28 @@ func (s *TaskService) ApplyManagerDecision(
 		return err
 	}
 
+	var outcome RoomInvocationOutcome
+	dispatchMentionErr := false
+
 	switch decision.Action {
 	case "assign":
-		targetID := decision.RouteTo
-		kind := "manager_route"
+		targetID, kind := decision.RouteTo, "manager_route"
 		if decision.RelayTo != "" {
-			targetID = decision.RelayTo
-			kind = "manager_relay"
+			targetID, kind = decision.RelayTo, "manager_relay"
 		}
 		if targetID == "" {
 			targetID = decision.AgentID
 		}
 		agentUUID := parseUUID(targetID)
 		if !agentUUID.Valid {
+			outcome = failedOutcome("invalid assign target")
+			_ = s.writeInvocationOutcome(ctx, inv, outcome)
 			return s.FailAssignment(ctx, room, assignment, "invalid assign target")
 		}
 		if kind == "manager_relay" {
 			if blocked, blockReason := s.shouldBlockManagerRelay(ctx, room, sourceMsg, agentUUID, decision.Reason); blocked {
+				outcome = failedOutcome(blockReason)
+				_ = s.writeInvocationOutcome(ctx, inv, outcome)
 				return s.FailAssignment(ctx, room, assignment, blockReason)
 			}
 		}
@@ -307,36 +233,56 @@ func (s *TaskService) ApplyManagerDecision(
 			Intent: "execute", TimeoutAt: time.Now().Add(30 * time.Minute),
 			CanAccessAgent: func(_ context.Context, _ db.Agent, _, _, _ string) bool { return true },
 			AuthorType:     "agent", AuthorID: util.UUIDToString(room.ManagerAgentID),
-			WorkspaceID: util.UUIDToString(room.WorkspaceID),
+			WorkspaceID:    util.UUIDToString(room.WorkspaceID),
 		})
 		if err != nil {
-			return err
+			outcome = failedOutcome("failed to create downstream assignment: " + err.Error())
+			break
 		}
 		createdAssignmentIDs = append(createdAssignmentIDs, a.ID)
-		if err := s.postManagerDispatchMessage(ctx, room, record, a, agentUUID, sourceMsg, managerDispatchAction(kind, decision), decision.Reason); err != nil {
-			slog.Warn("post manager dispatch message failed", "error", err)
+		if kind == "manager_relay" {
+			outcome = RoomInvocationOutcome{Type: string(ManagerOutcomeRelay), TargetAgentID: targetID, Reason: decision.Reason}
+		} else {
+			outcome = RoomInvocationOutcome{Type: string(ManagerOutcomeDispatch), TargetAgentID: targetID, Reason: decision.Reason}
+		}
+		if _, mErr := s.createManagerDispatchMention(ctx, room, sourceMsg, agentUUID, a); mErr != nil {
+			slog.Warn("create manager dispatch mention failed", "error", mErr)
+			dispatchMentionErr = true
 		}
 		s.recoverySupersedeForNewAssignment(ctx, room, a, parseEscalationFailedAssignmentID(assignment.Reason))
 		s.DrainQueuedRoomInvocations(ctx, newInv.AgentID)
-	case "complete", "wait", "skip":
-		// Terminal — no further auto_review until next message.
+	case "complete":
+		outcome = RoomInvocationOutcome{Type: string(ManagerOutcomeReviewComplete), Conclusion: decision.Message}
+	case "wait":
+		outcome = RoomInvocationOutcome{Type: string(ManagerOutcomeWait), Conclusion: decision.Message}
+	case "skip":
+		outcome = RoomInvocationOutcome{Type: string(ManagerOutcomeSkip)}
+	case "ask_user":
+		outcome = RoomInvocationOutcome{Type: string(ManagerOutcomeAskUser), Conclusion: decision.Message}
 	case "retry":
 		targetID := assignment.ID
 		if esc, ok := parseAssignmentEscalationReason(assignment.Reason); ok && esc.FailedAssignmentID != "" {
 			targetID = parseUUID(esc.FailedAssignmentID)
 		}
 		if !targetID.Valid {
+			outcome = failedOutcome("retry target not found")
+			_ = s.writeInvocationOutcome(ctx, inv, outcome)
 			return s.FailAssignment(ctx, room, assignment, "retry target not found")
 		}
-		_, err := s.RetryRoomAssignment(ctx, room, targetID, pgtype.UUID{})
-		return err
+		outcome = RoomInvocationOutcome{Type: string(ManagerOutcomeRetry), TargetAssignmentID: util.UUIDToString(targetID)}
+		if _, err := s.RetryRoomAssignment(ctx, room, targetID, pgtype.UUID{}); err != nil {
+			outcome = failedOutcome("retry failed: " + err.Error())
+		}
 	case "reassign":
 		if esc, ok := parseAssignmentEscalationReason(assignment.Reason); ok && !esc.AllowReassign {
+			outcome = failedOutcome("reassign not allowed for explicit mention assignment")
+			_ = s.writeInvocationOutcome(ctx, inv, outcome)
 			return s.FailAssignment(ctx, room, assignment, "reassign not allowed for explicit mention assignment")
 		}
 		agentUUID := parseUUID(decision.Reassign)
 		if !agentUUID.Valid {
-			return s.FailAssignment(ctx, room, assignment, "invalid reassign target")
+			outcome = failedOutcome("invalid reassign target")
+			break
 		}
 		a, newInv, err := s.createAssignmentWithInvocation(ctx, createAssignmentParams{
 			Room: room, SourceMessage: sourceMsg,
@@ -345,22 +291,29 @@ func (s *TaskService) ApplyManagerDecision(
 			Intent: "execute", TimeoutAt: time.Now().Add(30 * time.Minute),
 			CanAccessAgent: func(_ context.Context, _ db.Agent, _, _, _ string) bool { return true },
 			AuthorType:     "agent", AuthorID: util.UUIDToString(room.ManagerAgentID),
-			WorkspaceID: util.UUIDToString(room.WorkspaceID),
+			WorkspaceID:    util.UUIDToString(room.WorkspaceID),
 		})
 		if err != nil {
-			return err
+			outcome = failedOutcome("failed to create reassign assignment: " + err.Error())
+			break
 		}
 		createdAssignmentIDs = append(createdAssignmentIDs, a.ID)
-		if err := s.postManagerDispatchMessage(ctx, room, record, a, agentUUID, sourceMsg, "escalate", decision.Reason); err != nil {
-			slog.Warn("post manager dispatch message failed", "error", err)
+		outcome = RoomInvocationOutcome{Type: string(ManagerOutcomeReassign), TargetAgentID: decision.Reassign, Reason: decision.Reason}
+		if _, mErr := s.createManagerDispatchMention(ctx, room, sourceMsg, agentUUID, a); mErr != nil {
+			slog.Warn("create manager dispatch mention failed", "error", mErr)
+			dispatchMentionErr = true
 		}
 		s.recoverySupersedeForNewAssignment(ctx, room, a, parseEscalationFailedAssignmentID(assignment.Reason))
 		s.DrainQueuedRoomInvocations(ctx, newInv.AgentID)
-	case "ask_user":
-		// No-op: manager already posted output if needed.
 	default:
 		slog.Warn("unknown manager decision action", "action", decision.Action)
+		outcome = failedOutcome("unknown decision action: " + decision.Action)
 	}
+
+	if dispatchMentionErr {
+		outcome = failedOutcome("dispatch succeeded but mention creation failed")
+	}
+
 	if len(createdAssignmentIDs) > 0 {
 		if updated, err := s.Queries.UpdateRoomManagerDecisionCreatedAssignments(ctx, db.UpdateRoomManagerDecisionCreatedAssignmentsParams{
 			ID:                   record.ID,
@@ -370,17 +323,44 @@ func (s *TaskService) ApplyManagerDecision(
 			s.publishRoomManagerDecisionCreated(ctx, room, record)
 		}
 	}
+	if wErr := s.writeInvocationOutcome(ctx, inv, outcome); wErr != nil {
+		slog.Warn("write manager invocation outcome failed", "invocation_id", util.UUIDToString(inv.ID), "error", wErr)
+	}
 	s.RefreshRoomSnapshot(ctx, room.ID)
 	return nil
 }
 
+
 type assignmentEscalationReason struct {
 	Escalation         string `json:"escalation"`
 	FailedAssignmentID string `json:"failed_assignment_id"`
-	FailedAgentID      string `json:"failed_agent_id,omitempty"`
-	AllowReassign      bool   `json:"allow_reassign"`
-	FailureReason      string `json:"failure_reason,omitempty"`
+	FailedAgentID        string `json:"failed_agent_id"`
+	AllowReassign        bool   `json:"allow_reassign"`
+	FailureReason        string `json:"failure_reason,omitempty"`
 }
+
+func (s *TaskService) createManagerDispatchMention(
+	ctx context.Context,
+	room db.Room,
+	sourceMsg db.RoomMessage,
+	managerAgentID pgtype.UUID,
+	assignment db.RoomAssignment,
+) (db.RoomMessageMention, error) {
+	mention, err := s.Queries.CreateRoomMessageMention(ctx, db.CreateRoomMessageMentionParams{
+		ID:              util.MustNewUUIDv7(),
+		MessageID:       sourceMsg.ID,
+		TargetType:      assignment.AssigneeType,
+		TargetID:        assignment.AssigneeID,
+		SourceType:      "manager_dispatch",
+		SourceMessageID: managerAgentID,
+		AssignmentID:   assignment.ID,
+	})
+	if err != nil {
+		return db.RoomMessageMention{}, err
+	}
+	return mention, nil
+}
+
 
 func parseAssignmentEscalationReason(reason pgtype.Text) (assignmentEscalationReason, bool) {
 	if !reason.Valid || strings.TrimSpace(reason.String) == "" {

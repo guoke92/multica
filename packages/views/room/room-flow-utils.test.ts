@@ -1012,3 +1012,131 @@ describe("flow track timer", () => {
     expect(resolveFlowTrackElapsedSeconds(liveTrack, graph)).toBeNull();
   });
 });
+
+describe("invocation inline anchoring", () => {
+  const userMsg: RoomMessage = {
+    id: "msg-user",
+    sender_type: "user",
+    sender_id: "user-1",
+    content: "build snake",
+    created_at: "2026-06-18T10:00:00Z",
+  };
+  const agentMsg: RoomMessage = {
+    id: "msg-agent-out",
+    sender_type: "agent",
+    sender_id: "fe",
+    content: "done",
+    quote_message_id: "msg-user",
+    created_at: "2026-06-18T10:05:00Z",
+  };
+  const agents = new Map([
+    ["mgr", "群管"],
+    ["fe", "前端工程师"],
+  ]);
+
+  it("hides role-agent slot once output message is in the timeline", () => {
+    const assignments: RoomAssignment[] = [
+      assignment({
+        id: "a-route",
+        kind: "manager_route",
+        status: "running",
+        assignee_id: "fe",
+        source_message_id: "msg-user",
+        output_message_id: "msg-agent-out",
+      }),
+    ];
+    const invocations: RoomInvocation[] = [
+      {
+        id: "inv-route",
+        assignment_id: "a-route",
+        source_message_id: "msg-user",
+        agent_id: "fe",
+        status: "running",
+        output_message_id: "msg-agent-out",
+      },
+    ];
+
+    const items = buildInvocationChatItems(
+      invocations,
+      assignments,
+      [userMsg, agentMsg],
+      agents,
+      "mgr",
+    );
+    expect(items).toHaveLength(0);
+  });
+
+  it("shows post-output manager review on agent trigger message", () => {
+    const assignments: RoomAssignment[] = [
+      assignment({
+        id: "a-review",
+        kind: "auto_review",
+        status: "completed",
+        assignee_id: "mgr",
+        source_message_id: "msg-agent-out",
+      }),
+    ];
+    const invocations: RoomInvocation[] = [
+      {
+        id: "inv-review",
+        assignment_id: "a-review",
+        source_message_id: "msg-agent-out",
+        agent_id: "mgr",
+        intent: "review",
+        status: "succeeded",
+        outcome: { type: "review_complete" },
+      },
+    ];
+
+    const items = buildInvocationChatItems(
+      invocations,
+      assignments,
+      [userMsg, agentMsg],
+      agents,
+      "mgr",
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      presentation: "manager_status",
+      sourceMessageId: "msg-agent-out",
+      phase: "succeeded",
+    });
+  });
+
+  it("keeps dispatch outcome on the user trigger message", () => {
+    const assignments: RoomAssignment[] = [
+      assignment({
+        id: "a-review",
+        kind: "auto_review",
+        status: "completed",
+        assignee_id: "mgr",
+        source_message_id: "msg-user",
+      }),
+    ];
+    const invocations: RoomInvocation[] = [
+      {
+        id: "inv-review",
+        assignment_id: "a-review",
+        source_message_id: "msg-user",
+        agent_id: "mgr",
+        intent: "route",
+        status: "succeeded",
+        outcome: { type: "dispatch", target_agent_id: "fe" },
+      },
+    ];
+
+    const items = buildInvocationChatItems(
+      invocations,
+      assignments,
+      [userMsg, agentMsg],
+      agents,
+      "mgr",
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      presentation: "manager_status",
+      sourceMessageId: "msg-user",
+      phase: "succeeded",
+    });
+  });
+});

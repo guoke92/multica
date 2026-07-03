@@ -2,16 +2,12 @@ package service
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/redact"
 )
 
 const roomInvocationSweepBatch = 50
@@ -262,48 +258,3 @@ func (s *TaskService) MaybeAutoRetryRoomInvocation(ctx context.Context, task db.
 	return err == nil
 }
 
-// PostManagerFailureNotice writes a user-visible system message in the room
-// when a manager invocation has exhausted its retry budget, so the failure
-// surfaces even though manager_dispatch messages are not posted.
-func (s *TaskService) PostManagerFailureNotice(
-	ctx context.Context,
-	room db.Room,
-	assignment db.RoomAssignment,
-	reason string,
-) {
-	if !room.ManagerAgentID.Valid {
-		return
-	}
-	sourceMsg, err := s.Queries.GetRoomMessageInRoom(ctx, db.GetRoomMessageInRoomParams{
-		ID: assignment.SourceMessageID, RoomID: room.ID,
-	})
-	if err != nil {
-		return
-	}
-	trimmed := strings.TrimSpace(reason)
-	if trimmed == "" {
-		trimmed = "manager_failed"
-	}
-	body := fmt.Sprintf("群管暂时无法完成此轮路由（%s）。已用尽自动重试，请回复或点击重试继续。", truncateAssignmentReason(trimmed))
-	meta, _ := json.Marshal(map[string]any{
-		"system_notice":   true,
-		"manager_failure": true,
-		"assignment_id":   util.UUIDToString(assignment.ID),
-	})
-	if _, err := s.Queries.CreateRoomMessage(ctx, db.CreateRoomMessageParams{
-		ID:             util.MustNewUUIDv7(),
-		RoomID:         room.ID,
-		SenderType:     "system",
-		Content:        redact.Text(body),
-		QuoteMessageID: sourceMsg.ID,
-		Metadata:       meta,
-	}); err != nil {
-		slog.Warn("post manager failure notice failed",
-			"room_id", util.UUIDToString(room.ID),
-			"assignment_id", util.UUIDToString(assignment.ID),
-			"error", err,
-		)
-		return
-	}
-	s.RefreshRoomSnapshot(ctx, room.ID)
-}

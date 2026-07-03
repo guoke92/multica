@@ -60,6 +60,7 @@ func (s *TaskService) reconcileRoomInvocationCancelled(ctx context.Context, task
 		ID: inv.ID, Status: "cancelled",
 		CompletedAt: pgtype.Timestamptz{Time: now, Valid: true},
 	})
+	_ = s.writeInvocationOutcome(ctx, inv, cancelledOutcome())
 	if room, roomErr := s.Queries.GetRoom(ctx, task.RoomID); roomErr == nil {
 		if assignment, aErr := s.Queries.GetRoomAssignment(ctx, inv.AssignmentID); aErr == nil {
 			s.appendInvocationEvent(ctx, room, assignment, inv, "invocation_cancelled", "system", pgtype.UUID{}, nil)

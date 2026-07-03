@@ -109,7 +109,7 @@ SET status = 'cancelled',
     cancelled_at = now(),
     updated_at = now()
 WHERE id = $1 AND status NOT IN ('succeeded', 'cancelled')
-RETURNING id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at
+RETURNING id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, outcome, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at
 `
 
 type CancelRoomInvocationParams struct {
@@ -133,6 +133,7 @@ func (q *Queries) CancelRoomInvocation(ctx context.Context, arg CancelRoomInvoca
 		&i.MaxRetries,
 		&i.TaskID,
 		&i.OutputMessageID,
+		&i.Outcome,
 		&i.FailureReason,
 		&i.TimeoutAt,
 		&i.StartedAt,
@@ -335,14 +336,15 @@ func (q *Queries) CreateRoomAssignmentDependency(ctx context.Context, arg Create
 const createRoomInvocation = `-- name: CreateRoomInvocation :one
 INSERT INTO room_invocation (
     id, room_id, assignment_id, source_message_id, agent_id, intent, status,
-    priority, max_retries, timeout_at
+    priority, max_retries, timeout_at, outcome
 )
 VALUES (
     $1, $2, $3, $4,
     $5, $6, $7,
-    COALESCE($8, 'normal'), $9, $10
+    COALESCE($8, 'normal'), $9, $10,
+    COALESCE($11::jsonb, '{}'::jsonb)
 )
-RETURNING id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at
+RETURNING id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, outcome, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at
 `
 
 type CreateRoomInvocationParams struct {
@@ -356,6 +358,7 @@ type CreateRoomInvocationParams struct {
 	Priority        interface{}        `json:"priority"`
 	MaxRetries      int32              `json:"max_retries"`
 	TimeoutAt       pgtype.Timestamptz `json:"timeout_at"`
+	Outcome         []byte             `json:"outcome"`
 }
 
 func (q *Queries) CreateRoomInvocation(ctx context.Context, arg CreateRoomInvocationParams) (RoomInvocation, error) {
@@ -370,6 +373,7 @@ func (q *Queries) CreateRoomInvocation(ctx context.Context, arg CreateRoomInvoca
 		arg.Priority,
 		arg.MaxRetries,
 		arg.TimeoutAt,
+		arg.Outcome,
 	)
 	var i RoomInvocation
 	err := row.Scan(
@@ -385,6 +389,7 @@ func (q *Queries) CreateRoomInvocation(ctx context.Context, arg CreateRoomInvoca
 		&i.MaxRetries,
 		&i.TaskID,
 		&i.OutputMessageID,
+		&i.Outcome,
 		&i.FailureReason,
 		&i.TimeoutAt,
 		&i.StartedAt,
@@ -466,7 +471,7 @@ VALUES (
     $9,
     $10
 )
-RETURNING id, message_id, target_type, target_id, label, span_start, span_end, created_at, source_type, source_message_id, assignment_id
+RETURNING id, message_id, target_type, target_id, source_type, source_message_id, assignment_id, label, span_start, span_end, created_at
 `
 
 type CreateRoomMessageMentionParams struct {
@@ -502,13 +507,13 @@ func (q *Queries) CreateRoomMessageMention(ctx context.Context, arg CreateRoomMe
 		&i.MessageID,
 		&i.TargetType,
 		&i.TargetID,
+		&i.SourceType,
+		&i.SourceMessageID,
+		&i.AssignmentID,
 		&i.Label,
 		&i.SpanStart,
 		&i.SpanEnd,
 		&i.CreatedAt,
-		&i.SourceType,
-		&i.SourceMessageID,
-		&i.AssignmentID,
 	)
 	return i, err
 }
@@ -581,7 +586,7 @@ func (q *Queries) CreateRoomTaskForInvocation(ctx context.Context, arg CreateRoo
 }
 
 const getActiveRoomInvocationForAssignment = `-- name: GetActiveRoomInvocationForAssignment :one
-SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation
+SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, outcome, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation
 WHERE assignment_id = $1
   AND status NOT IN ('succeeded', 'failed', 'timed_out', 'cancelled')
 ORDER BY id DESC
@@ -604,6 +609,7 @@ func (q *Queries) GetActiveRoomInvocationForAssignment(ctx context.Context, assi
 		&i.MaxRetries,
 		&i.TaskID,
 		&i.OutputMessageID,
+		&i.Outcome,
 		&i.FailureReason,
 		&i.TimeoutAt,
 		&i.StartedAt,
@@ -678,7 +684,7 @@ func (q *Queries) GetRoomAssignmentInRoom(ctx context.Context, arg GetRoomAssign
 }
 
 const getRoomInvocation = `-- name: GetRoomInvocation :one
-SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation WHERE id = $1
+SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, outcome, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation WHERE id = $1
 `
 
 func (q *Queries) GetRoomInvocation(ctx context.Context, id pgtype.UUID) (RoomInvocation, error) {
@@ -697,6 +703,7 @@ func (q *Queries) GetRoomInvocation(ctx context.Context, id pgtype.UUID) (RoomIn
 		&i.MaxRetries,
 		&i.TaskID,
 		&i.OutputMessageID,
+		&i.Outcome,
 		&i.FailureReason,
 		&i.TimeoutAt,
 		&i.StartedAt,
@@ -710,7 +717,7 @@ func (q *Queries) GetRoomInvocation(ctx context.Context, id pgtype.UUID) (RoomIn
 }
 
 const getRoomInvocationByOutputMessage = `-- name: GetRoomInvocationByOutputMessage :one
-SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation
+SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, outcome, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation
 WHERE output_message_id = $1 AND room_id = $2
 LIMIT 1
 `
@@ -736,6 +743,7 @@ func (q *Queries) GetRoomInvocationByOutputMessage(ctx context.Context, arg GetR
 		&i.MaxRetries,
 		&i.TaskID,
 		&i.OutputMessageID,
+		&i.Outcome,
 		&i.FailureReason,
 		&i.TimeoutAt,
 		&i.StartedAt,
@@ -749,7 +757,7 @@ func (q *Queries) GetRoomInvocationByOutputMessage(ctx context.Context, arg GetR
 }
 
 const getRoomInvocationByTask = `-- name: GetRoomInvocationByTask :one
-SELECT ri.id, ri.room_id, ri.assignment_id, ri.source_message_id, ri.agent_id, ri.intent, ri.status, ri.priority, ri.retry_count, ri.max_retries, ri.task_id, ri.output_message_id, ri.failure_reason, ri.timeout_at, ri.started_at, ri.completed_at, ri.cancelled_by, ri.cancelled_at, ri.created_at, ri.updated_at
+SELECT ri.id, ri.room_id, ri.assignment_id, ri.source_message_id, ri.agent_id, ri.intent, ri.status, ri.priority, ri.retry_count, ri.max_retries, ri.task_id, ri.output_message_id, ri.outcome, ri.failure_reason, ri.timeout_at, ri.started_at, ri.completed_at, ri.cancelled_by, ri.cancelled_at, ri.created_at, ri.updated_at
 FROM room_invocation ri
 JOIN agent_task_queue t ON t.invocation_id = ri.id
 WHERE t.id = $1
@@ -772,6 +780,7 @@ func (q *Queries) GetRoomInvocationByTask(ctx context.Context, id pgtype.UUID) (
 		&i.MaxRetries,
 		&i.TaskID,
 		&i.OutputMessageID,
+		&i.Outcome,
 		&i.FailureReason,
 		&i.TimeoutAt,
 		&i.StartedAt,
@@ -785,7 +794,7 @@ func (q *Queries) GetRoomInvocationByTask(ctx context.Context, id pgtype.UUID) (
 }
 
 const getRoomInvocationInRoom = `-- name: GetRoomInvocationInRoom :one
-SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation WHERE id = $1 AND room_id = $2
+SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, outcome, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation WHERE id = $1 AND room_id = $2
 `
 
 type GetRoomInvocationInRoomParams struct {
@@ -809,6 +818,7 @@ func (q *Queries) GetRoomInvocationInRoom(ctx context.Context, arg GetRoomInvoca
 		&i.MaxRetries,
 		&i.TaskID,
 		&i.OutputMessageID,
+		&i.Outcome,
 		&i.FailureReason,
 		&i.TimeoutAt,
 		&i.StartedAt,
@@ -899,7 +909,7 @@ func (q *Queries) ListIncompleteDependenciesForAssignment(ctx context.Context, a
 }
 
 const listQueuedRoomInvocations = `-- name: ListQueuedRoomInvocations :many
-SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation
+SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, outcome, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation
 WHERE status = 'queued'
 ORDER BY id ASC
 LIMIT $1
@@ -927,6 +937,7 @@ func (q *Queries) ListQueuedRoomInvocations(ctx context.Context, limit int32) ([
 			&i.MaxRetries,
 			&i.TaskID,
 			&i.OutputMessageID,
+			&i.Outcome,
 			&i.FailureReason,
 			&i.TimeoutAt,
 			&i.StartedAt,
@@ -947,7 +958,7 @@ func (q *Queries) ListQueuedRoomInvocations(ctx context.Context, limit int32) ([
 }
 
 const listQueuedRoomInvocationsForAgent = `-- name: ListQueuedRoomInvocationsForAgent :many
-SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation
+SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, outcome, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation
 WHERE agent_id = $1
   AND status = 'queued'
 ORDER BY id ASC
@@ -981,6 +992,7 @@ func (q *Queries) ListQueuedRoomInvocationsForAgent(ctx context.Context, arg Lis
 			&i.MaxRetries,
 			&i.TaskID,
 			&i.OutputMessageID,
+			&i.Outcome,
 			&i.FailureReason,
 			&i.TimeoutAt,
 			&i.StartedAt,
@@ -1231,7 +1243,7 @@ func (q *Queries) ListRoomInvocationEventsByRoom(ctx context.Context, arg ListRo
 }
 
 const listRoomInvocationsByAssignment = `-- name: ListRoomInvocationsByAssignment :many
-SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation
+SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, outcome, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation
 WHERE assignment_id = $1
 ORDER BY id ASC
 `
@@ -1258,6 +1270,7 @@ func (q *Queries) ListRoomInvocationsByAssignment(ctx context.Context, assignmen
 			&i.MaxRetries,
 			&i.TaskID,
 			&i.OutputMessageID,
+			&i.Outcome,
 			&i.FailureReason,
 			&i.TimeoutAt,
 			&i.StartedAt,
@@ -1278,7 +1291,7 @@ func (q *Queries) ListRoomInvocationsByAssignment(ctx context.Context, assignmen
 }
 
 const listRoomInvocationsByRoom = `-- name: ListRoomInvocationsByRoom :many
-SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation
+SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, outcome, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation
 WHERE room_id = $1
 ORDER BY id ASC
 `
@@ -1305,6 +1318,7 @@ func (q *Queries) ListRoomInvocationsByRoom(ctx context.Context, roomID pgtype.U
 			&i.MaxRetries,
 			&i.TaskID,
 			&i.OutputMessageID,
+			&i.Outcome,
 			&i.FailureReason,
 			&i.TimeoutAt,
 			&i.StartedAt,
@@ -1362,7 +1376,7 @@ func (q *Queries) ListRoomManagerDecisionsByRoom(ctx context.Context, roomID pgt
 }
 
 const listRoomMessageMentionsByAssignment = `-- name: ListRoomMessageMentionsByAssignment :many
-SELECT id, message_id, target_type, target_id, label, span_start, span_end, created_at, source_type, source_message_id, assignment_id FROM room_message_mention WHERE assignment_id = $1 ORDER BY id ASC
+SELECT id, message_id, target_type, target_id, source_type, source_message_id, assignment_id, label, span_start, span_end, created_at FROM room_message_mention WHERE assignment_id = $1 ORDER BY id ASC
 `
 
 func (q *Queries) ListRoomMessageMentionsByAssignment(ctx context.Context, assignmentID pgtype.UUID) ([]RoomMessageMention, error) {
@@ -1379,13 +1393,13 @@ func (q *Queries) ListRoomMessageMentionsByAssignment(ctx context.Context, assig
 			&i.MessageID,
 			&i.TargetType,
 			&i.TargetID,
+			&i.SourceType,
+			&i.SourceMessageID,
+			&i.AssignmentID,
 			&i.Label,
 			&i.SpanStart,
 			&i.SpanEnd,
 			&i.CreatedAt,
-			&i.SourceType,
-			&i.SourceMessageID,
-			&i.AssignmentID,
 		); err != nil {
 			return nil, err
 		}
@@ -1398,7 +1412,7 @@ func (q *Queries) ListRoomMessageMentionsByAssignment(ctx context.Context, assig
 }
 
 const listRoomMessageMentionsByMessage = `-- name: ListRoomMessageMentionsByMessage :many
-SELECT id, message_id, target_type, target_id, label, span_start, span_end, created_at, source_type, source_message_id, assignment_id FROM room_message_mention WHERE message_id = $1 ORDER BY id ASC
+SELECT id, message_id, target_type, target_id, source_type, source_message_id, assignment_id, label, span_start, span_end, created_at FROM room_message_mention WHERE message_id = $1 ORDER BY id ASC
 `
 
 func (q *Queries) ListRoomMessageMentionsByMessage(ctx context.Context, messageID pgtype.UUID) ([]RoomMessageMention, error) {
@@ -1415,13 +1429,13 @@ func (q *Queries) ListRoomMessageMentionsByMessage(ctx context.Context, messageI
 			&i.MessageID,
 			&i.TargetType,
 			&i.TargetID,
+			&i.SourceType,
+			&i.SourceMessageID,
+			&i.AssignmentID,
 			&i.Label,
 			&i.SpanStart,
 			&i.SpanEnd,
 			&i.CreatedAt,
-			&i.SourceType,
-			&i.SourceMessageID,
-			&i.AssignmentID,
 		); err != nil {
 			return nil, err
 		}
@@ -1434,7 +1448,7 @@ func (q *Queries) ListRoomMessageMentionsByMessage(ctx context.Context, messageI
 }
 
 const listRoomMessageMentionsByRoom = `-- name: ListRoomMessageMentionsByRoom :many
-SELECT m.id, m.message_id, m.target_type, m.target_id, m.label, m.span_start, m.span_end, m.created_at, m.source_type, m.source_message_id, m.assignment_id
+SELECT m.id, m.message_id, m.target_type, m.target_id, m.source_type, m.source_message_id, m.assignment_id, m.label, m.span_start, m.span_end, m.created_at
 FROM room_message_mention m
 JOIN room_message msg ON msg.id = m.message_id
 WHERE msg.room_id = $1
@@ -1455,13 +1469,13 @@ func (q *Queries) ListRoomMessageMentionsByRoom(ctx context.Context, roomID pgty
 			&i.MessageID,
 			&i.TargetType,
 			&i.TargetID,
+			&i.SourceType,
+			&i.SourceMessageID,
+			&i.AssignmentID,
 			&i.Label,
 			&i.SpanStart,
 			&i.SpanEnd,
 			&i.CreatedAt,
-			&i.SourceType,
-			&i.SourceMessageID,
-			&i.AssignmentID,
 		); err != nil {
 			return nil, err
 		}
@@ -1474,7 +1488,7 @@ func (q *Queries) ListRoomMessageMentionsByRoom(ctx context.Context, roomID pgty
 }
 
 const listRunningRoomInvocationsForSoftWarn = `-- name: ListRunningRoomInvocationsForSoftWarn :many
-SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation
+SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, outcome, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation
 WHERE status = 'running'
   AND started_at IS NOT NULL
 ORDER BY started_at ASC
@@ -1503,6 +1517,7 @@ func (q *Queries) ListRunningRoomInvocationsForSoftWarn(ctx context.Context, lim
 			&i.MaxRetries,
 			&i.TaskID,
 			&i.OutputMessageID,
+			&i.Outcome,
 			&i.FailureReason,
 			&i.TimeoutAt,
 			&i.StartedAt,
@@ -1523,7 +1538,7 @@ func (q *Queries) ListRunningRoomInvocationsForSoftWarn(ctx context.Context, lim
 }
 
 const listTimedOutRunningRoomInvocations = `-- name: ListTimedOutRunningRoomInvocations :many
-SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation
+SELECT id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, outcome, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at FROM room_invocation
 WHERE status = 'running'
   AND started_at IS NOT NULL
   AND timeout_at IS NOT NULL
@@ -1554,6 +1569,7 @@ func (q *Queries) ListTimedOutRunningRoomInvocations(ctx context.Context, limit 
 			&i.MaxRetries,
 			&i.TaskID,
 			&i.OutputMessageID,
+			&i.Outcome,
 			&i.FailureReason,
 			&i.TimeoutAt,
 			&i.StartedAt,
@@ -1774,6 +1790,48 @@ func (q *Queries) UpdateRoomAssignmentStatus(ctx context.Context, arg UpdateRoom
 	return i, err
 }
 
+const updateRoomInvocationOutcome = `-- name: UpdateRoomInvocationOutcome :one
+UPDATE room_invocation
+SET outcome = COALESCE($1::jsonb, outcome),
+    updated_at = now()
+WHERE id = $2
+RETURNING id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, outcome, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at
+`
+
+type UpdateRoomInvocationOutcomeParams struct {
+	Outcome []byte      `json:"outcome"`
+	ID      pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) UpdateRoomInvocationOutcome(ctx context.Context, arg UpdateRoomInvocationOutcomeParams) (RoomInvocation, error) {
+	row := q.db.QueryRow(ctx, updateRoomInvocationOutcome, arg.Outcome, arg.ID)
+	var i RoomInvocation
+	err := row.Scan(
+		&i.ID,
+		&i.RoomID,
+		&i.AssignmentID,
+		&i.SourceMessageID,
+		&i.AgentID,
+		&i.Intent,
+		&i.Status,
+		&i.Priority,
+		&i.RetryCount,
+		&i.MaxRetries,
+		&i.TaskID,
+		&i.OutputMessageID,
+		&i.Outcome,
+		&i.FailureReason,
+		&i.TimeoutAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CancelledBy,
+		&i.CancelledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateRoomInvocationStatus = `-- name: UpdateRoomInvocationStatus :one
 UPDATE room_invocation
 SET status = $2,
@@ -1785,7 +1843,7 @@ SET status = $2,
     retry_count = COALESCE($8, retry_count),
     updated_at = now()
 WHERE id = $1
-RETURNING id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at
+RETURNING id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, outcome, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at
 `
 
 type UpdateRoomInvocationStatusParams struct {
@@ -1824,6 +1882,7 @@ func (q *Queries) UpdateRoomInvocationStatus(ctx context.Context, arg UpdateRoom
 		&i.MaxRetries,
 		&i.TaskID,
 		&i.OutputMessageID,
+		&i.Outcome,
 		&i.FailureReason,
 		&i.TimeoutAt,
 		&i.StartedAt,
@@ -1870,7 +1929,7 @@ const updateRoomMessageMentionAssignment = `-- name: UpdateRoomMessageMentionAss
 UPDATE room_message_mention
 SET assignment_id = $1
 WHERE id = $2
-RETURNING id, message_id, target_type, target_id, label, span_start, span_end, created_at, source_type, source_message_id, assignment_id
+RETURNING id, message_id, target_type, target_id, source_type, source_message_id, assignment_id, label, span_start, span_end, created_at
 `
 
 type UpdateRoomMessageMentionAssignmentParams struct {
@@ -1886,13 +1945,13 @@ func (q *Queries) UpdateRoomMessageMentionAssignment(ctx context.Context, arg Up
 		&i.MessageID,
 		&i.TargetType,
 		&i.TargetID,
+		&i.SourceType,
+		&i.SourceMessageID,
+		&i.AssignmentID,
 		&i.Label,
 		&i.SpanStart,
 		&i.SpanEnd,
 		&i.CreatedAt,
-		&i.SourceType,
-		&i.SourceMessageID,
-		&i.AssignmentID,
 	)
 	return i, err
 }

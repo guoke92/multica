@@ -201,6 +201,7 @@ export type RoomAssignment = {
   status: string;
   reason?: string;
   output_message_id?: string;
+  outcome?: RoomInvocationOutcome;
   created_by_type?: string;
   created_by_id?: string;
   created_at?: string;
@@ -217,6 +218,25 @@ export type RoomAssignmentDependency = {
   created_at?: string;
 };
 
+export type ManagerInvocationOutcome =
+  | { type: "dispatch"; target_agent_id: string; reason?: string }
+  | { type: "relay"; target_agent_id: string; reason?: string }
+  | { type: "reassign"; target_agent_id: string; reason?: string }
+  | { type: "review_complete"; conclusion?: string }
+  | { type: "ask_user"; conclusion?: string }
+  | { type: "wait"; conclusion?: string }
+  | { type: "skip" }
+  | { type: "retry"; target_assignment_id?: string }
+  | { type: "failed"; reason?: string }
+  | { type: "cancelled" };
+
+export type RoleInvocationOutcome = {
+  type: "text_output";
+  message_id: string;
+};
+
+export type RoomInvocationOutcome = ManagerInvocationOutcome | RoleInvocationOutcome;
+
 export type RoomInvocation = {
   id: string;
   room_id?: string;
@@ -230,6 +250,7 @@ export type RoomInvocation = {
   max_retries?: number;
   task_id?: string;
   output_message_id?: string;
+  outcome?: RoomInvocationOutcome;
   failure_reason?: string;
   timeout_at?: string;
   started_at?: string;

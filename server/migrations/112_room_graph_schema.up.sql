@@ -1,6 +1,5 @@
--- Room Graph refactor: replace mention_invocation / topic / delivery / flow_events
--- with Message / Mention / Assignment / Dependency / Invocation / Decision / Event.
--- Destructive: clears room workflow data.
+-- Room Graph schema (final): Message / Mention / Assignment / Dependency / Invocation / Decision / Event.
+-- Cleans legacy room workflow tables and creates final room collaboration schema.
 
 DELETE FROM agent_task_queue WHERE room_id IS NOT NULL;
 DELETE FROM approval_request WHERE room_id IS NOT NULL;
@@ -29,20 +28,6 @@ DROP INDEX IF EXISTS idx_room_message_delivery;
 ALTER TABLE approval_request DROP CONSTRAINT IF EXISTS approval_request_invocation_id_fkey;
 ALTER TABLE approval_request RENAME COLUMN invocation_id TO room_invocation_id;
 
--- Structured @mentions on messages.
-CREATE TABLE room_message_mention (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    message_id UUID NOT NULL REFERENCES room_message(id) ON DELETE CASCADE,
-    target_type TEXT NOT NULL CHECK (target_type IN ('agent', 'squad', 'member', 'all')),
-    target_id UUID,
-    label TEXT NOT NULL DEFAULT '',
-    span_start INT,
-    span_end INT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX idx_room_message_mention_message ON room_message_mention(message_id);
-
 -- Collaboration assignments (mention, auto_review, manager_route, join, etc.).
 CREATE TABLE room_assignment (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -59,6 +44,9 @@ CREATE TABLE room_assignment (
     )),
     reason TEXT,
     output_message_id UUID REFERENCES room_message(id) ON DELETE SET NULL,
+    failure_acknowledged_at TIMESTAMPTZ,
+    failure_acknowledged_by UUID,
+    superseded_by_assignment_id UUID REFERENCES room_assignment(id) ON DELETE SET NULL,
     created_by_type TEXT NOT NULL DEFAULT 'system'
         CHECK (created_by_type IN ('user', 'agent', 'system')),
     created_by_id UUID,
@@ -70,6 +58,30 @@ CREATE INDEX idx_room_assignment_room_status ON room_assignment(room_id, status)
 CREATE INDEX idx_room_assignment_source_message ON room_assignment(source_message_id);
 CREATE INDEX idx_room_assignment_room_active ON room_assignment(room_id, updated_at DESC)
     WHERE status NOT IN ('completed', 'cancelled', 'skipped');
+
+CREATE INDEX idx_room_assignment_attention_failed ON room_assignment(room_id)
+    WHERE status = 'failed'
+      AND failure_acknowledged_at IS NULL
+      AND superseded_by_assignment_id IS NULL;
+
+-- Structured @mentions on messages.
+CREATE TABLE room_message_mention (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    message_id UUID NOT NULL REFERENCES room_message(id) ON DELETE CASCADE,
+    target_type TEXT NOT NULL CHECK (target_type IN ('agent', 'squad', 'member', 'all')),
+    target_id UUID,
+    source_type TEXT NOT NULL DEFAULT 'manual' CHECK (source_type IN ('manual', 'agent_mention', 'manager_dispatch')),
+    source_message_id UUID REFERENCES room_message(id) ON DELETE SET NULL,
+    assignment_id UUID REFERENCES room_assignment(id) ON DELETE SET NULL,
+    label TEXT NOT NULL DEFAULT '',
+    span_start INT,
+    span_end INT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_room_message_mention_message ON room_message_mention(message_id);
+CREATE INDEX idx_room_message_mention_source_message ON room_message_mention(source_message_id) WHERE source_message_id IS NOT NULL;
+CREATE INDEX idx_room_message_mention_assignment ON room_message_mention(assignment_id) WHERE assignment_id IS NOT NULL;
 
 -- Join / barrier: blocked assignment waits on prerequisite assignments.
 CREATE TABLE room_assignment_dependency (
@@ -102,6 +114,7 @@ CREATE TABLE room_invocation (
     max_retries INT NOT NULL DEFAULT 1,
     task_id UUID REFERENCES agent_task_queue(id) ON DELETE SET NULL,
     output_message_id UUID REFERENCES room_message(id) ON DELETE SET NULL,
+    outcome JSONB,
     failure_reason TEXT,
     timeout_at TIMESTAMPTZ,
     started_at TIMESTAMPTZ,

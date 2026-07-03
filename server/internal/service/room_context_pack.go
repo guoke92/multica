@@ -1,8 +1,8 @@
 package service
 
 import (
-	"context"
 	"encoding/json"
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -94,17 +94,6 @@ func messageSummary(m db.RoomMessage) string {
 	return ""
 }
 
-func isManagerDispatchMessage(m db.RoomMessage) bool {
-	if len(m.Metadata) == 0 {
-		return false
-	}
-	var meta map[string]any
-	if json.Unmarshal(m.Metadata, &meta) != nil {
-		return false
-	}
-	return meta["manager_dispatch"] == true
-}
-
 func entryFromMessage(m db.RoomMessage, source string) RoomContextEntry {
 	e := RoomContextEntry{
 		MessageID:  util.UUIDToString(m.ID),
@@ -194,9 +183,7 @@ func (s *TaskService) BuildRoomPromptContext(
 		if parent.SenderType == "user" {
 			src = "user_root"
 		}
-		if isManagerDispatchMessage(parent) {
-			src = "manager_dispatch"
-		}
+
 		addHigh(parent, src)
 		cur = parent
 	}
@@ -204,12 +191,6 @@ func (s *TaskService) BuildRoomPromptContext(
 	userRoot := findUserRootMessage(triggerMsg, byID)
 	if userRoot.ID.Valid {
 		addHigh(userRoot, "user_root")
-	}
-
-	for _, m := range msgs {
-		if isManagerDispatchMessage(m) {
-			addHigh(m, "manager_dispatch")
-		}
 	}
 
 	sortHighRelevance(high, triggerID)

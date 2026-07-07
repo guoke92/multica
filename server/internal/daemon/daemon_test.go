@@ -403,8 +403,9 @@ func TestBuildPromptRoomManagerReviewDoesNotPanic(t *testing.T) {
 	}, "claude")
 
 	for _, want := range []string{
-		"room router & supervisor",
+		"room coordinator",
 		"Mode: review",
+		"conversation closure",
 		"workflow_action",
 		"前端工程师",
 	} {

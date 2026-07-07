@@ -11,6 +11,10 @@ import {
   roomKeys,
 } from "@multica/core/room/queries";
 import {
+  appendRoomMessageToInfiniteCache,
+  roomMessagesInfiniteKey,
+} from "@multica/core/room/graph-cache";
+import {
   useSendRoomMessage,
   useUpdateRoomMessage,
   useRegenerateRoomAgentMessage,
@@ -154,9 +158,7 @@ export function RoomView({ roomId, onArchived }: Props) {
       quote_message_id: quoteReply?.messageId,
       created_at: new Date().toISOString(),
     };
-    qc.setQueryData<RoomMessage[]>(roomKeys.messages(wsId, roomId), (old) =>
-      old ? [...old, optimistic] : [optimistic],
-    );
+    appendRoomMessageToInfiniteCache(qc, wsId, roomId, optimistic);
 
     sendMessage.mutate(
       {
@@ -177,14 +179,14 @@ export function RoomView({ roomId, onArchived }: Props) {
                 "此群未配置群管理，未 @Agent 的消息不会被自动处理。请 @具体的 Agent 或在群设置中启用群管理。",
             });
           }
-          void qc.invalidateQueries({ queryKey: roomKeys.messages(wsId, roomId) });
-          invalidateRoomGraph();
         },
         onError: (err) => {
           toast.error(
             err instanceof Error && err.message ? err.message : "消息发送失败",
           );
-          void qc.invalidateQueries({ queryKey: roomKeys.messages(wsId, roomId) });
+          void qc.invalidateQueries({
+            queryKey: roomMessagesInfiniteKey(wsId, roomId),
+          });
         },
       },
     );
@@ -294,6 +296,7 @@ export function RoomView({ roomId, onArchived }: Props) {
           managerAgentId={room?.manager_agent_id}
           assignments={assignments}
           mentions={graph?.mentions ?? []}
+          decisions={decisions}
           invocations={invocations}
           scrollToMessageId={scrollToMessageId}
           onScrollToMessageDone={() => setScrollToMessageId(null)}

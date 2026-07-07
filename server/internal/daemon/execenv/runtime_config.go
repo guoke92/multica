@@ -527,7 +527,7 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 				scene = ctx.RoomWorkflowIntent
 			}
 			if scene == "orchestrate" || scene == "route" || scene == "review" || scene == "confirm" || scene == "escalate" {
-				b.WriteString("**You are the room router & supervisor.** Route user requests to the right agent, evaluate output, relay when needed, and escalate when stuck.\n")
+				b.WriteString("**You are the room coordinator.** Route requests to role agents, judge conversation closure (not artifact inspection), relay when needed, escalate when stuck. Do not execute tasks or answer users directly.\n")
 				b.WriteString("Do NOT run `multica issue create` or `multica issue update` — manager agents are forbidden from Issue mutations. @ role agents to create/update Issues.\n\n")
 				if strings.TrimSpace(ctx.RoomWorkflowPolicy) != "" {
 					b.WriteString("## Room policy\n\n```json\n")

@@ -33,43 +33,42 @@ export function invocationItemsForMessage(
     .sort((a, b) => -compareMonotonicId(a.invocation.id, b.invocation.id));
 }
 
-export function RoleAgentInvocationSlots({
-  items,
+/** Role-agent processing row in the chat timeline (same slot as the final agent reply). */
+export function RoleAgentTimelineEntry({
+  item,
   agentNameById,
   onRetryAssignment,
   onCancelAssignment,
   retryingAssignmentId,
   cancellingAssignmentId,
 }: {
-  items: InvocationChatItem[];
+  item: InvocationChatItem;
   agentNameById: Map<string, string>;
   onRetryAssignment?: (assignmentId: string) => void;
   onCancelAssignment?: (assignmentId: string) => void;
   retryingAssignmentId?: string | null;
   cancellingAssignmentId?: string | null;
 }) {
-  const roleItems = items.filter((item) => item.presentation === "agent_bubble");
-  if (roleItems.length === 0) return null;
-
   return (
-    <div className="space-y-1.5">
-      {roleItems.map((item) => (
-        <RoleAgentInvocationSkin
-          key={item.invocation.id}
-          item={item}
-          agentNameById={agentNameById}
-          onRetryAssignment={onRetryAssignment}
-          onCancelAssignment={onCancelAssignment}
-          retryingAssignmentId={retryingAssignmentId}
-          cancellingAssignmentId={cancellingAssignmentId}
-        />
-      ))}
+    <div
+      className="group flex w-full flex-col gap-1"
+      data-room-invocation-id={item.invocation.id}
+    >
+      <RoleAgentInvocationSkin
+        item={item}
+        agentNameById={agentNameById}
+        onRetryAssignment={onRetryAssignment}
+        onCancelAssignment={onCancelAssignment}
+        retryingAssignmentId={retryingAssignmentId}
+        cancellingAssignmentId={cancellingAssignmentId}
+      />
     </div>
   );
 }
 
 export function ManagerHistoryBelowBar({
   items,
+  leadingInvocationId,
   agentNameById,
   onRetryAssignment,
   onCancelAssignment,
@@ -78,6 +77,7 @@ export function ManagerHistoryBelowBar({
   align = "start",
 }: {
   items: InvocationChatItem[];
+  leadingInvocationId?: string;
   agentNameById: Map<string, string>;
   onRetryAssignment?: (assignmentId: string) => void;
   onCancelAssignment?: (assignmentId: string) => void;
@@ -86,7 +86,9 @@ export function ManagerHistoryBelowBar({
   align?: "start" | "end";
 }) {
   const managerItems = items.filter((item) => item.presentation === "manager_status");
-  const older = managerItems.slice(1);
+  const older = leadingInvocationId
+    ? managerItems.filter((item) => item.invocation.id !== leadingInvocationId)
+    : managerItems.slice(1);
   if (older.length === 0) return null;
 
   return (

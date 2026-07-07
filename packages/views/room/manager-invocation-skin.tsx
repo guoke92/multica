@@ -10,7 +10,12 @@ import {
 } from "@multica/ui/components/ui/collapsible";
 import { cn } from "@multica/ui/lib/utils";
 import { UnicodeSpinner } from "@multica/ui/components/common/unicode-spinner";
+import type { RoomManagerDecision } from "@multica/core/types/room";
 import type { InvocationChatItem, UserVisiblePhase } from "./room-flow-utils";
+import {
+  latestManagerDecisionForMessage,
+  managerDecisionTargetAgentId,
+} from "./room-flow-utils";
 import { useElapsedSeconds } from "./room-elapsed-timer";
 
 const SOFT_WARN_SECONDS = 90;
@@ -18,6 +23,7 @@ const SOFT_WARN_SECONDS = 90;
 type Props = {
   items: InvocationChatItem[];
   agentNameById: Map<string, string>;
+  decisions?: RoomManagerDecision[];
   onRetryAssignment?: (assignmentId: string) => void;
   onCancelAssignment?: (assignmentId: string) => void;
   retryingAssignmentId?: string | null;
@@ -56,6 +62,7 @@ export function ManagerStatusLeading(
 function ManagerInvocationItem({
   item,
   agentNameById,
+  decisions = [],
   onRetryAssignment,
   onCancelAssignment,
   retryingAssignmentId,
@@ -65,6 +72,7 @@ function ManagerInvocationItem({
 }: Pick<
   Props,
   | "agentNameById"
+  | "decisions"
   | "onRetryAssignment"
   | "onCancelAssignment"
   | "retryingAssignmentId"
@@ -81,14 +89,38 @@ function ManagerInvocationItem({
     elapsed !== null &&
     elapsed >= SOFT_WARN_SECONDS;
 
+  const decision = latestManagerDecisionForMessage(
+    decisions,
+    item.sourceMessageId,
+    invocation.id,
+  );
   const outcome = invocation.outcome;
+  const decisionTargetId = decision ? managerDecisionTargetAgentId(decision) : undefined;
   const targetName =
-    outcome && "target_agent_id" in outcome && outcome.target_agent_id
+    (outcome && "target_agent_id" in outcome && outcome.target_agent_id
       ? agentNameById.get(outcome.target_agent_id) ?? "Agent"
-      : undefined;
+      : undefined) ??
+    (decisionTargetId ? agentNameById.get(decisionTargetId) ?? "Agent" : undefined);
 
-  const showSpinner = phase === "running" || phase === "queued";
-  const label = buildManagerLabel(phase, outcome, targetName);
+  const displayPhase =
+    decision?.action === "assign" &&
+    targetName &&
+    managerAssignDispatched(decision, outcome)
+      ? ("succeeded" as UserVisiblePhase)
+      : (phase === "failed" || phase === "cancelled") &&
+          decision?.action === "assign" &&
+          targetName
+        ? ("succeeded" as UserVisiblePhase)
+        : phase;
+
+  const showSpinner = displayPhase === "running" || displayPhase === "queued";
+  const scene = resolveManagerScene(
+    invocation.intent,
+    assignment.kind,
+    outcome,
+    decision,
+  );
+  const label = buildManagerStatusText(scene, displayPhase, outcome, targetName, decision);
 
   const tone =
     phase === "failed"
@@ -119,12 +151,15 @@ function ManagerInvocationItem({
           tone === "muted" && "text-muted-foreground",
         )}
       >
-        <span className={cn(showSpinner && !isSoftWarn && "animate-chat-text-shimmer")}>群管 {label}</span>
+        <span className={cn(showSpinner && !isSoftWarn && "animate-chat-text-shimmer")}>{label}</span>
         {elapsed !== null && showSpinner ? (
           <span className="opacity-70 tabular-nums">· {elapsed}s</span>
         ) : null}
       </span>
-      {outcome && "conclusion" in outcome && outcome.conclusion ? (
+      {!compactActions &&
+      outcome &&
+      "conclusion" in outcome &&
+      outcome.conclusion ? (
         <span className="text-muted-foreground line-clamp-1 max-w-[20rem]">{outcome.conclusion}</span>
       ) : null}
       <ManagerActionButtons
@@ -217,36 +252,111 @@ export function ManagerHistoryFold(props: Props & { items: InvocationChatItem[] 
   );
 }
 
-function buildManagerLabel(
+/** Scene label for manager invocations — intent/outcome/decision first. */
+export function resolveManagerScene(
+  intent?: string,
+  assignmentKind?: string,
+  outcome?: InvocationChatItem["invocation"]["outcome"],
+  decision?: RoomManagerDecision,
+): string {
+  if (decision?.action === "assign") return "指派";
+  if (decision?.action === "complete" || decision?.action === "ask_user") return "审核";
+
+  switch (intent?.trim()) {
+    case "route":
+    case "orchestrate":
+      return "指派";
+    case "review":
+      return "审核";
+    case "confirm":
+      return "确认";
+    case "escalate":
+      return "升级";
+    default:
+      break;
+  }
+  const outcomeType = outcome?.type;
+  if (
+    outcomeType === "dispatch" ||
+    outcomeType === "relay" ||
+    outcomeType === "reassign"
+  ) {
+    return "指派";
+  }
+  if (
+    outcomeType === "review_complete" ||
+    outcomeType === "ask_user" ||
+    outcomeType === "wait"
+  ) {
+    return "审核";
+  }
+  // User-side routing also uses kind=auto_review; default to 指派 unless intent=review.
+  if (assignmentKind === "auto_review" && intent?.trim() === "review") {
+    return "审核";
+  }
+  return "指派";
+}
+
+/** True when assign decision actually created downstream work (sidebar agrees). */
+export function managerAssignDispatched(
+  decision?: RoomManagerDecision,
+  outcome?: InvocationChatItem["invocation"]["outcome"],
+): boolean {
+  if ((decision?.created_assignment_ids?.length ?? 0) > 0) return true;
+  const type = outcome?.type;
+  if (
+    type === "dispatch" ||
+    type === "relay" ||
+    type === "reassign"
+  ) {
+    return true;
+  }
+  if (
+    decision?.action === "assign" &&
+    outcome &&
+    typeof outcome === "object" &&
+    "target_agent_id" in outcome &&
+    outcome.target_agent_id
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function buildManagerStatusPart(
   phase: UserVisiblePhase,
   outcome: InvocationChatItem["invocation"]["outcome"],
   targetName?: string,
+  decision?: RoomManagerDecision,
 ): string {
+  if (
+    decision?.action === "assign" &&
+    targetName &&
+    managerAssignDispatched(decision, outcome)
+  ) {
+    return targetName;
+  }
+
   if (phase === "running") return "思考中";
   if (phase === "queued") return "排队中";
   if (phase === "cancelled") return "已取消";
   if (phase === "failed") return "失败";
-  if (phase === "waiting_user") return "等待你的回复";
+  if (phase === "waiting_user") return "处理完成,待人工确认";
 
-  if (!outcome || typeof outcome !== "object") return "处理完成";
+  if (!outcome || typeof outcome !== "object") {
+    if (decision?.action === "assign" && targetName) return targetName;
+    return "处理完成";
+  }
 
   if ("target_agent_id" in outcome && outcome.target_agent_id) {
-    const reason = "reason" in outcome && outcome.reason ? ` · ${outcome.reason}` : "";
-    switch (outcome.type) {
-      case "relay":
-        return targetName ? `已转交给 @${targetName}${reason}` : `已转交${reason}`;
-      case "reassign":
-        return targetName ? `已转派给 @${targetName}${reason}` : `已转派${reason}`;
-      default:
-        return targetName ? `已分配给 @${targetName}${reason}` : `已分配${reason}`;
-    }
+    return targetName ?? "Agent";
   }
 
   switch (outcome.type) {
     case "review_complete":
-      return "审阅完成";
+      return "处理完成";
     case "ask_user":
-      return "等待你的回复";
+      return "处理完成,待人工确认";
     case "wait":
       return "等待中";
     case "skip":
@@ -258,4 +368,29 @@ function buildManagerLabel(
     default:
       return "处理完成";
   }
+}
+
+/** Compact bar label: `{scene}·{status}` without the legacy 群管 prefix. */
+export function buildManagerStatusText(
+  scene: string,
+  phase: UserVisiblePhase,
+  outcome: InvocationChatItem["invocation"]["outcome"],
+  targetName?: string,
+  decision?: RoomManagerDecision,
+): string {
+  if (
+    decision?.action === "assign" &&
+    targetName &&
+    managerAssignDispatched(decision, outcome)
+  ) {
+    return `${scene}·${targetName}`;
+  }
+  if (
+    (phase === "failed" || phase === "cancelled") &&
+    decision?.action === "assign" &&
+    targetName
+  ) {
+    return `${scene}·${targetName}`;
+  }
+  return `${scene}·${buildManagerStatusPart(phase, outcome, targetName, decision)}`;
 }

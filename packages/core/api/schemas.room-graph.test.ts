@@ -98,6 +98,82 @@ describe("RoomGraphSnapshotSchema", () => {
     }
   });
 
+  it("accepts null invocation outcome from API", () => {
+    const raw = {
+      messages: [],
+      mentions: [],
+      assignments: [],
+      assignment_dependencies: [],
+      invocations: [
+        {
+          id: "inv-1",
+          assignment_id: "asgn-1",
+          source_message_id: "msg-1",
+          agent_id: "agent-1",
+          status: "running",
+          outcome: null,
+        },
+      ],
+      decisions: [],
+      invocation_events: [],
+    };
+    const result = RoomGraphSnapshotSchema.safeParse(raw);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.invocations[0]?.outcome).toBeUndefined();
+    }
+  });
+
+  it("accepts invocation outcome missing type", () => {
+    const raw = {
+      messages: [],
+      mentions: [],
+      assignments: [],
+      assignment_dependencies: [],
+      invocations: [
+        {
+          id: "inv-1",
+          assignment_id: "asgn-1",
+          source_message_id: "msg-1",
+          agent_id: "agent-1",
+          status: "succeeded",
+          outcome: { target_agent_id: "agent-fe", reason: "legacy row" },
+        },
+      ],
+      decisions: [],
+      invocation_events: [],
+    };
+    const result = RoomGraphSnapshotSchema.safeParse(raw);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.invocations[0]?.outcome?.type).toBe("unknown");
+    }
+  });
+
+  it("accepts invocation events with null payload", () => {
+    const raw = {
+      messages: [],
+      mentions: [],
+      assignments: [],
+      assignment_dependencies: [],
+      invocations: [],
+      decisions: [],
+      invocation_events: [
+        {
+          id: "evt-1",
+          type: "assignment_created",
+          actor_type: "system",
+          payload: null,
+        },
+      ],
+    };
+    const result = RoomGraphSnapshotSchema.safeParse(raw);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.invocation_events[0]?.payload).toEqual({});
+    }
+  });
+
   it("rejects raw DB byte payloads (base64 strings)", () => {
     const rawDbShape = {
       messages: [],

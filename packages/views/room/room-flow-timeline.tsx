@@ -28,6 +28,7 @@ import {
   isFlowTrackAttentionFailure,
   isFlowTrackLiveForTimer,
   resolveFlowScrollMessageId,
+  resolveFlowTrackAssembledPrompt,
   resolveFlowTrackElapsedSeconds,
   resolveFlowTrackTimerAnchor,
   resolveManagerDecisionForTrack,
@@ -180,6 +181,7 @@ function FlowTrackRow({
   const hasHistory = track.steps.length > 1;
   const line = formatFlowTrackLine(track, displayOpts);
   const managerDetail = resolveManagerDecisionForTrack(track, graph);
+  const assembledPrompt = resolveFlowTrackAssembledPrompt(track);
   const needsAck = isFlowTrackAttentionFailure(track, graph);
   const isAcking = acknowledgingAssignmentId === track.assignmentId;
   const startedAtLabel = formatFlowClockTime(track.startedAt);
@@ -248,7 +250,7 @@ function FlowTrackRow({
     </div>
   );
 
-  if (!hasHistory && !managerDetail?.reason) {
+  if (!hasHistory && !managerDetail?.reason && !assembledPrompt) {
     return <li>{row}</li>;
   }
 
@@ -256,11 +258,12 @@ function FlowTrackRow({
     <li>
       <HoverCard>
         <HoverCardTrigger render={<div className="w-full">{row}</div>} />
-        <HoverCardContent side="left" align="start" className="w-72 p-0">
+        <HoverCardContent side="left" align="start" className="w-80 p-0">
           <FlowTrackHistoryPanel
             track={track}
             displayOpts={displayOpts}
             managerDetail={managerDetail}
+            assembledPrompt={assembledPrompt}
             onNavigateToMessage={onNavigateToMessage}
             messages={messages}
             graph={graph}
@@ -275,6 +278,7 @@ function FlowTrackHistoryPanel({
   track,
   displayOpts,
   managerDetail,
+  assembledPrompt,
   onNavigateToMessage,
   messages,
   graph,
@@ -287,6 +291,7 @@ function FlowTrackHistoryPanel({
     graph: FlowGraphContext;
   };
   managerDetail?: ReturnType<typeof resolveManagerDecisionForTrack>;
+  assembledPrompt?: string;
   onNavigateToMessage?: (messageId: string, assignmentId: string) => void;
   messages: RoomMessage[];
   graph: FlowGraphContext;
@@ -323,6 +328,16 @@ function FlowTrackHistoryPanel({
           <p className="text-foreground mt-1 text-xs leading-relaxed whitespace-pre-wrap break-words">
             {managerDetail.reason}
           </p>
+        </div>
+      ) : null}
+      {assembledPrompt ? (
+        <div className="border-border bg-muted/20 border-b px-3 py-2">
+          <p className="text-muted-foreground text-[10px] font-medium">
+            完整 Prompt（入队时快照）
+          </p>
+          <pre className="text-foreground mt-1 max-h-48 overflow-y-auto text-[10px] leading-relaxed whitespace-pre-wrap break-words">
+            {assembledPrompt}
+          </pre>
         </div>
       ) : null}
       <ul className="max-h-44 space-y-0.5 overflow-y-auto px-2 py-2">

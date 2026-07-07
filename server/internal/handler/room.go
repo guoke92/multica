@@ -62,9 +62,10 @@ type SendRoomMessageRequest struct {
 }
 
 type SendRoomMessageResponse struct {
-	MessageID   string               `json:"message_id"`
-	CreatedAt   string               `json:"created_at"`
-	Invocations []InvocationResponse `json:"invocations,omitempty"`
+	MessageID    string               `json:"message_id"`
+	CreatedAt    string               `json:"created_at"`
+	Invocations  []InvocationResponse `json:"invocations,omitempty"`
+	Assignments  []AssignmentResponse `json:"assignments,omitempty"`
 }
 
 type CreateRoomAssignmentRequest struct {
@@ -322,6 +323,9 @@ func roomInvocationsToGraphResponse(rows []db.RoomInvocation) []roomGraphInvocat
 		if inv.OutputMessageID.Valid {
 			s := uuidToString(inv.OutputMessageID)
 			item.OutputMessageID = &s
+		}
+		if len(inv.Outcome) > 0 {
+			item.Outcome = inv.Outcome
 		}
 		out = append(out, item)
 	}
@@ -1526,11 +1530,16 @@ func (h *Handler) SendRoomMessage(w http.ResponseWriter, r *http.Request) {
 	for _, inv := range result.Invocations {
 		invResp = append(invResp, invocationToResponse(inv))
 	}
+	assignResp := make([]AssignmentResponse, 0, len(result.Assignments))
+	for _, a := range result.Assignments {
+		assignResp = append(assignResp, assignmentToResponse(a))
+	}
 
 	writeJSON(w, http.StatusCreated, SendRoomMessageResponse{
 		MessageID:   uuidToString(msg.ID),
 		CreatedAt:   timestampToString(msg.CreatedAt),
 		Invocations: invResp,
+		Assignments: assignResp,
 	})
 }
 

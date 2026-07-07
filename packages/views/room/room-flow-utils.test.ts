@@ -21,6 +21,7 @@ import {
   listActiveInvocationSlots,
   managerStatusByMessageId,
   needsAttentionFailure,
+  pickLeadingManagerItem,
   projectFlowEvents,
   resolveFlowScrollMessageId,
   resolveFlowTrackElapsedSeconds,
@@ -639,7 +640,7 @@ describe("graph helpers", () => {
         managerAgentId: "mgr",
         graph,
       }),
-    ).toBe("群管 · 路由审阅 · 完成");
+    ).toBe("审阅 · 完成");
   });
 
   it("shows manager decision action in flow timeline", () => {
@@ -697,7 +698,7 @@ describe("graph helpers", () => {
         managerAgentId: "mgr",
         graph,
       }),
-    ).toBe("群管 · 分配 前端工程师 · 完成");
+    ).toBe("指派 前端工程师 · 完成");
   });
 
   it("shows manager relay reason in flow timeline", () => {
@@ -758,7 +759,7 @@ describe("graph helpers", () => {
         managerAgentId: "mgr",
         graph,
       }),
-    ).toBe("群管 · 转派 前端工程师（需补充单元测试与落盘验证） · 完成");
+    ).toBe("转派 前端工程师 · 完成");
   });
 
   it("shows failure escalation task while manager is replanning", () => {
@@ -812,7 +813,7 @@ describe("graph helpers", () => {
         managerAgentId: "mgr",
         graph,
       }),
-    ).toBe("群管 · 处置 前端工程师 失败 · 思考中");
+    ).toBe("升级 · 思考中");
   });
 
   it("shows assignee name for manager_route assignment failures in flow timeline", () => {
@@ -1138,5 +1139,168 @@ describe("invocation inline anchoring", () => {
       sourceMessageId: "msg-user",
       phase: "succeeded",
     });
+  });
+});
+
+describe("pickLeadingManagerItem", () => {
+  it("prefers dispatch success over later failed manager run on same message", () => {
+    const items = [
+      {
+        invocation: {
+          id: "inv-fail",
+          assignment_id: "a-fail",
+          source_message_id: "msg-user",
+          agent_id: "mgr",
+          intent: "escalate",
+          status: "failed",
+        },
+        assignment: {
+          id: "a-fail",
+          kind: "auto_review",
+          status: "failed",
+          source_message_id: "msg-user",
+          assignee_type: "agent",
+          assignee_id: "mgr",
+        },
+        agentId: "mgr",
+        agentName: "群管",
+        sourceMessageId: "msg-user",
+        presentation: "manager_status" as const,
+        phase: "failed" as const,
+      },
+      {
+        invocation: {
+          id: "inv-dispatch",
+          assignment_id: "a-route",
+          source_message_id: "msg-user",
+          agent_id: "mgr",
+          intent: "route",
+          status: "succeeded",
+          outcome: { type: "dispatch", target_agent_id: "fe" },
+        },
+        assignment: {
+          id: "a-route",
+          kind: "auto_review",
+          status: "completed",
+          source_message_id: "msg-user",
+          assignee_type: "agent",
+          assignee_id: "mgr",
+        },
+        agentId: "mgr",
+        agentName: "群管",
+        sourceMessageId: "msg-user",
+        presentation: "manager_status" as const,
+        phase: "succeeded" as const,
+      },
+    ];
+
+    const leading = pickLeadingManagerItem(items);
+    expect(leading?.invocation.id).toBe("inv-dispatch");
+  });
+
+  it("prefers dispatch success over failed sibling when assign decision exists", () => {
+    const items = [
+      {
+        invocation: {
+          id: "inv-fail",
+          assignment_id: "a-fail",
+          source_message_id: "msg-user",
+          agent_id: "mgr",
+          intent: "review",
+          status: "failed",
+        },
+        assignment: {
+          id: "a-fail",
+          kind: "auto_review",
+          status: "failed",
+          source_message_id: "msg-user",
+          assignee_type: "agent",
+          assignee_id: "mgr",
+        },
+        agentId: "mgr",
+        agentName: "群管",
+        sourceMessageId: "msg-user",
+        presentation: "manager_status" as const,
+        phase: "failed" as const,
+      },
+      {
+        invocation: {
+          id: "inv-dispatch",
+          assignment_id: "a-route",
+          source_message_id: "msg-user",
+          agent_id: "mgr",
+          intent: "route",
+          status: "succeeded",
+          outcome: { type: "dispatch", target_agent_id: "fe" },
+        },
+        assignment: {
+          id: "a-route",
+          kind: "auto_review",
+          status: "completed",
+          source_message_id: "msg-user",
+          assignee_type: "agent",
+          assignee_id: "mgr",
+        },
+        agentId: "mgr",
+        agentName: "群管",
+        sourceMessageId: "msg-user",
+        presentation: "manager_status" as const,
+        phase: "succeeded" as const,
+      },
+    ];
+    const decisions = [
+      {
+        id: "dec-1",
+        room_id: "room-1",
+        source_message_id: "msg-user",
+        action: "assign",
+        payload: { route_to: "fe" },
+      },
+    ];
+
+    expect(pickLeadingManagerItem(items, decisions)?.invocation.id).toBe("inv-dispatch");
+  });
+
+  it("uses assign decision when only failed manager item exists", () => {
+    const items = [
+      {
+        invocation: {
+          id: "inv-fail",
+          assignment_id: "a-route",
+          source_message_id: "msg-user",
+          agent_id: "mgr",
+          intent: "route",
+          status: "succeeded",
+          outcome: {
+            type: "failed",
+            reason: "dispatch succeeded but mention creation failed",
+            target_agent_id: "fe",
+          },
+        },
+        assignment: {
+          id: "a-route",
+          kind: "auto_review",
+          status: "completed",
+          source_message_id: "msg-user",
+          assignee_type: "agent",
+          assignee_id: "mgr",
+        },
+        agentId: "mgr",
+        agentName: "群管",
+        sourceMessageId: "msg-user",
+        presentation: "manager_status" as const,
+        phase: "succeeded" as const,
+      },
+    ];
+    const decisions = [
+      {
+        id: "dec-1",
+        source_message_id: "msg-user",
+        action: "assign",
+        created_assignment_ids: ["a-fe"],
+        payload: { route_to: "fe" },
+      },
+    ];
+    expect(pickLeadingManagerItem(items, decisions)?.invocation.id).toBe("inv-fail");
   });
 });

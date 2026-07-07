@@ -6,7 +6,7 @@ export { RoomActivityFooter } from "./room-activity-footer";
 export { RoomAttributionPill } from "./room-attribution-pill";
 export {
   invocationItemsForMessage,
-  RoleAgentInvocationSlots,
+  RoleAgentTimelineEntry,
   ManagerHistoryBelowBar,
 } from "./room-invocation-thread";
 export { ManagerInvocationSkin, ManagerStatusLeading } from "./manager-invocation-skin";

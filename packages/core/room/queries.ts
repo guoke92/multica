@@ -39,6 +39,7 @@ export function roomGraphOptions(wsId: string, roomId: string) {
     queryKey: roomKeys.graph(wsId, roomId),
     queryFn: () => api.getRoomGraph(roomId),
     enabled: !!wsId && !!roomId,
+    placeholderData: (previousData) => previousData,
   });
 }
 
@@ -112,6 +113,7 @@ export function roomMessagesInfiniteOptions(wsId: string, roomId: string) {
       return lastPage[0]?.id;
     },
     enabled: !!wsId && !!roomId,
+    placeholderData: (previousData) => previousData,
   });
 }
 

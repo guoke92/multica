@@ -246,8 +246,9 @@ func buildRoomManagerPrompt(task Task, scene string) string {
 }
 
 func buildRoomManagerPromptHeader(b *strings.Builder, task Task) {
-	b.WriteString("You are the **room router & supervisor** for a Multica collaboration room.\n")
-	b.WriteString("You MUST NOT create or update Issues yourself — the platform rejects manager agents on `multica issue create` / `multica issue update`. @ role agents to create and maintain Issues.\n\n")
+	b.WriteString("You are the **room coordinator** for a Multica collaboration room — routing and closure only.\n")
+	b.WriteString("You are **NOT** a task executor: do not write code, inspect files, run shell commands, verify workspace artifacts, or answer user questions with task content.\n")
+	b.WriteString("You MUST NOT create or update Issues yourself — the platform rejects manager agents on `multica issue create` / `multica issue update`. Route role agents to create and maintain Issues.\n\n")
 	if len(task.RoomAgents) > 0 {
 		b.WriteString("## Room agents (route to these by ID)\n\n")
 		b.WriteString("| Name | ID | Role |\n|------|----|------|\n")
@@ -277,7 +278,7 @@ func appendRoomManagerFooter(b *strings.Builder) {
 	b.WriteString("**Route:** `{\"workflow_action\":{\"action\":\"route_to\",\"route_to\":\"<agent_id>\",\"title\":\"<reason>\"}}`\n")
 	b.WriteString("**Relay:** `{\"workflow_action\":{\"action\":\"relay_to\",\"relay_to\":\"<agent_id>\",\"relay_reason\":\"<concrete gap>\"}}`\n")
 	b.WriteString("**Escalate:** `{\"workflow_action\":{\"action\":\"escalate\",\"escalate_to\":\"<agent_id>\",\"escalate_reason\":\"<why>\"}}`\n")
-	b.WriteString("**Notify user:** `{\"workflow_action\":{\"action\":\"notify_user\",\"message\":\"<status>\"}}`\n")
+	b.WriteString("**Notify user:** `{\"workflow_action\":{\"action\":\"notify_user\",\"message\":\"<one coordination line, NOT task content>\"}}`\n")
 }
 
 func buildRoomManagerRoutePrompt(task Task) string {
@@ -285,7 +286,8 @@ func buildRoomManagerRoutePrompt(task Task) string {
 	buildRoomManagerPromptHeader(&b, task)
 	b.WriteString("**Mode: route** — Analyze the user message and pick the best agent from the roster.\n")
 	b.WriteString("- User messages with explicit @agent do not reach you; only unmentioned routing.\n")
-	b.WriteString("- Emit `route_to` with a short title explaining why.\n\n")
+	b.WriteString("- Emit `route_to` with a short title explaining why.\n")
+	b.WriteString("- Follow-ups about a prior reply or deliverable (file path, how to run, fixes, clarifications) → `route_to` the most relevant role agent (usually whoever last replied). Never `notify_user` with the answer.\n\n")
 	appendRoomManagerContext(&b, task)
 	appendRoomManagerFooter(&b)
 	return b.String()
@@ -294,10 +296,12 @@ func buildRoomManagerRoutePrompt(task Task) string {
 func buildRoomManagerReviewPrompt(task Task) string {
 	var b strings.Builder
 	buildRoomManagerPromptHeader(&b, task)
-	b.WriteString("**Mode: review** — An agent just finished. Compare the deliverable to the **original user request**.\n")
-	b.WriteString("- Satisfied → `notify_user` to close the loop.\n")
-	b.WriteString("- Next step for a **different** agent → `relay_to` with **required** `relay_reason` stating the concrete gap.\n")
-	b.WriteString("- **Never** relay back to the **same** agent who just completed without a new gap.\n\n")
+	b.WriteString("**Mode: review** — A role agent just replied. This is **conversation closure**, NOT code review or artifact inspection.\n")
+	b.WriteString("- Judge only from **reply text in context**: was the user's request substantively addressed? Were the agent's questions to the user handled? Any clear need still untransferred?\n")
+	b.WriteString("- Do **NOT** check files, paths, workspace, command output, or implementation quality yourself — route/relay a role agent for any detail work.\n")
+	b.WriteString("- Adequately addressed → `notify_user` with **one coordination line** (e.g. \"See the agent reply above\"). Never put task answers, audit findings, or \"file not found\" conclusions in notify_user.\n")
+	b.WriteString("- Still open / user follow-up → `route_to` or `relay_to` the right role agent (same agent is OK for reasonable follow-ups).\n")
+	b.WriteString("- Next step for a **different** agent → `relay_to` with **required** `relay_reason` describing the conversational gap.\n\n")
 	appendRoomManagerContext(&b, task)
 	appendRoomManagerFooter(&b)
 	return b.String()

@@ -452,6 +452,102 @@ export function buildChatTimeline(
   return entries;
 }
 
+/** Pick the manager chip shown in the message action bar (not always the newest id). */
+export function pickLeadingManagerItem(
+  items: InvocationChatItem[],
+  decisions: RoomManagerDecision[] = [],
+): InvocationChatItem | undefined {
+  const managers = items.filter((item) => item.presentation === "manager_status");
+  if (managers.length === 0) return undefined;
+
+  const sourceMessageId = managers[0]?.sourceMessageId;
+  const messageDecisions = sourceMessageId
+    ? decisions.filter((d) => d.source_message_id === sourceMessageId)
+    : [];
+  const latestDecision =
+    messageDecisions.length > 0
+      ? messageDecisions.reduce((latest, d) =>
+          compareMonotonicId(d.id, latest.id) > 0 ? d : latest,
+        )
+      : undefined;
+
+  const byNewest = (list: InvocationChatItem[]) =>
+    [...list].sort((a, b) => -compareMonotonicId(a.invocation.id, b.invocation.id));
+
+  const active = managers.filter(
+    (item) => item.phase === "running" || item.phase === "queued",
+  );
+  if (active.length > 0) return byNewest(active)[0];
+
+  const dispatchLike = managers.filter(
+    (item) =>
+      item.phase === "succeeded" &&
+      ["dispatch", "relay", "reassign"].includes(item.invocation.outcome?.type ?? ""),
+  );
+  if (dispatchLike.length > 0) return byNewest(dispatchLike)[0];
+
+  if (latestDecision?.action === "assign") {
+    const succeeded = managers.filter((item) => item.phase === "succeeded");
+    if (succeeded.length > 0) return byNewest(succeeded)[0];
+  }
+
+  const reviewLike = managers.filter(
+    (item) =>
+      item.phase === "succeeded" &&
+      (item.invocation.outcome?.type === "review_complete" ||
+        item.invocation.outcome?.type === "ask_user" ||
+        item.invocation.intent === "review"),
+  );
+  if (reviewLike.length > 0) return byNewest(reviewLike)[0];
+
+  const failed = managers.filter(
+    (item) => item.phase === "failed" || item.phase === "cancelled",
+  );
+  if (failed.length > 0 && latestDecision?.action === "assign") {
+    return byNewest(managers.filter((item) => item.phase === "succeeded"))[0] ?? byNewest(managers)[0];
+  }
+
+  return byNewest(managers)[0];
+}
+
+export function latestManagerDecisionForMessage(
+  decisions: RoomManagerDecision[],
+  sourceMessageId: string,
+  invocationId?: string,
+): RoomManagerDecision | undefined {
+  if (!decisions.length) return undefined;
+  if (invocationId) {
+    const byInvocation = decisions.find((d) => d.invocation_id === invocationId);
+    if (byInvocation) return byInvocation;
+  }
+  const candidates = decisions.filter((d) => d.source_message_id === sourceMessageId);
+  if (candidates.length === 0) return undefined;
+  return candidates.reduce((latest, d) =>
+    compareMonotonicId(d.id, latest.id) > 0 ? d : latest,
+  );
+}
+
+export function managerDecisionTargetAgentId(
+  decision: RoomManagerDecision,
+): string | undefined {
+  const payload = decision.payload ?? {};
+  for (const key of ["route_to", "relay_to", "reassign_to", "agent_id"] as const) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+/** Latest assembled prompt captured on invocation_queued (for flow timeline debug). */
+export function resolveFlowTrackAssembledPrompt(track: FlowTrack): string | undefined {
+  for (let i = track.steps.length - 1; i >= 0; i--) {
+    const payload = track.steps[i]?.event.payload;
+    const prompt = payload?.assembled_prompt;
+    if (typeof prompt === "string" && prompt.trim()) return prompt;
+  }
+  return undefined;
+}
+
 /** Latest manager status chip per triggering message (not a separate chat row). */
 export function managerStatusByMessageId(
   items: InvocationChatItem[],
@@ -761,12 +857,6 @@ function managerDecisionForAssignment(
   return candidates[candidates.length - 1];
 }
 
-function truncateDecisionReason(text: string, max = 28): string {
-  const oneLine = text.replace(/\s+/g, " ").trim();
-  if (oneLine.length <= max) return oneLine;
-  return `${oneLine.slice(0, max)}…`;
-}
-
 export function resolveManagerDecisionReason(
   decision: RoomManagerDecision,
 ): string | undefined {
@@ -785,7 +875,7 @@ export function resolveManagerDecisionReason(
   );
 }
 
-function formatManagerDecisionTaskLabel(
+function resolveManagerDecisionScene(
   decision: RoomManagerDecision,
   opts?: FlowDisplayOpts,
 ): string {
@@ -797,40 +887,27 @@ function formatManagerDecisionTaskLabel(
   const reassignTo = payloadString(payload, "reassign_to");
   const targetId = relayTo || routeTo || reassignTo;
   const targetName = targetId ? opts?.agentNameById?.get(targetId) : undefined;
-  const reason = resolveManagerDecisionReason(decision);
-  const reasonSuffix = reason ? `（${truncateDecisionReason(reason)}）` : "";
 
-  let task: string;
   switch (decision.action) {
     case "assign":
       if (relayTo) {
-        task = targetName ? `转派 ${targetName}` : "转派";
-      } else {
-        task = targetName ? `分配 ${targetName}` : "分配任务";
+        return targetName ? `转派 ${targetName}` : "转派";
       }
-      break;
+      return targetName ? `指派 ${targetName}` : "指派";
     case "retry":
-      task = "重试";
-      break;
+      return "重试";
     case "reassign":
-      task = targetName ? `改派 ${targetName}` : "改派";
-      break;
+      return targetName ? `改派 ${targetName}` : "改派";
     case "complete":
-      task = "审阅完成";
-      break;
-    case "wait":
-      task = "等待";
-      break;
-    case "skip":
-      task = "跳过";
-      break;
     case "ask_user":
-      task = "询问用户";
-      break;
+      return "审阅";
+    case "wait":
+      return "等待";
+    case "skip":
+      return "跳过";
     default:
-      task = decision.action || "审阅";
+      return decision.action || "审阅";
   }
-  return `${task}${reasonSuffix}`;
 }
 
 export function resolveManagerDecisionForTrack(
@@ -845,32 +922,39 @@ export function resolveManagerDecisionForTrack(
   };
 }
 
-export function resolveManagerTaskLabel(
+/** Manager flow line scene — `{scene} · {status}` without the 群管 prefix. */
+export function resolveManagerFlowScene(
   track: FlowTrack,
   assignment: RoomAssignment | undefined,
   opts?: FlowDisplayOpts,
 ): string {
   const decision = managerDecisionForAssignment(track.assignmentId, opts?.graph);
   if (decision) {
-    return formatManagerDecisionTaskLabel(decision, opts);
+    return resolveManagerDecisionScene(decision, opts);
   }
 
   const escalation = parseAssignmentEscalationReason(assignment?.reason);
   if (escalation) {
-    const failedAgentName = escalation.failed_agent_id
-      ? opts?.agentNameById?.get(escalation.failed_agent_id)
-      : undefined;
-    if (failedAgentName) {
-      return `处置 ${failedAgentName} 失败`;
-    }
-    return "失败处置";
+    return "升级";
   }
 
   if (assignment?.kind === "auto_review") {
-    return "路由审阅";
+    const inv = invocationForAssignment(opts?.graph, track.assignmentId);
+    const intent = inv?.intent?.trim();
+    if (intent === "route" || intent === "orchestrate") return "指派";
+    return "审阅";
   }
 
   return assignmentKindLabel(assignment?.kind ?? "审阅");
+}
+
+/** @deprecated Use resolveManagerFlowScene */
+export function resolveManagerTaskLabel(
+  track: FlowTrack,
+  assignment: RoomAssignment | undefined,
+  opts?: FlowDisplayOpts,
+): string {
+  return resolveManagerFlowScene(track, assignment, opts);
 }
 
 function formatManagerFlowLine(
@@ -879,8 +963,8 @@ function formatManagerFlowLine(
   opts?: FlowDisplayOpts,
 ): string {
   const assignment = assignmentById(opts?.graph, track.assignmentId);
-  const task = resolveManagerTaskLabel(track, assignment, opts);
-  return `群管 · ${task} · ${step.token}`;
+  const scene = resolveManagerFlowScene(track, assignment, opts);
+  return `${scene} · ${step.token}`;
 }
 
 function formatJoinLine(

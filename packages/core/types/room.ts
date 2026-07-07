@@ -311,4 +311,5 @@ export type SendRoomMessageResponse = {
   message_id: string;
   created_at: string;
   invocations?: RoomInvocation[];
+  assignments?: RoomAssignment[];
 };

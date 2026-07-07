@@ -294,6 +294,39 @@ func formatManagerBrief(assignment db.RoomAssignment, room db.Room) string {
 	}
 }
 
+// BuildRoomInvocationAssembledPrompt renders the server-side prompt bundle for debugging.
+func (s *TaskService) BuildRoomInvocationAssembledPrompt(
+	ctx context.Context,
+	room db.Room,
+	assignment db.RoomAssignment,
+	sourceMessage db.RoomMessage,
+	inv db.RoomInvocation,
+) string {
+	var b strings.Builder
+	intent := inv.Intent
+	scene := resolveManagerScene(assignment, intent)
+
+	if room.ManagerAgentID.Valid &&
+		assignment.AssigneeID.Valid &&
+		assignment.AssigneeID.Bytes == room.ManagerAgentID.Bytes {
+		policy := ParseRoomPolicy(room.Policy)
+		b.WriteString(MergeManagerAgentInstructions(policy.ManagerCustomPrompt))
+		b.WriteString("\n\n")
+		fmt.Fprintf(&b, "## Mode: %s (intent=%s, kind=%s)\n\n", scene, intent, assignment.Kind)
+	} else if brief := formatManagerBrief(assignment, room); brief != "" {
+		fmt.Fprintf(&b, "## Assignment brief\n\n%s\n\n", brief)
+	}
+
+	rendered, _, err := s.RenderRoomPromptContext(ctx, room, assignment, sourceMessage, intent)
+	if err == nil && strings.TrimSpace(rendered) != "" {
+		b.WriteString(rendered)
+		b.WriteString("\n\n")
+	}
+
+	fmt.Fprintf(&b, "## Trigger message\n\n%s\n", sourceMessage.Content)
+	return strings.TrimSpace(b.String())
+}
+
 // RenderRoomPromptContext builds and renders conversation context for daemon prompts.
 func (s *TaskService) RenderRoomPromptContext(
 	ctx context.Context,

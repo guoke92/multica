@@ -874,7 +874,7 @@ export const EMPTY_ROOM_LIST: import("../types/room").Room[] = [];
 
 export const RoomInvocationOutcomeSchema = z
   .object({
-    type: z.string(),
+    type: z.string().default("unknown"),
     target_agent_id: z.string().optional(),
     target_assignment_id: z.string().optional(),
     reason: z.string().optional(),
@@ -897,7 +897,10 @@ export const RoomInvocationSchema = z
     max_retries: z.number().optional(),
     task_id: z.string().optional(),
     output_message_id: z.string().optional(),
-    outcome: RoomInvocationOutcomeSchema.optional(),
+    outcome: z
+      .union([RoomInvocationOutcomeSchema, z.null()])
+      .optional()
+      .transform((value) => (value === null ? undefined : value)),
     failure_reason: z.string().optional(),
     timeout_at: z.string().optional(),
     started_at: z.string().optional(),
@@ -972,7 +975,7 @@ export const RoomMessageSchema = z.object({
   message_kind: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   relay_metadata: z.record(z.string(), z.unknown()).optional(),
-  created_at: z.string(),
+  created_at: z.string().default(""),
   edited_at: z.string().optional(),
 }).loose();
 
@@ -982,13 +985,16 @@ export const EMPTY_ROOM_MESSAGE_LIST: import("../types/room").RoomMessage[] = []
 
 export const RoomInvocationEventSchema = z.object({
   id: z.string(),
-  room_id: z.string(),
+  room_id: z.string().default(""),
   assignment_id: z.string().default(""),
   invocation_id: z.string().optional(),
   type: z.string().default("unknown"),
   actor_type: z.string().default("system"),
   actor_id: z.string().optional(),
-  payload: z.record(z.string(), z.unknown()).default({}),
+  payload: z
+    .union([z.record(z.string(), z.unknown()), z.null()])
+    .default({})
+    .transform((value) => (value === null ? {} : value)),
   created_at: z.string().default(""),
 }).loose();
 

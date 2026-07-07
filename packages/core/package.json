@@ -49,6 +49,7 @@
     "./room": "./room/index.ts",
     "./room/queries": "./room/queries.ts",
     "./room/mutations": "./room/mutations.ts",
+    "./room/graph-cache": "./room/graph-cache.ts",
     "./room/manager-prompt": "./room/manager-prompt.ts",
     "./runtimes": "./runtimes/index.ts",
     "./runtimes/queries": "./runtimes/queries.ts",

@@ -442,7 +442,11 @@ func (s *TaskService) createInvocationForAssignment(
 	inv, _ = s.Queries.UpdateRoomInvocationStatus(ctx, db.UpdateRoomInvocationStatusParams{
 		ID: inv.ID, Status: "queued", TaskID: task.ID,
 	})
-	s.appendInvocationEvent(ctx, room, assignment, inv, "invocation_queued", "system", pgtype.UUID{}, nil)
+	queuedPayload := map[string]any{}
+	if prompt := s.BuildRoomInvocationAssembledPrompt(ctx, room, assignment, sourceMessage, inv); prompt != "" {
+		queuedPayload["assembled_prompt"] = prompt
+	}
+	s.appendInvocationEvent(ctx, room, assignment, inv, "invocation_queued", "system", pgtype.UUID{}, queuedPayload)
 	return inv, nil
 }
 

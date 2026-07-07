@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, type ReactNode, useEffect } from "react";
+import { useMemo, useRef, memo, type ReactNode, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
@@ -19,7 +19,7 @@ import { splitTimeline } from "../chat/lib/copy-text";
 import { copyMarkdown } from "../editor";
 import { Markdown } from "../common/markdown";
 import { shouldHideRoomMessage } from "./room-message-visibility";
-import type { RoomMessage, RoomInvocation, RoomAssignment, RoomMessageMention } from "@multica/core/types/room";
+import type { RoomMessage, RoomInvocation, RoomAssignment, RoomMessageMention, RoomManagerDecision } from "@multica/core/types/room";
 import { useAuthStore } from "@multica/core/auth";
 import { Copy, Pencil, RefreshCw, Reply } from "lucide-react";
 import {
@@ -35,8 +35,45 @@ import { ManagerStatusLeading } from "./manager-invocation-skin";
 import {
   invocationItemsForMessage,
   ManagerHistoryBelowBar,
-  RoleAgentInvocationSlots,
+  RoleAgentTimelineEntry,
 } from "./room-invocation-thread";
+import {
+  buildChatTimeline,
+  buildInvocationChatItems,
+  pickLeadingManagerItem,
+} from "./room-flow-utils";
+
+function messageInvocationFingerprint(
+  messageId: string,
+  invocations: RoomInvocation[],
+  assignments: RoomAssignment[],
+): string {
+  const assignmentById = new Map(assignments.map((a) => [a.id, a]));
+  const parts: string[] = [];
+  for (const inv of invocations) {
+    const assignment = assignmentById.get(inv.assignment_id);
+    const sourceId = assignment?.source_message_id || inv.source_message_id;
+    if (sourceId !== messageId) continue;
+    parts.push(
+      `${inv.id}:${inv.status}:${inv.outcome?.type ?? ""}:${assignment?.status ?? ""}`,
+    );
+  }
+  return parts.sort().join("|");
+}
+
+function messageDecisionsFingerprint(
+  messageId: string,
+  decisions: RoomManagerDecision[],
+): string {
+  return decisions
+    .filter((d) => d.source_message_id === messageId)
+    .map(
+      (d) =>
+        `${d.id}:${d.action}:${(d.created_assignment_ids ?? []).join(",")}`,
+    )
+    .sort()
+    .join("|");
+}
 
 function isOptimisticMessageId(id: string): boolean {
   return id.startsWith("optimistic-");
@@ -75,6 +112,7 @@ type Props = {
   agentNameById: Map<string, string>;
   memberNameById: Map<string, string>;
   mentions?: RoomMessageMention[];
+  decisions?: RoomManagerDecision[];
   scrollToMessageId?: string | null;
   onScrollToMessageDone?: () => void;
   onNavigateToQuote?: (messageId: string) => void;
@@ -100,6 +138,7 @@ export function RoomMessageList({
   agentNameById,
   memberNameById,
   mentions = [],
+  decisions = [],
   scrollToMessageId,
   onScrollToMessageDone,
   onNavigateToQuote,
@@ -117,6 +156,23 @@ export function RoomMessageList({
   const visibleMessages = useMemo(
     () => messages.filter((m) => !shouldHideRoomMessage(m, managerAgentId)),
     [messages, managerAgentId],
+  );
+
+  const invocationChatItems = useMemo(
+    () =>
+      buildInvocationChatItems(
+        invocations,
+        assignments,
+        visibleMessages,
+        agentNameById,
+        managerAgentId,
+      ),
+    [invocations, assignments, visibleMessages, agentNameById, managerAgentId],
+  );
+
+  const chatTimeline = useMemo(
+    () => buildChatTimeline(visibleMessages, invocationChatItems),
+    [visibleMessages, invocationChatItems],
   );
 
   const lastSelfOptimisticId = useMemo(() => {
@@ -164,9 +220,21 @@ export function RoomMessageList({
     const lastSeq = lastTaskId
       ? (activeStreamMessages[activeStreamMessages.length - 1]?.seq ?? 0)
       : 0;
-    if (!lastMessage) return "";
-    return `msg:${lastMessage.id}:${lastMessage.content.length}:stream:${streamLen}:${lastSeq}`;
-  }, [visibleMessages, activeStreamTaskId, activeStreamMessages]);
+    const invocationTail = invocationChatItems
+      .filter((item) => item.presentation === "agent_bubble")
+      .map(
+        (item) =>
+          `${item.invocation.id}:${item.phase}:${item.invocation.status}:${item.invocation.task_id ?? ""}`,
+      )
+      .join("|");
+    if (!lastMessage && !invocationTail) return "";
+    return `msg:${lastMessage?.id ?? ""}:${lastMessage?.content.length ?? 0}:stream:${streamLen}:${lastSeq}:inv:${invocationTail}`;
+  }, [
+    visibleMessages,
+    activeStreamTaskId,
+    activeStreamMessages,
+    invocationChatItems,
+  ]);
 
   useEffect(() => {
     scrollToBottom();
@@ -211,7 +279,22 @@ export function RoomMessageList({
               </Button>
             </div>
           ) : null}
-          {visibleMessages.map((m) => {
+          {chatTimeline.map((entry) => {
+            if (entry.kind === "invocation") {
+              return (
+                <RoleAgentTimelineEntry
+                  key={`inv:${entry.item.invocation.id}`}
+                  item={entry.item}
+                  agentNameById={agentNameById}
+                  onRetryAssignment={onRetryAssignment}
+                  onCancelAssignment={onCancelAssignment}
+                  retryingAssignmentId={retryingAssignmentId}
+                  cancellingAssignmentId={cancellingAssignmentId}
+                />
+              );
+            }
+
+            const m = entry.message;
             const isSelf =
               m.sender_type === "user" && m.sender_id === currentUserId;
             const displayName = resolveSenderName(m, agentNameById, memberNameById);
@@ -238,6 +321,7 @@ export function RoomMessageList({
                 }
                 assignments={assignments}
                 mentions={mentions}
+                decisions={decisions}
                 timelineMessages={visibleMessages}
                 invocations={invocations}
                 managerAgentId={managerAgentId}
@@ -246,17 +330,12 @@ export function RoomMessageList({
                 onCancelAssignment={onCancelAssignment}
                 retryingAssignmentId={retryingAssignmentId}
                 cancellingAssignmentId={cancellingAssignmentId}
-                onEdit={canEdit ? () => onEditMessage(m) : undefined}
-                onReply={
-                  m.sender_type !== "system" && onReplyToMessage
-                    ? () => onReplyToMessage(m, displayName)
-                    : undefined
-                }
-                onRegenerate={
-                  m.sender_type === "agent" && onRegenerateAgentMessage
-                    ? () => onRegenerateAgentMessage(m)
-                    : undefined
-                }
+                canEdit={canEdit}
+                onEditMessage={onEditMessage}
+                canReply={m.sender_type !== "system" && !!onReplyToMessage}
+                onReplyToMessage={onReplyToMessage}
+                canRegenerate={m.sender_type === "agent" && !!onRegenerateAgentMessage}
+                onRegenerateAgentMessage={onRegenerateAgentMessage}
                 isRegenerating={regeneratingMessageId === m.id}
                 onNavigateToQuote={onNavigateToQuote}
               />
@@ -410,7 +489,7 @@ function ActionIconButton({
   );
 }
 
-function RoomMessageRow({
+function RoomMessageRowInner({
   message: m,
   isSelf,
   displayName,
@@ -419,6 +498,7 @@ function RoomMessageRow({
   quotedSenderName,
   assignments,
   mentions,
+  decisions = [],
   timelineMessages,
   invocations,
   managerAgentId,
@@ -427,9 +507,12 @@ function RoomMessageRow({
   onCancelAssignment,
   retryingAssignmentId,
   cancellingAssignmentId,
-  onEdit,
-  onReply,
-  onRegenerate,
+  canEdit,
+  onEditMessage,
+  canReply,
+  onReplyToMessage,
+  canRegenerate,
+  onRegenerateAgentMessage,
   isRegenerating,
   onNavigateToQuote,
 }: {
@@ -441,6 +524,7 @@ function RoomMessageRow({
   quotedSenderName?: string;
   assignments?: RoomAssignment[];
   mentions?: RoomMessageMention[];
+  decisions?: RoomManagerDecision[];
   timelineMessages: RoomMessage[];
   invocations?: RoomInvocation[];
   managerAgentId?: string;
@@ -449,9 +533,12 @@ function RoomMessageRow({
   onCancelAssignment?: (assignmentId: string) => void;
   retryingAssignmentId?: string | null;
   cancellingAssignmentId?: string | null;
-  onEdit?: () => void;
-  onReply?: () => void;
-  onRegenerate?: () => void;
+  canEdit?: boolean;
+  onEditMessage?: (message: RoomMessage) => void;
+  canReply?: boolean;
+  onReplyToMessage?: (message: RoomMessage, displayName: string) => void;
+  canRegenerate?: boolean;
+  onRegenerateAgentMessage?: (message: RoomMessage) => void;
   isRegenerating?: boolean;
   onNavigateToQuote?: (messageId: string) => void;
 }) {
@@ -476,7 +563,7 @@ function RoomMessageRow({
     [m.id, timelineMessages, invocations, assignments, agentNameById, managerAgentId],
   );
 
-  const latestManager = invocationItems.find((item) => item.presentation === "manager_status");
+  const latestManager = pickLeadingManagerItem(invocationItems, decisions);
   const actionAlign = isSelf ? "end" : "start";
 
   const managerLeading = latestManager ? (
@@ -484,6 +571,7 @@ function RoomMessageRow({
       item={latestManager}
       items={[latestManager]}
       agentNameById={agentNameById}
+      decisions={decisions}
       onRetryAssignment={onRetryAssignment}
       onCancelAssignment={onCancelAssignment}
       retryingAssignmentId={retryingAssignmentId}
@@ -491,20 +579,10 @@ function RoomMessageRow({
     />
   ) : undefined;
 
-  const roleSlots = (
-    <RoleAgentInvocationSlots
-      items={invocationItems}
-      agentNameById={agentNameById}
-      onRetryAssignment={onRetryAssignment}
-      onCancelAssignment={onCancelAssignment}
-      retryingAssignmentId={retryingAssignmentId}
-      cancellingAssignmentId={cancellingAssignmentId}
-    />
-  );
-
   const managerHistory = (
     <ManagerHistoryBelowBar
       items={invocationItems}
+      leadingInvocationId={latestManager?.invocation.id}
       agentNameById={agentNameById}
       onRetryAssignment={onRetryAssignment}
       onCancelAssignment={onCancelAssignment}
@@ -557,19 +635,22 @@ function RoomMessageRow({
             ) : null}
           </div>
           <MessageActionBar leading={managerLeading}>
-            {onReply ? (
-              <ActionIconButton label="引用回复" onClick={onReply} icon={Reply} />
+            {canReply && onReplyToMessage ? (
+              <ActionIconButton
+                label="引用回复"
+                onClick={() => onReplyToMessage(m, displayName)}
+                icon={Reply}
+              />
             ) : null}
-            {onEdit ? (
-              <ActionIconButton label="编辑" onClick={onEdit} icon={Pencil} />
+            {canEdit && onEditMessage ? (
+              <ActionIconButton
+                label="编辑"
+                onClick={() => onEditMessage(m)}
+                icon={Pencil}
+              />
             ) : null}
           </MessageActionBar>
         </MessageBubbleAnchor>
-        {roleSlots ? (
-          <div className="flex w-full justify-end">
-            <div className="w-full max-w-[80%]">{roleSlots}</div>
-          </div>
-        ) : null}
         {managerHistory}
       </div>
     );
@@ -618,16 +699,20 @@ function RoomMessageRow({
           )}
         </div>
         <MessageActionBar leading={managerLeading}>
-          {onReply ? (
-            <ActionIconButton label="引用回复" onClick={onReply} icon={Reply} />
+          {canReply && onReplyToMessage ? (
+            <ActionIconButton
+              label="引用回复"
+              onClick={() => onReplyToMessage(m, displayName)}
+              icon={Reply}
+            />
           ) : null}
           {isAgent ? (
             <>
               <AgentCopyButton message={m} />
-              {onRegenerate ? (
+              {canRegenerate && onRegenerateAgentMessage ? (
                 <ActionIconButton
                   label="重新生成"
-                  onClick={onRegenerate}
+                  onClick={() => onRegenerateAgentMessage(m)}
                   disabled={isRegenerating}
                   icon={RefreshCw}
                 />
@@ -636,11 +721,65 @@ function RoomMessageRow({
           ) : null}
         </MessageActionBar>
       </MessageBubbleAnchor>
-      {roleSlots}
       {managerHistory}
     </div>
   );
 }
+
+const RoomMessageRow = memo(RoomMessageRowInner, (prev, next) => {
+  const pm = prev.message;
+  const nm = next.message;
+  if (
+    pm.id !== nm.id ||
+    pm.content !== nm.content ||
+    pm.edited_at !== nm.edited_at ||
+    pm.quote_message_id !== nm.quote_message_id ||
+    pm.sender_type !== nm.sender_type ||
+    pm.sender_id !== nm.sender_id
+  ) {
+    return false;
+  }
+  if (
+    prev.isSelf !== next.isSelf ||
+    prev.displayName !== next.displayName ||
+    prev.isRegenerating !== next.isRegenerating ||
+    prev.managerAgentId !== next.managerAgentId ||
+    prev.retryingAssignmentId !== next.retryingAssignmentId ||
+    prev.cancellingAssignmentId !== next.cancellingAssignmentId ||
+    prev.canEdit !== next.canEdit ||
+    prev.canReply !== next.canReply ||
+    prev.canRegenerate !== next.canRegenerate
+  ) {
+    return false;
+  }
+  if (prev.quotedMessage?.id !== next.quotedMessage?.id) return false;
+  if (prev.quotedSenderName !== next.quotedSenderName) return false;
+  if (prev.timelineMessages.length !== next.timelineMessages.length) return false;
+  const prevTail = prev.timelineMessages[prev.timelineMessages.length - 1]?.id;
+  const nextTail = next.timelineMessages[next.timelineMessages.length - 1]?.id;
+  if (prevTail !== nextTail) return false;
+  if (
+    messageInvocationFingerprint(
+      pm.id,
+      prev.invocations ?? [],
+      prev.assignments ?? [],
+    ) !==
+    messageInvocationFingerprint(
+      nm.id,
+      next.invocations ?? [],
+      next.assignments ?? [],
+    )
+  ) {
+    return false;
+  }
+  if (
+    messageDecisionsFingerprint(pm.id, prev.decisions ?? []) !==
+    messageDecisionsFingerprint(nm.id, next.decisions ?? [])
+  ) {
+    return false;
+  }
+  return true;
+});
 
 function AgentCopyButton({ message }: { message: RoomMessage }) {
   const handleCopy = async () => {

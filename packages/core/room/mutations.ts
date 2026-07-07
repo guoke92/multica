@@ -1,6 +1,11 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { workspaceKeys } from "../workspace/queries";
+import {
+  reconcileOptimisticRoomMessage,
+  upsertGraphAssignments,
+  upsertGraphInvocations,
+} from "./graph-cache";
 import { roomKeys } from "./queries";
 
 export function useCreateRoom(wsId: string) {
@@ -42,10 +47,30 @@ export function useSendRoomMessage(wsId: string, roomId: string) {
   return useMutation({
     mutationFn: (data: { content: string; quote_message_id?: string }) =>
       api.sendRoomMessage(roomId, data),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: roomKeys.messages(wsId, roomId) });
-      void qc.invalidateQueries({ queryKey: roomKeys.invocations(wsId, roomId) });
-      void qc.invalidateQueries({ queryKey: roomKeys.graph(wsId, roomId) });
+    onSuccess: (resp, variables) => {
+      qc.setQueryData<import("../types/room").RoomGraphSnapshot | undefined>(
+        roomKeys.graph(wsId, roomId),
+        (old) => {
+          if (!old) return old;
+          let next = old;
+          if (resp?.assignments?.length) {
+            next = upsertGraphAssignments(next, resp.assignments);
+          }
+          if (resp?.invocations?.length) {
+            next = upsertGraphInvocations(next, resp.invocations);
+          }
+          return next;
+        },
+      );
+      if (resp?.message_id) {
+        reconcileOptimisticRoomMessage(qc, wsId, roomId, {
+          id: resp.message_id,
+          sender_type: "user",
+          content: variables.content,
+          quote_message_id: variables.quote_message_id,
+          created_at: resp.created_at,
+        });
+      }
     },
   });
 }

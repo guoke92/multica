@@ -4,16 +4,6 @@ import { RoomGraphSnapshotSchema } from "./schemas";
 describe("RoomGraphSnapshotSchema", () => {
   it("accepts API-shaped graph snapshot", () => {
     const sample = {
-      messages: [
-        {
-          id: "019eda03-8bf5-7ccd-b320-b55cfb648c20",
-          sender_type: "user",
-          sender_id: "40ee67dc-bdaa-42a8-8f22-81d59b1ff5ab",
-          content: "hello",
-          metadata: { task_id: "3234508a-9aa5-4730-9143-3439b0443f42" },
-          created_at: "2026-06-18T09:15:26.070058Z",
-        },
-      ],
       mentions: [],
       assignments: [
         {
@@ -71,7 +61,6 @@ describe("RoomGraphSnapshotSchema", () => {
 
   it("preserves invocation outcome from API", () => {
     const raw = {
-      messages: [],
       mentions: [],
       assignments: [],
       assignment_dependencies: [],
@@ -100,7 +89,6 @@ describe("RoomGraphSnapshotSchema", () => {
 
   it("accepts null invocation outcome from API", () => {
     const raw = {
-      messages: [],
       mentions: [],
       assignments: [],
       assignment_dependencies: [],
@@ -126,7 +114,6 @@ describe("RoomGraphSnapshotSchema", () => {
 
   it("accepts invocation outcome missing type", () => {
     const raw = {
-      messages: [],
       mentions: [],
       assignments: [],
       assignment_dependencies: [],
@@ -152,7 +139,6 @@ describe("RoomGraphSnapshotSchema", () => {
 
   it("accepts invocation events with null payload", () => {
     const raw = {
-      messages: [],
       mentions: [],
       assignments: [],
       assignment_dependencies: [],
@@ -176,7 +162,6 @@ describe("RoomGraphSnapshotSchema", () => {
 
   it("rejects raw DB byte payloads (base64 strings)", () => {
     const rawDbShape = {
-      messages: [],
       mentions: [],
       assignments: [
         {

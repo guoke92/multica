@@ -311,7 +311,8 @@ func (s *TaskService) ApplyManagerDecision(
 	}
 
 	if dispatchMentionErr {
-		outcome = failedOutcome("dispatch succeeded but mention creation failed")
+		slog.Warn("manager dispatch mention failed; keeping successful dispatch outcome",
+			"invocation_id", util.UUIDToString(inv.ID))
 	}
 
 	if len(createdAssignmentIDs) > 0 {
@@ -343,7 +344,7 @@ func (s *TaskService) createManagerDispatchMention(
 	ctx context.Context,
 	room db.Room,
 	sourceMsg db.RoomMessage,
-	managerAgentID pgtype.UUID,
+	_ pgtype.UUID,
 	assignment db.RoomAssignment,
 ) (db.RoomMessageMention, error) {
 	mention, err := s.Queries.CreateRoomMessageMention(ctx, db.CreateRoomMessageMentionParams{
@@ -352,7 +353,7 @@ func (s *TaskService) createManagerDispatchMention(
 		TargetType:      assignment.AssigneeType,
 		TargetID:        assignment.AssigneeID,
 		SourceType:      "manager_dispatch",
-		SourceMessageID: managerAgentID,
+		SourceMessageID: sourceMsg.ID,
 		AssignmentID:   assignment.ID,
 	})
 	if err != nil {

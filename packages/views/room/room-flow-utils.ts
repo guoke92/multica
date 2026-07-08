@@ -6,6 +6,7 @@ import type {
   RoomManagerDecision,
   RoomMessage,
 } from "@multica/core/types/room";
+import { deriveManagerScene } from "./room-presenters";
 
 export type FlowStep = {
   token: string;
@@ -291,16 +292,6 @@ export type ChatTimelineEntry =
   | { kind: "message"; message: RoomMessage }
   | { kind: "invocation"; item: InvocationChatItem };
 
-/** @deprecated Prefer InvocationChatItem */
-export type ActiveInvocationSlot = {
-  invocation: RoomInvocation;
-  agentId: string;
-  agentName: string;
-  phase: UserVisiblePhase;
-};
-
-const activeInvocationStatuses = new Set(["running", "delivered", "queued", "pending"]);
-
 function assignmentMap(assignments: RoomAssignment[]): Map<string, RoomAssignment> {
   return new Map(assignments.map((a) => [a.id, a]));
 }
@@ -321,10 +312,6 @@ function resolveInvocationPresentation(
   }
   return "agent_bubble";
 }
-
-type BuildInvocationOptions = {
-  includeManagerSucceeded?: boolean;
-};
 
 /** Role-agent slot is redundant once its final room_message is in the timeline. */
 export function isRoleAgentOutputInTimeline(
@@ -353,6 +340,7 @@ export function deriveUserVisiblePhase(
 
   if (inv.status === "succeeded") {
     const t = inv.outcome?.type;
+    if (t === "failed") return "failed";
     if (t === "ask_user") return "waiting_user";
     return "succeeded";
   }
@@ -367,7 +355,6 @@ export function buildInvocationChatItems(
   messages: RoomMessage[],
   agentNameById: Map<string, string>,
   managerAgentId?: string,
-  _opts?: BuildInvocationOptions,
 ): InvocationChatItem[] {
   const messageIds = new Set(messages.map((m) => m.id));
   const byAssignment = assignmentMap(assignments);
@@ -416,6 +403,65 @@ export function buildInvocationChatItems(
   }
 
   return items.sort((a, b) => compareMonotonicId(a.invocation.id, b.invocation.id));
+}
+
+/** Index invocation chat items by trigger message id (newest first per message). */
+export function indexInvocationItemsBySourceMessage(
+  items: InvocationChatItem[],
+): Map<string, InvocationChatItem[]> {
+  const bySource = new Map<string, InvocationChatItem[]>();
+  for (const item of items) {
+    if (!item.sourceMessageId) continue;
+    const list = bySource.get(item.sourceMessageId) ?? [];
+    list.push(item);
+    bySource.set(item.sourceMessageId, list);
+  }
+  for (const [messageId, list] of bySource) {
+    bySource.set(
+      messageId,
+      [...list].sort((a, b) => -compareMonotonicId(a.invocation.id, b.invocation.id)),
+    );
+  }
+  return bySource;
+}
+
+export function hasInlineFailurePresentation(
+  assignmentId: string,
+  items: InvocationChatItem[],
+): boolean {
+  return items.some(
+    (item) =>
+      item.assignment.id === assignmentId &&
+      item.phase === "failed" &&
+      (item.presentation === "agent_bubble" ||
+        item.presentation === "manager_status"),
+  );
+}
+
+/** Failures that need footer attention (not already inline in the timeline). */
+export function selectFooterAttentionFailures(
+  assignments: RoomAssignment[],
+  invocations: RoomInvocation[],
+  items: InvocationChatItem[],
+): RoomInvocation[] {
+  const assignmentById = new Map(assignments.map((a) => [a.id, a]));
+  const latestByAssignment = new Map<string, RoomInvocation>();
+  for (const inv of invocations) {
+    const prev = latestByAssignment.get(inv.assignment_id);
+    if (!prev || compareMonotonicId(inv.id, prev.id) > 0) {
+      latestByAssignment.set(inv.assignment_id, inv);
+    }
+  }
+
+  const results: RoomInvocation[] = [];
+  for (const inv of latestByAssignment.values()) {
+    if (inv.status !== "failed") continue;
+    const assignment = assignmentById.get(inv.assignment_id);
+    if (!assignment || !needsAttentionFailure(assignment, assignments)) continue;
+    if (hasInlineFailurePresentation(inv.assignment_id, items)) continue;
+    results.push(inv);
+  }
+  return results.sort((a, b) => -compareMonotonicId(a.id, b.id));
 }
 
 /** Interleave messages with agent invocation placeholders anchored on source messages. */
@@ -510,21 +556,47 @@ export function pickLeadingManagerItem(
   return byNewest(managers)[0];
 }
 
-export function latestManagerDecisionForMessage(
+export function resolveManagerDecision(
   decisions: RoomManagerDecision[],
-  sourceMessageId: string,
-  invocationId?: string,
+  opts: {
+    invocationId?: string;
+    sourceMessageId?: string;
+    assignmentId?: string;
+    graph?: FlowGraphContext;
+  },
 ): RoomManagerDecision | undefined {
   if (!decisions.length) return undefined;
+
+  let invocationId = opts.invocationId;
+  let sourceMessageId = opts.sourceMessageId;
+
+  if (opts.assignmentId && opts.graph) {
+    const inv = invocationForAssignment(opts.graph, opts.assignmentId);
+    if (!invocationId && inv) invocationId = inv.id;
+    if (!sourceMessageId) {
+      sourceMessageId = assignmentById(opts.graph, opts.assignmentId)?.source_message_id;
+    }
+  }
+
   if (invocationId) {
     const byInvocation = decisions.find((d) => d.invocation_id === invocationId);
     if (byInvocation) return byInvocation;
   }
+
+  if (!sourceMessageId) return undefined;
   const candidates = decisions.filter((d) => d.source_message_id === sourceMessageId);
   if (candidates.length === 0) return undefined;
   return candidates.reduce((latest, d) =>
     compareMonotonicId(d.id, latest.id) > 0 ? d : latest,
   );
+}
+
+export function latestManagerDecisionForMessage(
+  decisions: RoomManagerDecision[],
+  sourceMessageId: string,
+  invocationId?: string,
+): RoomManagerDecision | undefined {
+  return resolveManagerDecision(decisions, { sourceMessageId, invocationId });
 }
 
 export function managerDecisionTargetAgentId(
@@ -546,21 +618,6 @@ export function resolveFlowTrackAssembledPrompt(track: FlowTrack): string | unde
     if (typeof prompt === "string" && prompt.trim()) return prompt;
   }
   return undefined;
-}
-
-/** Latest manager status chip per triggering message (not a separate chat row). */
-export function managerStatusByMessageId(
-  items: InvocationChatItem[],
-): Map<string, InvocationChatItem> {
-  const map = new Map<string, InvocationChatItem>();
-  for (const item of items) {
-    if (item.presentation !== "manager_status" || !item.sourceMessageId) continue;
-    const prev = map.get(item.sourceMessageId);
-    if (!prev || compareMonotonicId(item.invocation.id, prev.invocation.id) > 0) {
-      map.set(item.sourceMessageId, item);
-    }
-  }
-  return map;
 }
 
 /** Drop assignment-level lifecycle duplicates when invocation events carry the same signal. */
@@ -592,31 +649,6 @@ export function collapseRedundantFlowSteps(steps: FlowStep[]): FlowStep[] {
     result.push(step);
   }
   return result;
-}
-
-/** @deprecated Prefer buildInvocationChatItems */
-export function listActiveInvocationSlots(
-  invocations: RoomInvocation[],
-  messages: RoomMessage[],
-  agentNameById: Map<string, string>,
-): ActiveInvocationSlot[] {
-  const messageIds = new Set(messages.map((m) => m.id));
-
-  return invocations
-    .filter((inv) => {
-      if (!activeInvocationStatuses.has(inv.status)) return false;
-      if (inv.output_message_id && messageIds.has(inv.output_message_id)) {
-        return false;
-      }
-      return true;
-    })
-    .sort((a, b) => compareMonotonicId(a.id, b.id))
-    .map((inv) => ({
-      invocation: inv,
-      agentId: inv.agent_id,
-      agentName: agentNameById.get(inv.agent_id) ?? "Agent",
-      phase: ["running", "delivered"].includes(inv.status) ? "running" : "queued",
-    }));
 }
 
 function sortStepsByEventId(steps: FlowStep[]): FlowStep[] {
@@ -844,17 +876,7 @@ function managerDecisionForAssignment(
   graph?: FlowGraphContext,
 ): RoomManagerDecision | undefined {
   if (!graph?.decisions?.length) return undefined;
-  const inv = invocationForAssignment(graph, assignmentId);
-  if (inv) {
-    const byInvocation = graph.decisions.find((d) => d.invocation_id === inv.id);
-    if (byInvocation) return byInvocation;
-  }
-  const assignment = assignmentById(graph, assignmentId);
-  if (!assignment?.source_message_id) return undefined;
-  const candidates = graph.decisions.filter(
-    (d) => d.source_message_id === assignment.source_message_id,
-  );
-  return candidates[candidates.length - 1];
+  return resolveManagerDecision(graph.decisions, { assignmentId, graph });
 }
 
 export function resolveManagerDecisionReason(
@@ -875,41 +897,6 @@ export function resolveManagerDecisionReason(
   );
 }
 
-function resolveManagerDecisionScene(
-  decision: RoomManagerDecision,
-  opts?: FlowDisplayOpts,
-): string {
-  const payload = decision.payload ?? {};
-  const relayTo = payloadString(payload, "relay_to");
-  const routeTo =
-    payloadString(payload, "route_to") ||
-    payloadString(payload, "agent_id");
-  const reassignTo = payloadString(payload, "reassign_to");
-  const targetId = relayTo || routeTo || reassignTo;
-  const targetName = targetId ? opts?.agentNameById?.get(targetId) : undefined;
-
-  switch (decision.action) {
-    case "assign":
-      if (relayTo) {
-        return targetName ? `转派 ${targetName}` : "转派";
-      }
-      return targetName ? `指派 ${targetName}` : "指派";
-    case "retry":
-      return "重试";
-    case "reassign":
-      return targetName ? `改派 ${targetName}` : "改派";
-    case "complete":
-    case "ask_user":
-      return "审阅";
-    case "wait":
-      return "等待";
-    case "skip":
-      return "跳过";
-    default:
-      return decision.action || "审阅";
-  }
-}
-
 export function resolveManagerDecisionForTrack(
   track: FlowTrack,
   graph?: FlowGraphContext,
@@ -928,33 +915,19 @@ export function resolveManagerFlowScene(
   assignment: RoomAssignment | undefined,
   opts?: FlowDisplayOpts,
 ): string {
-  const decision = managerDecisionForAssignment(track.assignmentId, opts?.graph);
-  if (decision) {
-    return resolveManagerDecisionScene(decision, opts);
-  }
-
-  const escalation = parseAssignmentEscalationReason(assignment?.reason);
-  if (escalation) {
+  if (parseAssignmentEscalationReason(assignment?.reason)) {
     return "升级";
   }
 
-  if (assignment?.kind === "auto_review") {
-    const inv = invocationForAssignment(opts?.graph, track.assignmentId);
-    const intent = inv?.intent?.trim();
-    if (intent === "route" || intent === "orchestrate") return "指派";
-    return "审阅";
-  }
+  const inv = invocationForAssignment(opts?.graph, track.assignmentId);
+  const decision = managerDecisionForAssignment(track.assignmentId, opts?.graph);
 
-  return assignmentKindLabel(assignment?.kind ?? "审阅");
-}
-
-/** @deprecated Use resolveManagerFlowScene */
-export function resolveManagerTaskLabel(
-  track: FlowTrack,
-  assignment: RoomAssignment | undefined,
-  opts?: FlowDisplayOpts,
-): string {
-  return resolveManagerFlowScene(track, assignment, opts);
+  return deriveManagerScene({
+    intent: inv?.intent,
+    assignmentKind: assignment?.kind,
+    outcome: inv?.outcome,
+    decision,
+  });
 }
 
 function formatManagerFlowLine(

@@ -9,30 +9,11 @@ export const roomKeys = {
   detail: (wsId: string, roomId: string) => [...roomKeys.all(wsId), roomId] as const,
   messages: (wsId: string, roomId: string) =>
     [...roomKeys.all(wsId), roomId, "messages"] as const,
-  invocations: (wsId: string, roomId: string) =>
-    [...roomKeys.all(wsId), roomId, "invocations"] as const,
   members: (wsId: string, roomId: string) =>
     [...roomKeys.all(wsId), roomId, "members"] as const,
-  workboard: (wsId: string, roomId: string) =>
-    [...roomKeys.all(wsId), roomId, "workboard"] as const,
   graph: (wsId: string, roomId: string) =>
     [...roomKeys.all(wsId), roomId, "graph"] as const,
-  topics: (wsId: string, roomId: string) =>
-    [...roomKeys.all(wsId), roomId, "topics"] as const,
-  flowEvents: (wsId: string, roomId: string, scope: string = "room") =>
-    [...roomKeys.all(wsId), roomId, "flow-events", scope] as const,
-  invocationEvents: (wsId: string, roomId: string, scope: string = "room") =>
-    [...roomKeys.all(wsId), roomId, "invocation-events", scope] as const,
 };
-
-export function roomWorkboardOptions(wsId: string, roomId: string) {
-  return queryOptions({
-    queryKey: roomKeys.workboard(wsId, roomId),
-    queryFn: () => api.getRoomWorkboard(roomId),
-    enabled: !!wsId && !!roomId,
-    refetchInterval: 5000,
-  });
-}
 
 export function roomGraphOptions(wsId: string, roomId: string) {
   return queryOptions({
@@ -40,44 +21,6 @@ export function roomGraphOptions(wsId: string, roomId: string) {
     queryFn: () => api.getRoomGraph(roomId),
     enabled: !!wsId && !!roomId,
     placeholderData: (previousData) => previousData,
-  });
-}
-
-export function roomTopicsOptions(wsId: string, roomId: string) {
-  return queryOptions({
-    queryKey: roomKeys.topics(wsId, roomId),
-    queryFn: async () => {
-      const res = await api.listRoomTopics(roomId);
-      return res.topics;
-    },
-    enabled: !!wsId && !!roomId,
-  });
-}
-
-export function roomFlowEventsOptions(
-  wsId: string,
-  roomId: string,
-  assignmentId?: string,
-) {
-  const scope = assignmentId ? `assignment:${assignmentId}` : "room";
-  return queryOptions({
-    queryKey: roomKeys.invocationEvents(wsId, roomId, scope),
-    queryFn: async () => {
-      const res = await api.listRoomFlowEvents(
-        roomId,
-        assignmentId ? { assignmentId } : undefined,
-      );
-      return res.events;
-    },
-    enabled: !!wsId && !!roomId,
-  });
-}
-
-export function roomsListOptions(wsId: string) {
-  return queryOptions({
-    queryKey: roomKeys.list(wsId),
-    queryFn: () => api.listRooms(),
-    enabled: !!wsId,
   });
 }
 
@@ -89,12 +32,11 @@ export function roomDetailOptions(wsId: string, roomId: string) {
   });
 }
 
-export function roomMessagesOptions(wsId: string, roomId: string) {
+export function roomsListOptions(wsId: string) {
   return queryOptions({
-    queryKey: roomKeys.messages(wsId, roomId),
-    queryFn: () =>
-      api.listRoomMessages(roomId, { limit: ROOM_MESSAGES_PAGE_SIZE }),
-    enabled: !!wsId && !!roomId,
+    queryKey: roomKeys.list(wsId),
+    queryFn: () => api.listRooms(),
+    enabled: !!wsId,
   });
 }
 
@@ -114,24 +56,6 @@ export function roomMessagesInfiniteOptions(wsId: string, roomId: string) {
     },
     enabled: !!wsId && !!roomId,
     placeholderData: (previousData) => previousData,
-  });
-}
-
-export function roomInvocationsOptions(wsId: string, roomId: string) {
-  return queryOptions({
-    queryKey: roomKeys.invocations(wsId, roomId),
-    queryFn: () => api.listRoomInvocations(roomId),
-    enabled: !!wsId && !!roomId,
-    refetchInterval: (q) => {
-      const rows = q.state.data ?? [];
-      const active = rows.some(
-        (inv) =>
-          inv.status === "running" ||
-          inv.status === "queued" ||
-          inv.status === "pending",
-      );
-      return active ? 3000 : false;
-    },
   });
 }
 

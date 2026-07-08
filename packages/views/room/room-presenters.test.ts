@@ -1,29 +1,44 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildManagerStatusText,
-  resolveManagerScene,
-} from "./manager-invocation-skin";
+import { buildManagerStatusText, deriveManagerScene } from "./room-presenters";
 
-describe("resolveManagerScene", () => {
+describe("deriveManagerScene", () => {
   it("maps route intent to 指派", () => {
-    expect(resolveManagerScene("route", "auto_review")).toBe("指派");
+    expect(deriveManagerScene({ intent: "route", assignmentKind: "auto_review" })).toBe(
+      "指派",
+    );
   });
 
   it("maps review intent to 审核", () => {
-    expect(resolveManagerScene("review", "auto_review")).toBe("审核");
+    expect(deriveManagerScene({ intent: "review", assignmentKind: "auto_review" })).toBe(
+      "审核",
+    );
   });
 
   it("defaults auto_review without intent to 指派", () => {
-    expect(resolveManagerScene(undefined, "auto_review")).toBe("指派");
+    expect(deriveManagerScene({ assignmentKind: "auto_review" })).toBe("指派");
   });
 
   it("infers 指派 from dispatch outcome", () => {
     expect(
-      resolveManagerScene(undefined, "auto_review", {
-        type: "dispatch",
-        target_agent_id: "fe",
+      deriveManagerScene({
+        assignmentKind: "auto_review",
+        outcome: { type: "dispatch", target_agent_id: "fe" },
       }),
     ).toBe("指派");
+  });
+
+  it("maps relay assign decision to 转派", () => {
+    expect(
+      deriveManagerScene({
+        decision: {
+          id: "dec-1",
+          room_id: "room-1",
+          source_message_id: "msg-1",
+          action: "assign",
+          payload: { relay_to: "fe" },
+        },
+      }),
+    ).toBe("转派");
   });
 });
 
@@ -58,6 +73,7 @@ describe("buildManagerStatusText", () => {
         "前端工程师",
         {
           id: "dec-1",
+          room_id: "room-1",
           source_message_id: "msg-1",
           action: "assign",
           created_assignment_ids: ["a-fe"],

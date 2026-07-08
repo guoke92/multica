@@ -20,9 +20,8 @@ type RoomGraphProcessResult struct {
 	Invocations []db.RoomInvocation
 }
 
-// RoomGraphSnapshot aggregates the room collaboration graph for the API.
+// RoomGraphSnapshot aggregates room orchestration state (messages use the messages API).
 type RoomGraphSnapshot struct {
-	Messages               []db.RoomMessage
 	Mentions               []db.RoomMessageMention
 	Assignments            []db.RoomAssignment
 	AssignmentDependencies []db.RoomAssignmentDependency
@@ -509,14 +508,6 @@ func (s *TaskService) drainRoomGraphAgents(ctx context.Context, room db.Room, in
 // BuildRoomGraphSnapshot loads the full collaboration graph for a room.
 func (s *TaskService) BuildRoomGraphSnapshot(ctx context.Context, roomID pgtype.UUID) (RoomGraphSnapshot, error) {
 	var snap RoomGraphSnapshot
-	msgs, err := s.Queries.ListRoomMessages(ctx, db.ListRoomMessagesParams{
-		RoomID: roomID, Limit: 500,
-	})
-	if err != nil {
-		return snap, err
-	}
-	snap.Messages = msgs
-
 	snap.Mentions, _ = s.Queries.ListRoomMessageMentionsByRoom(ctx, roomID)
 	snap.Assignments, _ = s.Queries.ListRoomAssignmentsByRoom(ctx, roomID)
 	snap.AssignmentDependencies, _ = s.Queries.ListRoomAssignmentDependenciesByRoom(ctx, roomID)

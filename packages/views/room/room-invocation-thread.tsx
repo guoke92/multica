@@ -1,37 +1,8 @@
 "use client";
 
-import type { RoomMessage, RoomInvocation, RoomAssignment } from "@multica/core/types/room";
 import { RoleAgentInvocationSkin } from "./role-agent-invocation-skin";
 import { ManagerHistoryFold } from "./manager-invocation-skin";
-import {
-  buildInvocationChatItems,
-  compareMonotonicId,
-  type InvocationChatItem,
-} from "./room-flow-utils";
-
-type InvocationContext = {
-  timelineMessages: RoomMessage[];
-  invocations?: RoomInvocation[];
-  assignments?: RoomAssignment[];
-  agentNameById: Map<string, string>;
-  managerAgentId?: string;
-};
-
-export function invocationItemsForMessage(
-  messageId: string,
-  ctx: InvocationContext,
-): InvocationChatItem[] {
-  return buildInvocationChatItems(
-    ctx.invocations ?? [],
-    ctx.assignments ?? [],
-    ctx.timelineMessages,
-    ctx.agentNameById,
-    ctx.managerAgentId,
-    { includeManagerSucceeded: true },
-  )
-    .filter((item) => item.sourceMessageId === messageId)
-    .sort((a, b) => -compareMonotonicId(a.invocation.id, b.invocation.id));
-}
+import type { InvocationChatItem } from "./room-flow-utils";
 
 /** Role-agent processing row in the chat timeline (same slot as the final agent reply). */
 export function RoleAgentTimelineEntry({

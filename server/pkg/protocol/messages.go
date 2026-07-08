@@ -69,6 +69,7 @@ type RoomMessagePayload struct {
 	RoomID    string `json:"room_id"`
 	MessageID string `json:"message_id"`
 	Role      string `json:"role"`
+	SenderID  string `json:"sender_id,omitempty"`
 	Content   string `json:"content"`
 	TaskID    string `json:"task_id,omitempty"`
 	CreatedAt string `json:"created_at"`

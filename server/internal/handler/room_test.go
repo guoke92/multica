@@ -87,34 +87,13 @@ func TestListRoomDeliveriesGone(t *testing.T) {
 	require.Equal(t, http.StatusGone, w.Code)
 }
 
-func TestGetRoomWorkboardShape(t *testing.T) {
-	createReq := newRequest(http.MethodPost, "/api/rooms", map[string]any{
-		"name": "Workboard Room",
-		"type": "project",
-	})
-	createReq = withChatTestWorkspaceCtx(t, createReq)
+func TestGetRoomWorkboardGone(t *testing.T) {
+	req := newRequest(http.MethodGet, "/api/rooms/00000000-0000-0000-0000-000000000001/workboard", nil)
+	req = withURLParam(req, "roomId", "00000000-0000-0000-0000-000000000001")
+	req = withChatTestWorkspaceCtx(t, req)
 	w := httptest.NewRecorder()
-	testHandler.CreateRoom(w, createReq)
-	require.Equal(t, http.StatusCreated, w.Code)
-
-	var room RoomResponse
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &room))
-
-	wbReq := newRequest(http.MethodGet, "/api/rooms/"+room.ID+"/workboard", nil)
-	wbReq = withURLParam(wbReq, "roomId", room.ID)
-	wbReq = withChatTestWorkspaceCtx(t, wbReq)
-	wb := httptest.NewRecorder()
-	testHandler.GetRoomWorkboard(wb, wbReq)
-	require.Equal(t, http.StatusOK, wb.Code)
-
-	var body map[string]any
-	require.NoError(t, json.Unmarshal(wb.Body.Bytes(), &body))
-	require.Contains(t, body, "pending_count")
-	require.Contains(t, body, "running_count")
-	_, hasIssues := body["issues"]
-	require.False(t, hasIssues, "workboard must not expose issues[]")
-	_, hasDelivery := body["active_delivery"]
-	require.False(t, hasDelivery, "workboard must not expose active_delivery")
+	testHandler.GetRoomWorkboard(w, req)
+	require.Equal(t, http.StatusGone, w.Code)
 }
 
 func TestGetRoomGraphResponseShape(t *testing.T) {

@@ -62,10 +62,10 @@ type SendRoomMessageRequest struct {
 }
 
 type SendRoomMessageResponse struct {
-	MessageID    string               `json:"message_id"`
-	CreatedAt    string               `json:"created_at"`
-	Invocations  []InvocationResponse `json:"invocations,omitempty"`
-	Assignments  []AssignmentResponse `json:"assignments,omitempty"`
+	Message     roomGraphMessageResponse       `json:"message"`
+	Mentions    []roomGraphMentionResponse     `json:"mentions,omitempty"`
+	Invocations []roomGraphInvocationResponse  `json:"invocations,omitempty"`
+	Assignments []AssignmentResponse           `json:"assignments,omitempty"`
 }
 
 type CreateRoomAssignmentRequest struct {
@@ -96,49 +96,38 @@ type AssignmentResponse struct {
 	SupersededByAssignmentID *string `json:"superseded_by_assignment_id,omitempty"`
 }
 
-type InvocationResponse struct {
-	ID              string          `json:"id"`
-	AssignmentID    string          `json:"assignment_id"`
-	SourceMessageID string          `json:"source_message_id"`
-	AgentID         string          `json:"agent_id"`
-	Intent          string          `json:"intent,omitempty"`
-	Status          string          `json:"status"`
-	TaskID          *string         `json:"task_id,omitempty"`
-	OutputMessageID *string         `json:"output_message_id,omitempty"`
-	Outcome         json.RawMessage `json:"outcome,omitempty"`
+type InvocationResponse = roomGraphInvocationResponse
+
+func invocationToResponse(inv db.RoomInvocation) InvocationResponse {
+	item := roomGraphInvocationResponse{
+		ID:              uuidToString(inv.ID),
+		RoomID:          uuidToString(inv.RoomID),
+		AssignmentID:    uuidToString(inv.AssignmentID),
+		SourceMessageID: uuidToString(inv.SourceMessageID),
+		AgentID:         uuidToString(inv.AgentID),
+		Intent:          inv.Intent,
+		Status:          inv.Status,
+		CreatedAt:       timestampToString(inv.CreatedAt),
+		UpdatedAt:       timestampToString(inv.UpdatedAt),
+	}
+	if inv.TaskID.Valid {
+		s := uuidToString(inv.TaskID)
+		item.TaskID = &s
+	}
+	if inv.OutputMessageID.Valid {
+		s := uuidToString(inv.OutputMessageID)
+		item.OutputMessageID = &s
+	}
+	if len(inv.Outcome) > 0 {
+		item.Outcome = inv.Outcome
+	}
+	return item
 }
 
 type RoomMemberResponse struct {
 	PrincipalType string `json:"principal_type"`
 	PrincipalID   string `json:"principal_id"`
 	Role          string `json:"role"`
-}
-
-func invocationToResponse(inv db.RoomInvocation) InvocationResponse {
-	var taskID *string
-	if inv.TaskID.Valid {
-		s := uuidToString(inv.TaskID)
-		taskID = &s
-	}
-	var outputMessageID *string
-	if inv.OutputMessageID.Valid {
-		s := uuidToString(inv.OutputMessageID)
-		outputMessageID = &s
-	}
-	resp := InvocationResponse{
-		ID:              uuidToString(inv.ID),
-		AssignmentID:    uuidToString(inv.AssignmentID),
-		SourceMessageID: uuidToString(inv.SourceMessageID),
-		AgentID:         uuidToString(inv.AgentID),
-		Intent:          inv.Intent,
-		Status:          inv.Status,
-		TaskID:          taskID,
-		OutputMessageID: outputMessageID,
-	}
-	if len(inv.Outcome) > 0 {
-		resp.Outcome = inv.Outcome
-	}
-	return resp
 }
 
 type roomGraphMessageResponse struct {
@@ -150,6 +139,37 @@ type roomGraphMessageResponse struct {
 	Metadata       json.RawMessage `json:"metadata,omitempty"`
 	CreatedAt      string          `json:"created_at"`
 	EditedAt       *string         `json:"edited_at,omitempty"`
+}
+
+func roomMessageToGraphResponse(m db.RoomMessage) roomGraphMessageResponse {
+	var senderID, quoteID *string
+	if m.SenderID.Valid {
+		s := uuidToString(m.SenderID)
+		senderID = &s
+	}
+	if m.QuoteMessageID.Valid {
+		s := uuidToString(m.QuoteMessageID)
+		quoteID = &s
+	}
+	meta := m.Metadata
+	if len(meta) == 0 {
+		meta = []byte("{}")
+	}
+	var editedAt *string
+	if m.EditedAt.Valid {
+		s := timestampToString(m.EditedAt)
+		editedAt = &s
+	}
+	return roomGraphMessageResponse{
+		ID:             uuidToString(m.ID),
+		SenderType:     m.SenderType,
+		SenderID:       senderID,
+		Content:        m.Content,
+		QuoteMessageID: quoteID,
+		Metadata:       meta,
+		CreatedAt:      timestampToString(m.CreatedAt),
+		EditedAt:       editedAt,
+	}
 }
 
 type roomGraphMentionResponse struct {
@@ -1511,22 +1531,16 @@ func (h *Handler) SendRoomMessage(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("route room message", "error", err)
 	}
 
-	h.publishRoom(protocol.EventRoomMessage, workspaceID, "member", userID, protocol.RoomMessagePayload{
-		RoomID:    uuidToString(room.ID),
-		MessageID: uuidToString(msg.ID),
-		Role:      "user",
-		Content:   msg.Content,
-		CreatedAt: timestampToString(msg.CreatedAt),
-	})
 	h.publishRoom(protocol.EventRoomMessageCreated, workspaceID, "member", userID, protocol.RoomMessagePayload{
 		RoomID:    uuidToString(room.ID),
 		MessageID: uuidToString(msg.ID),
 		Role:      "user",
+		SenderID:  userID,
 		Content:   msg.Content,
 		CreatedAt: timestampToString(msg.CreatedAt),
 	})
 
-	invResp := make([]InvocationResponse, 0, len(result.Invocations))
+	invResp := make([]roomGraphInvocationResponse, 0, len(result.Invocations))
 	for _, inv := range result.Invocations {
 		invResp = append(invResp, invocationToResponse(inv))
 	}
@@ -1534,10 +1548,11 @@ func (h *Handler) SendRoomMessage(w http.ResponseWriter, r *http.Request) {
 	for _, a := range result.Assignments {
 		assignResp = append(assignResp, assignmentToResponse(a))
 	}
+	mentionRows, _ := h.Queries.ListRoomMessageMentionsByMessage(r.Context(), msg.ID)
 
 	writeJSON(w, http.StatusCreated, SendRoomMessageResponse{
-		MessageID:   uuidToString(msg.ID),
-		CreatedAt:   timestampToString(msg.CreatedAt),
+		Message:     roomMessageToGraphResponse(msg),
+		Mentions:    roomMentionsToGraphResponse(mentionRows),
 		Invocations: invResp,
 		Assignments: assignResp,
 	})
@@ -1545,6 +1560,12 @@ func (h *Handler) SendRoomMessage(w http.ResponseWriter, r *http.Request) {
 
 type UpdateRoomMessageRequest struct {
 	Content string `json:"content"`
+}
+
+type UpdateRoomMessageResponse struct {
+	Message     roomGraphMessageResponse      `json:"message"`
+	Invocations []roomGraphInvocationResponse `json:"invocations,omitempty"`
+	Assignments []AssignmentResponse          `json:"assignments,omitempty"`
 }
 
 func (h *Handler) UpdateRoomMessage(w http.ResponseWriter, r *http.Request) {
@@ -1618,19 +1639,23 @@ func (h *Handler) UpdateRoomMessage(w http.ResponseWriter, r *http.Request) {
 		RoomID:    uuidToString(room.ID),
 		MessageID: uuidToString(msg.ID),
 		Role:      "user",
+		SenderID:  userID,
 		Content:   msg.Content,
 		CreatedAt: timestampToString(msg.CreatedAt),
 	})
 
-	invResp := make([]InvocationResponse, 0, len(result.Invocations))
+	invResp := make([]roomGraphInvocationResponse, 0, len(result.Invocations))
 	for _, inv := range result.Invocations {
 		invResp = append(invResp, invocationToResponse(inv))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"message_id":  uuidToString(msg.ID),
-		"content":     msg.Content,
-		"edited_at":   timestampToString(msg.EditedAt),
-		"invocations": invResp,
+	assignResp := make([]AssignmentResponse, 0, len(result.Assignments))
+	for _, a := range result.Assignments {
+		assignResp = append(assignResp, assignmentToResponse(a))
+	}
+	writeJSON(w, http.StatusOK, UpdateRoomMessageResponse{
+		Message:     roomMessageToGraphResponse(msg),
+		Invocations: invResp,
+		Assignments: assignResp,
 	})
 }
 
@@ -1867,61 +1892,11 @@ func (h *Handler) ListRoomMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ListRoomInvocations(w http.ResponseWriter, r *http.Request) {
-	userID, ok := requireUserID(w, r)
-	if !ok {
-		return
-	}
-	workspaceID := ctxWorkspaceID(r.Context())
-	roomID := chi.URLParam(r, "roomId")
-	room, _, ok := h.loadRoomMember(w, r, userID, workspaceID, roomID)
-	if !ok {
-		return
-	}
-	rows, err := h.Queries.ListRoomInvocationsByRoom(r.Context(), room.ID)
-	if err != nil {
-		slog.Warn("list room invocations failed",
-			"room_id", uuidToString(room.ID),
-			"error", err,
-		)
-		writeError(w, http.StatusInternalServerError, "failed to list invocations")
-		return
-	}
-	resp := make([]InvocationResponse, 0, len(rows))
-	for _, inv := range rows {
-		resp = append(resp, invocationToResponse(inv))
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeError(w, http.StatusGone, "room invocations list removed; use GET /rooms/:id/graph")
 }
 
 func (h *Handler) RetryInvocation(w http.ResponseWriter, r *http.Request) {
-	userID, ok := requireUserID(w, r)
-	if !ok {
-		return
-	}
-	workspaceID := ctxWorkspaceID(r.Context())
-	invID := chi.URLParam(r, "invocationId")
-	invUUID, ok := parseUUIDOrBadRequest(w, invID, "invocation id")
-	if !ok {
-		return
-	}
-	inv, err := h.Queries.GetRoomInvocation(r.Context(), invUUID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "invocation not found")
-		return
-	}
-	room, _, ok := h.loadRoomMember(w, r, userID, workspaceID, uuidToString(inv.RoomID))
-	if !ok {
-		return
-	}
-	inv, err = h.TaskService.RetryRoomAssignment(r.Context(), room, inv.AssignmentID, parseUUID(userID))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invocation cannot be retried")
-		return
-	}
-	h.publishRoom(protocol.EventRoomInvocationUpdated, workspaceID, "member", userID, map[string]string{
-		"room_id": uuidToString(inv.RoomID),
-	})
-	writeJSON(w, http.StatusOK, invocationToResponse(inv))
+	writeError(w, http.StatusGone, "global invocation retry removed; use POST /rooms/:id/assignments/:id/retry")
 }
 
 func (h *Handler) CancelRoomInvocation(w http.ResponseWriter, r *http.Request) {
@@ -1983,82 +1958,11 @@ func (h *Handler) canCancelRoomInvocation(ctx context.Context, room db.Room, mem
 }
 
 func (h *Handler) CancelInvocation(w http.ResponseWriter, r *http.Request) {
-	userID, ok := requireUserID(w, r)
-	if !ok {
-		return
-	}
-	workspaceID := ctxWorkspaceID(r.Context())
-	invID := chi.URLParam(r, "invocationId")
-	invUUID, ok := parseUUIDOrBadRequest(w, invID, "invocation id")
-	if !ok {
-		return
-	}
-	inv, err := h.Queries.GetRoomInvocation(r.Context(), invUUID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "invocation not found")
-		return
-	}
-	room, member, ok := h.loadRoomMember(w, r, userID, workspaceID, uuidToString(inv.RoomID))
-	if !ok {
-		return
-	}
-	if !h.canCancelRoomInvocation(r.Context(), room, member, userID, inv) {
-		writeError(w, http.StatusForbidden, "forbidden")
-		return
-	}
-	if err := h.TaskService.CancelAssignment(r.Context(), room, inv.AssignmentID, parseUUID(userID)); err != nil {
-		writeError(w, http.StatusNotFound, "invocation not found or already finished")
-		return
-	}
-	inv, err = h.Queries.GetRoomInvocation(r.Context(), inv.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load invocation")
-		return
-	}
-	h.publishRoom(protocol.EventRoomInvocationUpdated, workspaceID, "member", userID, map[string]string{
-		"room_id": uuidToString(inv.RoomID),
-	})
-	h.logRoomAudit(r.Context(), workspaceID, "member", userID, "invocation_cancelled", map[string]string{
-		"invocation_id": uuidToString(inv.ID),
-		"room_id":       uuidToString(inv.RoomID),
-	})
-	writeJSON(w, http.StatusOK, invocationToResponse(inv))
+	writeError(w, http.StatusGone, "global invocation cancel removed; use POST /rooms/:id/invocations/:id/cancel")
 }
 
 func (h *Handler) ResumeInvocation(w http.ResponseWriter, r *http.Request) {
-	userID, ok := requireUserID(w, r)
-	if !ok {
-		return
-	}
-	workspaceID := ctxWorkspaceID(r.Context())
-	invID := chi.URLParam(r, "invocationId")
-	invUUID, ok := parseUUIDOrBadRequest(w, invID, "invocation id")
-	if !ok {
-		return
-	}
-	inv, err := h.Queries.GetRoomInvocation(r.Context(), invUUID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "invocation not found")
-		return
-	}
-	room, member, ok := h.loadRoomMember(w, r, userID, workspaceID, uuidToString(inv.RoomID))
-	if !ok {
-		return
-	}
-	if member.Role != "owner" && member.Role != "admin" {
-		writeError(w, http.StatusForbidden, "admin required to resume chain")
-		return
-	}
-	inv, err = h.TaskService.RetryRoomAssignment(r.Context(), room, inv.AssignmentID, parseUUID(userID))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invocation cannot be resumed")
-		return
-	}
-	h.TaskService.RefreshRoomSnapshot(r.Context(), inv.RoomID)
-	h.logRoomAudit(r.Context(), workspaceID, "member", userID, "invocation_resumed", map[string]string{
-		"invocation_id": uuidToString(inv.ID),
-	})
-	writeJSON(w, http.StatusOK, invocationToResponse(inv))
+	writeError(w, http.StatusGone, "global invocation resume removed; use POST /rooms/:id/assignments/:id/retry")
 }
 
 func (h *Handler) DecideApproval(w http.ResponseWriter, r *http.Request) {
@@ -2143,7 +2047,6 @@ func roomGraphSnapshotResponse(snap service.RoomGraphSnapshot) map[string]any {
 		assignments = append(assignments, assignmentToResponse(a))
 	}
 	return map[string]any{
-		"messages":                roomMessagesToGraphResponse(snap.Messages),
 		"mentions":                roomMentionsToGraphResponse(snap.Mentions),
 		"assignments":             assignments,
 		"assignment_dependencies": roomDependenciesToGraphResponse(snap.AssignmentDependencies),

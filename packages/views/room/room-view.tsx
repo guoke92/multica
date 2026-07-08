@@ -1,19 +1,14 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useDefaultLayout } from "react-resizable-panels";
 import {
   roomDetailOptions,
   roomGraphOptions,
   roomMessagesInfiniteOptions,
   roomMembersOptions,
-  roomKeys,
 } from "@multica/core/room/queries";
-import {
-  appendRoomMessageToInfiniteCache,
-  roomMessagesInfiniteKey,
-} from "@multica/core/room/graph-cache";
 import {
   useSendRoomMessage,
   useUpdateRoomMessage,
@@ -53,7 +48,6 @@ type Props = {
 
 export function RoomView({ roomId, onArchived }: Props) {
   const wsId = useWorkspaceId();
-  const qc = useQueryClient();
   const userId = useAuthStore((s) => s.user?.id);
   const [draft, setDraft] = useState("");
   const [editingMessage, setEditingMessage] = useState<RoomMessage | null>(null);
@@ -117,14 +111,9 @@ export function RoomView({ roomId, onArchived }: Props) {
     setQuoteReply(null);
   };
 
-  const invalidateRoomGraph = () => {
-    void qc.invalidateQueries({ queryKey: roomKeys.graph(wsId, roomId) });
-    void qc.invalidateQueries({ queryKey: roomKeys.detail(wsId, roomId) });
-  };
-
   const handleSend = () => {
     const content = draft.trim();
-    if (!content) return;
+    if (!content || !userId) return;
 
     if (editingMessage) {
       if (editingMessage.id.startsWith("optimistic-")) {
@@ -137,8 +126,6 @@ export function RoomView({ roomId, onArchived }: Props) {
           onSuccess: () => {
             setDraft("");
             clearComposerContext();
-            void qc.invalidateQueries({ queryKey: roomKeys.messages(wsId, roomId) });
-            invalidateRoomGraph();
           },
           onError: (err) => {
             toast.error(
@@ -150,20 +137,11 @@ export function RoomView({ roomId, onArchived }: Props) {
       return;
     }
 
-    const optimistic: RoomMessage = {
-      id: `optimistic-${Date.now()}`,
-      sender_type: "user",
-      sender_id: userId,
-      content,
-      quote_message_id: quoteReply?.messageId,
-      created_at: new Date().toISOString(),
-    };
-    appendRoomMessageToInfiniteCache(qc, wsId, roomId, optimistic);
-
     sendMessage.mutate(
       {
         content,
         quote_message_id: quoteReply?.messageId,
+        sender_id: userId,
       },
       {
         onSuccess: (resp) => {
@@ -184,9 +162,6 @@ export function RoomView({ roomId, onArchived }: Props) {
           toast.error(
             err instanceof Error && err.message ? err.message : "消息发送失败",
           );
-          void qc.invalidateQueries({
-            queryKey: roomMessagesInfiniteKey(wsId, roomId),
-          });
         },
       },
     );

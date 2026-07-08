@@ -916,54 +916,6 @@ export const RoomInvocationListSchema = z.array(RoomInvocationSchema);
 
 export const EMPTY_ROOM_INVOCATION_LIST: import("../types/room").RoomInvocation[] = [];
 
-/** @deprecated Prefer RoomInvocationSchema */
-export const MentionInvocationSchema = RoomInvocationSchema;
-
-/** @deprecated Prefer RoomInvocationListSchema */
-export const MentionInvocationListSchema = RoomInvocationListSchema;
-
-export const EMPTY_MENTION_INVOCATION_LIST: import("../types/room").MentionInvocation[] =
-  [];
-
-const TopicSummarySchema = z.object({
-  id: z.string(),
-  title: z.string().default(""),
-  status: z.string(),
-  root_message_id: z.string().optional(),
-  last_message_id: z.string().optional(),
-  event_count: z.number().default(0),
-  updated_at: z.string(),
-}).loose();
-
-export const RoomWorkboardSchema = z.object({
-  pending_count: z.number().default(0),
-  blocked_count: z.number().optional(),
-  queued_count: z.number().optional(),
-  running_count: z.number().default(0),
-  failed_count: z.number().optional(),
-  completed_count: z.number().optional(),
-  timed_out_count: z.number().optional(),
-  active_graph_id: z.string().optional(),
-  compressed_topics: z.array(TopicSummarySchema).optional(),
-  active_topic_id: z.string().optional(),
-  topic_summaries: z.array(TopicSummarySchema).optional(),
-  latest_event_id: z.string().optional(),
-  progress_items: z
-    .array(
-      z.object({
-        title: z.string(),
-        status: z.string(),
-        detail: z.string().optional(),
-      }).loose(),
-    )
-    .optional(),
-}).loose();
-
-export const EMPTY_ROOM_WORKBOARD = {
-  pending_count: 0,
-  running_count: 0,
-};
-
 export const RoomMessageSchema = z.object({
   id: z.string(),
   sender_type: z.string(),
@@ -1068,7 +1020,6 @@ const RoomManagerDecisionSchema = z.object({
 }).loose();
 
 export const RoomGraphSnapshotSchema = z.object({
-  messages: z.array(RoomMessageSchema).default([]),
   mentions: z.array(RoomMessageMentionSchema).default([]),
   assignments: z.array(RoomAssignmentSchema).default([]),
   assignment_dependencies: z.array(RoomAssignmentDependencySchema).default([]),
@@ -1076,6 +1027,28 @@ export const RoomGraphSnapshotSchema = z.object({
   decisions: z.array(RoomManagerDecisionSchema).default([]),
   invocation_events: z.array(RoomInvocationEventSchema).default([]),
 }).loose();
+
+export const SendRoomMessageResponseSchema = z.object({
+  message: RoomMessageSchema,
+  mentions: z.array(RoomMessageMentionSchema).optional(),
+  assignments: z.array(RoomAssignmentSchema).optional(),
+  invocations: z.array(RoomInvocationSchema).optional(),
+}).loose();
+
+export const UpdateRoomMessageResponseSchema = z.object({
+  message: RoomMessageSchema,
+  assignments: z.array(RoomAssignmentSchema).optional(),
+  invocations: z.array(RoomInvocationSchema).optional(),
+}).loose();
+
+export const EMPTY_SEND_ROOM_MESSAGE_RESPONSE: import("../types/room").SendRoomMessageResponse = {
+  message: {
+    id: "",
+    sender_type: "user",
+    content: "",
+    created_at: "",
+  },
+};
 
 export const CreateRoomAssignmentResponseSchema = z.object({
   assignment: RoomAssignmentSchema,
@@ -1098,7 +1071,6 @@ export const EMPTY_CREATE_ROOM_ASSIGNMENT_RESPONSE: {
 };
 
 export const EMPTY_ROOM_GRAPH_SNAPSHOT: import("../types/room").RoomGraphSnapshot = {
-  messages: [],
   mentions: [],
   assignments: [],
   assignment_dependencies: [],
@@ -1106,26 +1078,4 @@ export const EMPTY_ROOM_GRAPH_SNAPSHOT: import("../types/room").RoomGraphSnapsho
   decisions: [],
   invocation_events: [],
 };
-
-export const RoomTopicSchema = z.object({
-  id: z.string(),
-  room_id: z.string(),
-  delivery_id: z.string().optional(),
-  parent_topic_id: z.string().optional(),
-  title: z.string().default(""),
-  status: z.string(),
-  phase_key: z.string().default(""),
-  assignee_agent_id: z.string().optional(),
-  root_message_id: z.string().optional(),
-  last_message_id: z.string().optional(),
-  event_count: z.number().optional(),
-  created_at: z.string(),
-  updated_at: z.string(),
-}).loose();
-
-export const RoomTopicsResponseSchema = z.object({
-  topics: z.array(RoomTopicSchema).default([]),
-}).loose();
-
-export const EMPTY_ROOM_TOPICS_RESPONSE = { topics: [] as import("../types/room").RoomTopic[] };
 

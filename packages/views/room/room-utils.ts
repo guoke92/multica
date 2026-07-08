@@ -1,4 +1,4 @@
-import type { MentionInvocation, RoomMessage, RoomAssignment, RoomMessageMention } from "@multica/core/types/room";
+import type { RoomMessage, RoomAssignment, RoomMessageMention } from "@multica/core/types/room";
 
 export type QuoteReplyTarget = {
   messageId: string;
@@ -86,53 +86,6 @@ export function extractRoomAgentCopyText(message: RoomMessage): string {
   return message.content;
 }
 
-/** v2.3 attribution pill text for an agent invocation reply slot. */
-export function resolveInvocationAttribution(
-  inv: MentionInvocation,
-  rootUserMessage: RoomMessage,
-  invocations: MentionInvocation[],
-  messagesById: Map<string, RoomMessage>,
-  agentNameById: Map<string, string>,
-  managerAgentId?: string,
-): string | undefined {
-  const responseMsg = inv.response_message_id
-    ? messagesById.get(inv.response_message_id)
-    : undefined;
-  const quoted = responseMsg?.quote_message_id
-    ? messagesById.get(responseMsg.quote_message_id)
-    : undefined;
-
-  if (quoted?.sender_type === "agent" && quoted.sender_id) {
-    const name = agentNameById.get(quoted.sender_id) ?? "Agent";
-    return `由 @${name} 指定`;
-  }
-
-  if (rootUserMessage.sender_type !== "user") {
-    return undefined;
-  }
-
-  const managerRouted =
-    !!managerAgentId &&
-    invocations.some(
-      (i) =>
-        i.message_id === rootUserMessage.id &&
-        i.target_id === managerAgentId &&
-        (i.intent === "route" ||
-          i.intent === "orchestrate" ||
-          i.intent === "review"),
-    );
-
-  if (managerRouted && inv.intent === "execute") {
-    return "由群管理分配指定";
-  }
-
-  if (inv.message_id === rootUserMessage.id && inv.intent === "execute") {
-    return "用户 @指定";
-  }
-
-  return undefined;
-}
-
 /** Attribution for an agent reply message using the authoritative assignment + mention data. */
 export function resolveAgentMessageAttribution(
   message: RoomMessage,
@@ -164,76 +117,4 @@ export function resolveAgentMessageAttribution(
     default:
       return undefined;
   }
-}
-
-export type RoomViewMode = "timeline" | "thread";
-
-export type ThreadBlock = {
-  root: RoomMessage;
-  children: ThreadBlock[];
-  depth: number;
-};
-
-/** Build a quote-reply forest; orphans (missing parent) become roots. */
-export function buildThreadForest(messages: RoomMessage[]): ThreadBlock[] {
-  const byId = new Map(messages.map((m) => [m.id, m]));
-  const childrenOf = new Map<string, RoomMessage[]>();
-  const roots: RoomMessage[] = [];
-
-  const wouldCreateCycle = (msgId: string, quoteId: string): boolean => {
-    let cur: string | undefined = quoteId;
-    const seen = new Set<string>();
-    while (cur) {
-      if (cur === msgId) return true;
-      if (seen.has(cur)) return true;
-      seen.add(cur);
-      cur = byId.get(cur)?.quote_message_id;
-    }
-    return false;
-  };
-
-  for (const m of messages) {
-    const quoteId = m.quote_message_id;
-    if (!quoteId || !byId.has(quoteId) || wouldCreateCycle(m.id, quoteId)) {
-      roots.push(m);
-      continue;
-    }
-    const list = childrenOf.get(quoteId) ?? [];
-    list.push(m);
-    childrenOf.set(quoteId, list);
-  }
-
-  const sortByTime = (a: RoomMessage, b: RoomMessage) =>
-    new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-  roots.sort(sortByTime);
-
-  const buildNode = (
-    msg: RoomMessage,
-    depth: number,
-    visiting: Set<string>,
-  ): ThreadBlock => {
-    if (visiting.has(msg.id)) {
-      return { root: msg, children: [], depth };
-    }
-    visiting.add(msg.id);
-    const kids = (childrenOf.get(msg.id) ?? []).sort(sortByTime);
-    return {
-      root: msg,
-      depth,
-      children: kids.map((k) => buildNode(k, depth + 1, new Set(visiting))),
-    };
-  };
-
-  return roots.map((r) => buildNode(r, 0, new Set()));
-}
-
-export function getRoomViewMode(roomId: string): RoomViewMode {
-  if (typeof window === "undefined") return "timeline";
-  const stored = window.localStorage.getItem(`room:viewMode:${roomId}`);
-  return stored === "thread" ? "thread" : "timeline";
-}
-
-export function setRoomViewMode(roomId: string, mode: RoomViewMode): void {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(`room:viewMode:${roomId}`, mode);
 }

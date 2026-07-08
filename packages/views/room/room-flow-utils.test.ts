@@ -18,15 +18,15 @@ import {
   formatFlowStepLine,
   formatFlowTrackLine,
   groupFlowTracks,
-  listActiveInvocationSlots,
-  managerStatusByMessageId,
   needsAttentionFailure,
   pickLeadingManagerItem,
   projectFlowEvents,
   resolveFlowScrollMessageId,
   resolveFlowTrackElapsedSeconds,
   resolveFlowTrackTimerAnchor,
+  resolveManagerDecision,
   isFlowTrackLiveForTimer,
+  type InvocationChatItem,
 } from "./room-flow-utils";
 
 function ev(
@@ -426,54 +426,6 @@ describe("graph helpers", () => {
     expect(compareMonotonicId("abc", "abc")).toBe(0);
   });
 
-  it("lists active invocation slots until output message appears", () => {
-    const agents = new Map([["fe", "前端工程师"]]);
-    const messages: RoomMessage[] = [
-      {
-        id: "out-1",
-        sender_type: "agent",
-        sender_id: "fe",
-        content: "done",
-        created_at: "2026-06-18T10:00:00Z",
-      },
-    ];
-    const invocations: RoomInvocation[] = [
-      {
-        id: "200",
-        assignment_id: "a-run",
-        source_message_id: "msg-1",
-        agent_id: "fe",
-        status: "running",
-        task_id: "task-1",
-      },
-      {
-        id: "inv-done",
-        assignment_id: "a-done",
-        source_message_id: "msg-1",
-        agent_id: "fe",
-        status: "succeeded",
-        output_message_id: "out-1",
-      },
-      {
-        id: "100",
-        assignment_id: "a-queue",
-        source_message_id: "msg-2",
-        agent_id: "arch",
-        status: "queued",
-      },
-    ];
-
-    const slots = listActiveInvocationSlots(invocations, messages, agents);
-    expect(slots).toHaveLength(2);
-    expect(slots.find((s) => s.agentId === "fe")).toMatchObject({
-      agentName: "前端工程师",
-      phase: "running",
-    });
-    expect(slots.find((s) => s.agentId === "arch")).toMatchObject({
-      phase: "queued",
-    });
-  });
-
   it("buildInvocationChatItems separates manager status from agent bubbles", () => {
     const agents = new Map([
       ["mgr", "群管"],
@@ -545,35 +497,61 @@ describe("graph helpers", () => {
     expect(timeline.map((e) => e.kind)).toEqual(["message", "invocation"]);
   });
 
-  it("managerStatusByMessageId keeps latest manager chip per message", () => {
-    const agents = new Map([["mgr", "群管"]]);
-    const items = buildInvocationChatItems(
-      [
-        {
-          id: "inv-1",
-          assignment_id: "a-1",
-          source_message_id: "msg-1",
-          agent_id: "mgr",
-          status: "succeeded",
-        },
-        {
-          id: "inv-2",
-          assignment_id: "a-2",
-          source_message_id: "msg-1",
-          agent_id: "mgr",
-          status: "running",
-        },
-      ] as RoomInvocation[],
-      [
-        assignment({ id: "a-1", kind: "auto_review", status: "completed", assignee_id: "mgr", source_message_id: "msg-1" }),
-        assignment({ id: "a-2", kind: "auto_review", status: "running", assignee_id: "mgr", source_message_id: "msg-1" }),
-      ],
-      [{ id: "msg-1", sender_type: "user", sender_id: "u1", content: "hi", created_at: "2026-06-18T10:00:00Z" }],
-      agents,
-      "mgr",
-    );
-    const map = managerStatusByMessageId(items);
-    expect(map.get("msg-1")?.assignment.id).toBe("a-2");
+  it("resolveManagerDecision picks newest decision by monotonic id", () => {
+    const decisions: RoomManagerDecision[] = [
+      {
+        id: "100",
+        room_id: "room-1",
+        source_message_id: "msg-1",
+        action: "complete",
+      },
+      {
+        id: "200",
+        room_id: "room-1",
+        source_message_id: "msg-1",
+        action: "assign",
+        payload: { route_to: "fe" },
+      },
+    ];
+    expect(
+      resolveManagerDecision(decisions, { sourceMessageId: "msg-1" })?.action,
+    ).toBe("assign");
+    expect(
+      resolveManagerDecision(decisions, {
+        sourceMessageId: "msg-1",
+        invocationId: "inv-1",
+      })?.action,
+    ).toBe("assign");
+    expect(
+      resolveManagerDecision(decisions, {
+        sourceMessageId: "msg-1",
+        invocationId: "inv-1",
+      })?.id,
+    ).toBe("200");
+  });
+
+  it("resolveManagerDecision prefers invocation-linked decision", () => {
+    const decisions: RoomManagerDecision[] = [
+      {
+        id: "300",
+        room_id: "room-1",
+        source_message_id: "msg-1",
+        invocation_id: "inv-1",
+        action: "complete",
+      },
+      {
+        id: "100",
+        room_id: "room-1",
+        source_message_id: "msg-1",
+        action: "assign",
+      },
+    ];
+    expect(
+      resolveManagerDecision(decisions, {
+        sourceMessageId: "msg-1",
+        invocationId: "inv-1",
+      })?.action,
+    ).toBe("complete");
   });
 
   it("collapseRedundantFlowSteps drops duplicate assignment lifecycle events", () => {
@@ -640,7 +618,7 @@ describe("graph helpers", () => {
         managerAgentId: "mgr",
         graph,
       }),
-    ).toBe("审阅 · 完成");
+    ).toBe("指派 · 完成");
   });
 
   it("shows manager decision action in flow timeline", () => {
@@ -698,7 +676,7 @@ describe("graph helpers", () => {
         managerAgentId: "mgr",
         graph,
       }),
-    ).toBe("指派 前端工程师 · 完成");
+    ).toBe("指派 · 完成");
   });
 
   it("shows manager relay reason in flow timeline", () => {
@@ -759,7 +737,7 @@ describe("graph helpers", () => {
         managerAgentId: "mgr",
         graph,
       }),
-    ).toBe("转派 前端工程师 · 完成");
+    ).toBe("转派 · 完成");
   });
 
   it("shows failure escalation task while manager is replanning", () => {
@@ -1156,6 +1134,7 @@ describe("pickLeadingManagerItem", () => {
         },
         assignment: {
           id: "a-fail",
+          room_id: "room-1",
           kind: "auto_review",
           status: "failed",
           source_message_id: "msg-user",
@@ -1176,10 +1155,11 @@ describe("pickLeadingManagerItem", () => {
           agent_id: "mgr",
           intent: "route",
           status: "succeeded",
-          outcome: { type: "dispatch", target_agent_id: "fe" },
+          outcome: { type: "dispatch" as const, target_agent_id: "fe" },
         },
         assignment: {
           id: "a-route",
+          room_id: "room-1",
           kind: "auto_review",
           status: "completed",
           source_message_id: "msg-user",
@@ -1192,7 +1172,7 @@ describe("pickLeadingManagerItem", () => {
         presentation: "manager_status" as const,
         phase: "succeeded" as const,
       },
-    ];
+    ] as InvocationChatItem[];
 
     const leading = pickLeadingManagerItem(items);
     expect(leading?.invocation.id).toBe("inv-dispatch");
@@ -1211,6 +1191,7 @@ describe("pickLeadingManagerItem", () => {
         },
         assignment: {
           id: "a-fail",
+          room_id: "room-1",
           kind: "auto_review",
           status: "failed",
           source_message_id: "msg-user",
@@ -1231,10 +1212,11 @@ describe("pickLeadingManagerItem", () => {
           agent_id: "mgr",
           intent: "route",
           status: "succeeded",
-          outcome: { type: "dispatch", target_agent_id: "fe" },
+          outcome: { type: "dispatch" as const, target_agent_id: "fe" },
         },
         assignment: {
           id: "a-route",
+          room_id: "room-1",
           kind: "auto_review",
           status: "completed",
           source_message_id: "msg-user",
@@ -1247,7 +1229,7 @@ describe("pickLeadingManagerItem", () => {
         presentation: "manager_status" as const,
         phase: "succeeded" as const,
       },
-    ];
+    ] as InvocationChatItem[];
     const decisions = [
       {
         id: "dec-1",
@@ -1272,13 +1254,13 @@ describe("pickLeadingManagerItem", () => {
           intent: "route",
           status: "succeeded",
           outcome: {
-            type: "failed",
+            type: "failed" as const,
             reason: "dispatch succeeded but mention creation failed",
-            target_agent_id: "fe",
           },
         },
         assignment: {
           id: "a-route",
+          room_id: "room-1",
           kind: "auto_review",
           status: "completed",
           source_message_id: "msg-user",
@@ -1291,10 +1273,11 @@ describe("pickLeadingManagerItem", () => {
         presentation: "manager_status" as const,
         phase: "succeeded" as const,
       },
-    ];
+    ] as InvocationChatItem[];
     const decisions = [
       {
         id: "dec-1",
+        room_id: "room-1",
         source_message_id: "msg-user",
         action: "assign",
         created_assignment_ids: ["a-fe"],

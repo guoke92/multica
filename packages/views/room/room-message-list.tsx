@@ -33,32 +33,25 @@ import { RoomAttributionPill } from "./room-attribution-pill";
 import { RoomActivityFooter } from "./room-activity-footer";
 import { ManagerStatusLeading } from "./manager-invocation-skin";
 import {
-  invocationItemsForMessage,
   ManagerHistoryBelowBar,
   RoleAgentTimelineEntry,
 } from "./room-invocation-thread";
 import {
   buildChatTimeline,
   buildInvocationChatItems,
+  indexInvocationItemsBySourceMessage,
   pickLeadingManagerItem,
+  selectFooterAttentionFailures,
+  type InvocationChatItem,
 } from "./room-flow-utils";
 
-function messageInvocationFingerprint(
-  messageId: string,
-  invocations: RoomInvocation[],
-  assignments: RoomAssignment[],
-): string {
-  const assignmentById = new Map(assignments.map((a) => [a.id, a]));
-  const parts: string[] = [];
-  for (const inv of invocations) {
-    const assignment = assignmentById.get(inv.assignment_id);
-    const sourceId = assignment?.source_message_id || inv.source_message_id;
-    if (sourceId !== messageId) continue;
-    parts.push(
-      `${inv.id}:${inv.status}:${inv.outcome?.type ?? ""}:${assignment?.status ?? ""}`,
-    );
-  }
-  return parts.sort().join("|");
+function invocationItemsFingerprint(items: InvocationChatItem[]): string {
+  return items
+    .map(
+      (item) =>
+        `${item.invocation.id}:${item.phase}:${item.presentation}:${item.assignment.status}`,
+    )
+    .join("|");
 }
 
 function messageDecisionsFingerprint(
@@ -170,6 +163,17 @@ export function RoomMessageList({
     [invocations, assignments, visibleMessages, agentNameById, managerAgentId],
   );
 
+  const invocationItemsByMessageId = useMemo(
+    () => indexInvocationItemsBySourceMessage(invocationChatItems),
+    [invocationChatItems],
+  );
+
+  const footerAttentionFailures = useMemo(
+    () =>
+      selectFooterAttentionFailures(assignments, invocations, invocationChatItems),
+    [assignments, invocations, invocationChatItems],
+  );
+
   const chatTimeline = useMemo(
     () => buildChatTimeline(visibleMessages, invocationChatItems),
     [visibleMessages, invocationChatItems],
@@ -196,30 +200,8 @@ export function RoomMessageList({
     return () => cancelAnimationFrame(frame);
   }, [lastSelfOptimisticId, scrollToBottom]);
 
-  const activeStreamTaskId = useMemo(() => {
-    const running = invocations
-      .filter(
-        (inv) =>
-          inv.status === "running" || inv.status === "queued" || inv.status === "pending",
-      )
-      .filter((inv) => inv.task_id && isTaskMessageTaskId(inv.task_id))
-      .sort((a, b) => (a.id < b.id ? -1 : 1));
-    const latest = running[running.length - 1];
-    return latest?.task_id ?? null;
-  }, [invocations]);
-
-  const { data: activeStreamMessages = [] } = useQuery({
-    ...taskMessagesOptions(activeStreamTaskId ?? ""),
-    enabled: !!activeStreamTaskId,
-  });
-
   const chatTailKey = useMemo(() => {
     const lastMessage = visibleMessages[visibleMessages.length - 1];
-    const lastTaskId = activeStreamTaskId;
-    const streamLen = lastTaskId ? activeStreamMessages.length : 0;
-    const lastSeq = lastTaskId
-      ? (activeStreamMessages[activeStreamMessages.length - 1]?.seq ?? 0)
-      : 0;
     const invocationTail = invocationChatItems
       .filter((item) => item.presentation === "agent_bubble")
       .map(
@@ -228,13 +210,8 @@ export function RoomMessageList({
       )
       .join("|");
     if (!lastMessage && !invocationTail) return "";
-    return `msg:${lastMessage?.id ?? ""}:${lastMessage?.content.length ?? 0}:stream:${streamLen}:${lastSeq}:inv:${invocationTail}`;
-  }, [
-    visibleMessages,
-    activeStreamTaskId,
-    activeStreamMessages,
-    invocationChatItems,
-  ]);
+    return `msg:${lastMessage?.id ?? ""}:${lastMessage?.content.length ?? 0}:inv:${invocationTail}`;
+  }, [visibleMessages, invocationChatItems]);
 
   useEffect(() => {
     scrollToBottom();
@@ -322,9 +299,7 @@ export function RoomMessageList({
                 assignments={assignments}
                 mentions={mentions}
                 decisions={decisions}
-                timelineMessages={visibleMessages}
-                invocations={invocations}
-                managerAgentId={managerAgentId}
+                invocationItems={invocationItemsByMessageId.get(m.id) ?? []}
                 agentNameById={agentNameById}
                 onRetryAssignment={onRetryAssignment}
                 onCancelAssignment={onCancelAssignment}
@@ -344,7 +319,7 @@ export function RoomMessageList({
         </div>
       </div>
       <RoomActivityFooter
-        invocations={invocations}
+        invocations={footerAttentionFailures}
         agentNameById={agentNameById}
         onRetryAssignment={onRetryAssignment}
         retryingAssignmentId={retryingAssignmentId}
@@ -499,9 +474,7 @@ function RoomMessageRowInner({
   assignments,
   mentions,
   decisions = [],
-  timelineMessages,
-  invocations,
-  managerAgentId,
+  invocationItems,
   agentNameById,
   onRetryAssignment,
   onCancelAssignment,
@@ -525,9 +498,7 @@ function RoomMessageRowInner({
   assignments?: RoomAssignment[];
   mentions?: RoomMessageMention[];
   decisions?: RoomManagerDecision[];
-  timelineMessages: RoomMessage[];
-  invocations?: RoomInvocation[];
-  managerAgentId?: string;
+  invocationItems: InvocationChatItem[];
   agentNameById: Map<string, string>;
   onRetryAssignment?: (assignmentId: string) => void;
   onCancelAssignment?: (assignmentId: string) => void;
@@ -550,18 +521,6 @@ function RoomMessageRowInner({
   const attribution = isAgent
     ? resolveAgentMessageAttribution(m, assignments ?? [], mentions ?? [])
     : undefined;
-
-  const invocationItems = useMemo(
-    () =>
-      invocationItemsForMessage(m.id, {
-        timelineMessages,
-        invocations,
-        assignments,
-        agentNameById,
-        managerAgentId,
-      }),
-    [m.id, timelineMessages, invocations, assignments, agentNameById, managerAgentId],
-  );
 
   const latestManager = pickLeadingManagerItem(invocationItems, decisions);
   const actionAlign = isSelf ? "end" : "start";
@@ -743,7 +702,6 @@ const RoomMessageRow = memo(RoomMessageRowInner, (prev, next) => {
     prev.isSelf !== next.isSelf ||
     prev.displayName !== next.displayName ||
     prev.isRegenerating !== next.isRegenerating ||
-    prev.managerAgentId !== next.managerAgentId ||
     prev.retryingAssignmentId !== next.retryingAssignmentId ||
     prev.cancellingAssignmentId !== next.cancellingAssignmentId ||
     prev.canEdit !== next.canEdit ||
@@ -754,21 +712,9 @@ const RoomMessageRow = memo(RoomMessageRowInner, (prev, next) => {
   }
   if (prev.quotedMessage?.id !== next.quotedMessage?.id) return false;
   if (prev.quotedSenderName !== next.quotedSenderName) return false;
-  if (prev.timelineMessages.length !== next.timelineMessages.length) return false;
-  const prevTail = prev.timelineMessages[prev.timelineMessages.length - 1]?.id;
-  const nextTail = next.timelineMessages[next.timelineMessages.length - 1]?.id;
-  if (prevTail !== nextTail) return false;
   if (
-    messageInvocationFingerprint(
-      pm.id,
-      prev.invocations ?? [],
-      prev.assignments ?? [],
-    ) !==
-    messageInvocationFingerprint(
-      nm.id,
-      next.invocations ?? [],
-      next.assignments ?? [],
-    )
+    invocationItemsFingerprint(prev.invocationItems) !==
+    invocationItemsFingerprint(next.invocationItems)
   ) {
     return false;
   }

@@ -1,9 +1,41 @@
 import { describe, expect, it } from "vitest";
 import {
   buildQuoteMentionPrefix,
+  resolveAssignmentAttribution,
   resolveRoomAgentChatSummary,
   truncatePreview,
 } from "./room-utils";
+
+describe("resolveAssignmentAttribution", () => {
+  it("labels manager-routed role agents", () => {
+    expect(
+      resolveAssignmentAttribution(
+        { id: "a1", kind: "manager_route" },
+        [],
+        "fe",
+      ),
+    ).toBe("由群管分配指定");
+  });
+
+  it("labels user mentions", () => {
+    expect(
+      resolveAssignmentAttribution(
+        { id: "a1", kind: "mention" },
+        [
+          {
+            id: "m1",
+            message_id: "msg-1",
+            assignment_id: "a1",
+            target_type: "agent",
+            target_id: "fe",
+            source_type: "manual",
+          },
+        ],
+        "fe",
+      ),
+    ).toBe("用户 @ 指定");
+  });
+});
 
 describe("buildQuoteMentionPrefix", () => {
   it("auto-mentions agent sender", () => {

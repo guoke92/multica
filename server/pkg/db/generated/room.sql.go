@@ -194,7 +194,7 @@ VALUES (
     $4, $5, $6,
     COALESCE($7::jsonb, '{}'::jsonb)
 )
-RETURNING id, room_id, sender_type, sender_id, content, quote_message_id, metadata, created_at, edited_at, deleted_at
+RETURNING id, room_id, sender_type, sender_id, content, quote_message_id, linked_issue_id, metadata, created_at, edited_at, deleted_at
 `
 
 type CreateRoomMessageParams struct {
@@ -225,6 +225,7 @@ func (q *Queries) CreateRoomMessage(ctx context.Context, arg CreateRoomMessagePa
 		&i.SenderID,
 		&i.Content,
 		&i.QuoteMessageID,
+		&i.LinkedIssueID,
 		&i.Metadata,
 		&i.CreatedAt,
 		&i.EditedAt,
@@ -381,7 +382,7 @@ func (q *Queries) GetRoomMember(ctx context.Context, arg GetRoomMemberParams) (R
 }
 
 const getRoomMessage = `-- name: GetRoomMessage :one
-SELECT id, room_id, sender_type, sender_id, content, quote_message_id, metadata, created_at, edited_at, deleted_at FROM room_message WHERE id = $1
+SELECT id, room_id, sender_type, sender_id, content, quote_message_id, linked_issue_id, metadata, created_at, edited_at, deleted_at FROM room_message WHERE id = $1
 `
 
 func (q *Queries) GetRoomMessage(ctx context.Context, id pgtype.UUID) (RoomMessage, error) {
@@ -394,6 +395,7 @@ func (q *Queries) GetRoomMessage(ctx context.Context, id pgtype.UUID) (RoomMessa
 		&i.SenderID,
 		&i.Content,
 		&i.QuoteMessageID,
+		&i.LinkedIssueID,
 		&i.Metadata,
 		&i.CreatedAt,
 		&i.EditedAt,
@@ -403,7 +405,7 @@ func (q *Queries) GetRoomMessage(ctx context.Context, id pgtype.UUID) (RoomMessa
 }
 
 const getRoomMessageInRoom = `-- name: GetRoomMessageInRoom :one
-SELECT id, room_id, sender_type, sender_id, content, quote_message_id, metadata, created_at, edited_at, deleted_at FROM room_message WHERE id = $1 AND room_id = $2
+SELECT id, room_id, sender_type, sender_id, content, quote_message_id, linked_issue_id, metadata, created_at, edited_at, deleted_at FROM room_message WHERE id = $1 AND room_id = $2
 `
 
 type GetRoomMessageInRoomParams struct {
@@ -421,6 +423,7 @@ func (q *Queries) GetRoomMessageInRoom(ctx context.Context, arg GetRoomMessageIn
 		&i.SenderID,
 		&i.Content,
 		&i.QuoteMessageID,
+		&i.LinkedIssueID,
 		&i.Metadata,
 		&i.CreatedAt,
 		&i.EditedAt,
@@ -478,7 +481,7 @@ func (q *Queries) ListRoomMembers(ctx context.Context, roomID pgtype.UUID) ([]Ro
 }
 
 const listRoomMessages = `-- name: ListRoomMessages :many
-SELECT id, room_id, sender_type, sender_id, content, quote_message_id, metadata, created_at, edited_at, deleted_at FROM room_message
+SELECT id, room_id, sender_type, sender_id, content, quote_message_id, linked_issue_id, metadata, created_at, edited_at, deleted_at FROM room_message
 WHERE room_id = $1
   AND deleted_at IS NULL
   AND ($2::uuid IS NULL OR id < $2::uuid)
@@ -508,6 +511,7 @@ func (q *Queries) ListRoomMessages(ctx context.Context, arg ListRoomMessagesPara
 			&i.SenderID,
 			&i.Content,
 			&i.QuoteMessageID,
+			&i.LinkedIssueID,
 			&i.Metadata,
 			&i.CreatedAt,
 			&i.EditedAt,
@@ -701,7 +705,7 @@ WHERE id = $1
   AND sender_type = 'user'
   AND sender_id = $4
   AND deleted_at IS NULL
-RETURNING id, room_id, sender_type, sender_id, content, quote_message_id, metadata, created_at, edited_at, deleted_at
+RETURNING id, room_id, sender_type, sender_id, content, quote_message_id, linked_issue_id, metadata, created_at, edited_at, deleted_at
 `
 
 type UpdateRoomMessageContentParams struct {
@@ -726,6 +730,7 @@ func (q *Queries) UpdateRoomMessageContent(ctx context.Context, arg UpdateRoomMe
 		&i.SenderID,
 		&i.Content,
 		&i.QuoteMessageID,
+		&i.LinkedIssueID,
 		&i.Metadata,
 		&i.CreatedAt,
 		&i.EditedAt,

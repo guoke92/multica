@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -173,15 +175,22 @@ func (s *TaskService) DrainQueuedRoomInvocations(ctx context.Context, agentID pg
 		s.failDrainingRoomInvocation(ctx, inv, err.Error())
 		return
 	}
-	inv, err = s.Queries.UpdateRoomInvocationStatus(ctx, db.UpdateRoomInvocationStatusParams{
-		ID: inv.ID, Status: "queued", TaskID: task.ID,
+	// Atomically claim the invocation for this task. If a concurrent drain
+	// already claimed it, undo our speculative task so the agent runs once.
+	claimed, err := s.Queries.ClaimRoomInvocationTask(ctx, db.ClaimRoomInvocationTaskParams{
+		ID: inv.ID, TaskID: task.ID,
 	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		_, _ = s.CancelTask(ctx, task.ID)
+		return
+	}
 	if err != nil {
-		slog.Warn("drain queued invocation: status update failed",
+		slog.Warn("drain queued invocation: claim failed",
 			"invocation_id", util.UUIDToString(inv.ID), "error", err,
 		)
 		return
 	}
+	inv = claimed
 	s.appendInvocationEvent(ctx, room, assignment, inv, "invocation_queued", "system", pgtype.UUID{}, nil)
 	s.RefreshRoomSnapshot(ctx, inv.RoomID)
 }

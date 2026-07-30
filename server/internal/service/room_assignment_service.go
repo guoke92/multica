@@ -3,11 +3,13 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -27,6 +29,35 @@ func (s *TaskService) writeInvocationOutcome(ctx context.Context, inv db.RoomInv
 	return err
 }
 
+// transitionAssignment applies a compare-and-set status write. It returns
+// applied=false (with a nil error) when the CAS matched no row — i.e. the
+// assignment already left one of the allowed source states via a concurrent
+// path. Callers must treat that as an idempotent no-op, never an error, so a
+// completed/cancelled assignment can never be resurrected or overwritten.
+func (s *TaskService) transitionAssignment(
+	ctx context.Context,
+	id pgtype.UUID,
+	from []string,
+	to string,
+	outputMessageID pgtype.UUID,
+	reason pgtype.Text,
+) (db.RoomAssignment, bool, error) {
+	a, err := s.Queries.TransitionRoomAssignmentStatus(ctx, db.TransitionRoomAssignmentStatusParams{
+		ID:              id,
+		FromStatus:      from,
+		ToStatus:        to,
+		OutputMessageID: outputMessageID,
+		Reason:          reason,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.RoomAssignment{}, false, nil
+	}
+	if err != nil {
+		return db.RoomAssignment{}, false, err
+	}
+	return a, true, nil
+}
+
 // CompleteAssignment marks an assignment completed and resolves join dependencies.
 func (s *TaskService) CompleteAssignment(
 	ctx context.Context,
@@ -34,28 +65,30 @@ func (s *TaskService) CompleteAssignment(
 	assignment db.RoomAssignment,
 	outputMessageID pgtype.UUID,
 ) error {
-	updated, err := s.Queries.UpdateRoomAssignmentStatus(ctx, db.UpdateRoomAssignmentStatusParams{
-		ID:              assignment.ID,
-		Status:          "completed",
-		OutputMessageID: outputMessageID,
-	})
+	updated, applied, err := s.transitionAssignment(ctx, assignment.ID, []string{"running"}, "completed", outputMessageID, pgtype.Text{})
 	if err != nil {
 		return err
+	}
+	if !applied {
+		return nil
 	}
 	s.publishRoomAssignmentUpdated(ctx, room, updated)
 	s.appendInvocationEvent(ctx, room, updated, db.RoomInvocation{}, "assignment_completed", "system", pgtype.UUID{}, nil)
 	return s.ResolveBlockedAssignments(ctx, room, updated.ID)
 }
 
-// FailAssignment marks an assignment failed.
+// FailAssignment marks an assignment failed. Completed/cancelled/skipped
+// assignments are terminal and left untouched (the CAS guard is the fix for
+// completion/failure races overwriting a settled assignment).
 func (s *TaskService) FailAssignment(ctx context.Context, room db.Room, assignment db.RoomAssignment, reason string) error {
-	updated, err := s.Queries.UpdateRoomAssignmentStatus(ctx, db.UpdateRoomAssignmentStatusParams{
-		ID:     assignment.ID,
-		Status: "failed",
-		Reason: pgtype.Text{String: reason, Valid: reason != ""},
-	})
+	updated, applied, err := s.transitionAssignment(ctx, assignment.ID,
+		[]string{"pending", "blocked", "awaiting_approval", "running"}, "failed",
+		pgtype.UUID{}, pgtype.Text{String: reason, Valid: reason != ""})
 	if err != nil {
 		return err
+	}
+	if !applied {
+		return nil
 	}
 	s.publishRoomAssignmentUpdated(ctx, room, updated)
 	s.appendInvocationEvent(ctx, room, updated, db.RoomInvocation{}, "assignment_failed", "system", pgtype.UUID{}, map[string]any{
@@ -88,17 +121,17 @@ func (s *TaskService) CancelAssignment(ctx context.Context, room db.Room, assign
 			ID: inv.ID, CancelledBy: userID,
 		})
 	}
-	updated, err := s.Queries.UpdateRoomAssignmentStatus(ctx, db.UpdateRoomAssignmentStatusParams{
-		ID: assignment.ID, Status: "cancelled",
-	})
+	updated, applied, err := s.transitionAssignment(ctx, assignment.ID,
+		[]string{"pending", "blocked", "awaiting_approval", "running"}, "cancelled",
+		pgtype.UUID{}, pgtype.Text{})
 	if err != nil {
 		return err
+	}
+	if !applied {
+		return nil
 	}
 	if cancelledInv != nil {
 		_ = s.writeInvocationOutcome(ctx, *cancelledInv, cancelledOutcome())
-	}
-	if err != nil {
-		return err
 	}
 	s.publishRoomAssignmentUpdated(ctx, room, updated)
 	s.appendInvocationEvent(ctx, room, updated, db.RoomInvocation{}, "assignment_cancelled", "user", userID, nil)
@@ -210,12 +243,10 @@ func (s *TaskService) handleFailedDependencyAssignments(ctx context.Context, roo
 		return err
 	}
 	for _, assignment := range blocked {
-		updated, err := s.Queries.UpdateRoomAssignmentStatus(ctx, db.UpdateRoomAssignmentStatusParams{
-			ID:     assignment.ID,
-			Status: "failed",
-			Reason: pgtype.Text{String: "dependency failed or cancelled", Valid: true},
-		})
-		if err != nil {
+		updated, applied, err := s.transitionAssignment(ctx, assignment.ID,
+			[]string{"blocked", "pending"}, "failed",
+			pgtype.UUID{}, pgtype.Text{String: "dependency failed or cancelled", Valid: true})
+		if err != nil || !applied {
 			continue
 		}
 		s.publishRoomAssignmentUpdated(ctx, room, updated)
@@ -493,16 +524,24 @@ func (s *TaskService) publishRoomManagerDecisionCreated(ctx context.Context, roo
 	})
 }
 
-// RetryRoomAssignment creates a new invocation attempt for a failed assignment.
-func (s *TaskService) RetryRoomAssignment(ctx context.Context, room db.Room, assignmentID pgtype.UUID, userID pgtype.UUID) (db.RoomInvocation, error) {
+// resumeRoomAssignment moves an assignment out of a terminal/parked state back
+// to pending and starts a fresh invocation. allowedFrom gates which statuses
+// may resume; the CAS ensures only one concurrent resume wins, which is what
+// prevents duplicate invocations (and duplicate LLM billing) on double-clicks
+// or racing auto-retries. createInvocationForAssignment then drives
+// pending → running, so this method never sets running directly.
+func (s *TaskService) resumeRoomAssignment(
+	ctx context.Context,
+	room db.Room,
+	assignmentID, userID pgtype.UUID,
+	allowedFrom []string,
+	resumeEvent string,
+) (db.RoomInvocation, error) {
 	assignment, err := s.Queries.GetRoomAssignmentInRoom(ctx, db.GetRoomAssignmentInRoomParams{
 		ID: assignmentID, RoomID: room.ID,
 	})
 	if err != nil {
 		return db.RoomInvocation{}, err
-	}
-	if assignment.Status != "failed" && assignment.Status != "cancelled" {
-		return db.RoomInvocation{}, fmt.Errorf("assignment is not retryable")
 	}
 	sourceMsg, err := s.Queries.GetRoomMessageInRoom(ctx, db.GetRoomMessageInRoomParams{
 		ID: assignment.SourceMessageID, RoomID: room.ID,
@@ -510,11 +549,12 @@ func (s *TaskService) RetryRoomAssignment(ctx context.Context, room db.Room, ass
 	if err != nil {
 		return db.RoomInvocation{}, err
 	}
-	updated, err := s.Queries.UpdateRoomAssignmentStatus(ctx, db.UpdateRoomAssignmentStatusParams{
-		ID: assignment.ID, Status: "running",
-	})
+	updated, applied, err := s.transitionAssignment(ctx, assignment.ID, allowedFrom, "pending", pgtype.UUID{}, pgtype.Text{})
 	if err != nil {
 		return db.RoomInvocation{}, err
+	}
+	if !applied {
+		return db.RoomInvocation{}, fmt.Errorf("assignment is not resumable")
 	}
 	intent := "ask"
 	if assignment.Kind == "auto_review" {
@@ -527,10 +567,58 @@ func (s *TaskService) RetryRoomAssignment(ctx context.Context, room db.Room, ass
 	if err != nil {
 		return db.RoomInvocation{}, err
 	}
-	s.appendInvocationEvent(ctx, room, updated, inv, "assignment_retry", "user", userID, nil)
+	s.appendInvocationEvent(ctx, room, updated, inv, resumeEvent, "user", userID, nil)
 	s.RefreshRoomSnapshot(ctx, room.ID)
 	s.DrainQueuedRoomInvocations(ctx, inv.AgentID)
 	return inv, nil
+}
+
+// RetryRoomAssignment re-runs a failed or cancelled assignment.
+func (s *TaskService) RetryRoomAssignment(ctx context.Context, room db.Room, assignmentID pgtype.UUID, userID pgtype.UUID) (db.RoomInvocation, error) {
+	return s.resumeRoomAssignment(ctx, room, assignmentID, userID, []string{"failed", "cancelled"}, "assignment_retry")
+}
+
+// ApproveRoomAssignment resumes an assignment parked in awaiting_approval.
+func (s *TaskService) ApproveRoomAssignment(ctx context.Context, room db.Room, assignmentID pgtype.UUID, userID pgtype.UUID) (db.RoomInvocation, error) {
+	return s.resumeRoomAssignment(ctx, room, assignmentID, userID, []string{"awaiting_approval"}, "assignment_approved")
+}
+
+// RegenerateRoomAssignment re-runs an assignment on explicit user request. The
+// completed source state is allowed here because regenerate is a deliberate
+// re-run, not an automatic transition; the CAS still blocks concurrent
+// double-regenerate.
+func (s *TaskService) RegenerateRoomAssignment(ctx context.Context, room db.Room, assignmentID pgtype.UUID, userID pgtype.UUID) (db.RoomInvocation, error) {
+	return s.resumeRoomAssignment(ctx, room, assignmentID, userID, []string{"completed", "failed", "cancelled"}, "assignment_regenerate")
+}
+
+// ParkRoomAssignmentForApproval parks an assignment awaiting a human approval
+// decision and frees the active-invocation slot by finalizing the invocation
+// that requested approval (its agent turn already ended). Approve → resume,
+// reject → cancel.
+func (s *TaskService) ParkRoomAssignmentForApproval(ctx context.Context, task db.AgentTaskQueue) {
+	if !task.InvocationID.Valid || !task.RoomID.Valid {
+		return
+	}
+	inv, err := s.Queries.GetRoomInvocation(ctx, task.InvocationID)
+	if err != nil {
+		return
+	}
+	room, err := s.Queries.GetRoom(ctx, task.RoomID)
+	if err != nil {
+		return
+	}
+	updated, applied, err := s.transitionAssignment(ctx, inv.AssignmentID, []string{"running"}, "awaiting_approval", pgtype.UUID{}, pgtype.Text{})
+	if err != nil || !applied {
+		return
+	}
+	now := time.Now()
+	_, _ = s.Queries.UpdateRoomInvocationStatus(ctx, db.UpdateRoomInvocationStatusParams{
+		ID: inv.ID, Status: "succeeded",
+		CompletedAt: pgtype.Timestamptz{Time: now, Valid: true},
+	})
+	s.publishRoomAssignmentUpdated(ctx, room, updated)
+	s.appendInvocationEvent(ctx, room, updated, inv, "assignment_awaiting_approval", "system", pgtype.UUID{}, nil)
+	s.RefreshRoomSnapshot(ctx, task.RoomID)
 }
 
 func truncateAssignmentReason(s string) string {

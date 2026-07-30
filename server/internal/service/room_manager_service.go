@@ -15,28 +15,32 @@ import (
 
 // ManagerDecision is the structured decision a manager agent emits.
 type ManagerDecision struct {
-	Action   string `json:"action"`
-	RouteTo  string `json:"route_to,omitempty"`
-	RelayTo  string `json:"relay_to,omitempty"`
-	AgentID  string `json:"agent_id,omitempty"`
-	Message  string `json:"message,omitempty"`
-	Reason   string `json:"reason,omitempty"`
-	Retry    bool   `json:"retry,omitempty"`
-	Reassign string `json:"reassign_to,omitempty"`
+	Action      string                   `json:"action"`
+	RouteTo     string                   `json:"route_to,omitempty"`
+	RelayTo     string                   `json:"relay_to,omitempty"`
+	AgentID     string                   `json:"agent_id,omitempty"`
+	Message     string                   `json:"message,omitempty"`
+	Reason      string                   `json:"reason,omitempty"`
+	Retry       bool                     `json:"retry,omitempty"`
+	Reassign    string                   `json:"reassign_to,omitempty"`
+	Options     []HumanInteractionOption `json:"options,omitempty"`
+	AllowCustom bool                     `json:"allow_custom,omitempty"`
 }
 
 // WorkflowAction is the legacy structured footer managers may still emit.
 type WorkflowAction struct {
-	Action         string   `json:"action"`
-	Title          string   `json:"title,omitempty"`
-	AgentID        string   `json:"agent_id,omitempty"`
-	AgentIDs       []string `json:"agent_ids,omitempty"`
-	RouteTo        string   `json:"route_to,omitempty"`
-	RelayTo        string   `json:"relay_to,omitempty"`
-	RelayReason    string   `json:"relay_reason,omitempty"`
-	EscalateTo     string   `json:"escalate_to,omitempty"`
-	EscalateReason string   `json:"escalate_reason,omitempty"`
-	Message        string   `json:"message,omitempty"`
+	Action         string                   `json:"action"`
+	Title          string                   `json:"title,omitempty"`
+	AgentID        string                   `json:"agent_id,omitempty"`
+	AgentIDs       []string                 `json:"agent_ids,omitempty"`
+	RouteTo        string                   `json:"route_to,omitempty"`
+	RelayTo        string                   `json:"relay_to,omitempty"`
+	RelayReason    string                   `json:"relay_reason,omitempty"`
+	EscalateTo     string                   `json:"escalate_to,omitempty"`
+	EscalateReason string                   `json:"escalate_reason,omitempty"`
+	Message        string                   `json:"message,omitempty"`
+	Options        []HumanInteractionOption `json:"options,omitempty"`
+	AllowCustom    bool                     `json:"allow_custom,omitempty"`
 }
 
 type managerDecisionEnvelope struct {
@@ -81,6 +85,11 @@ func workflowActionToDecision(wa WorkflowAction) ManagerDecision {
 		return ManagerDecision{Action: "assign", RelayTo: id, Reason: wa.RelayReason}
 	case "notify_user", "complete_delivery", "done":
 		return ManagerDecision{Action: "complete", Message: wa.Message}
+	case "ask_user":
+		return ManagerDecision{
+			Action: "ask_user", Message: wa.Message,
+			Options: wa.Options, AllowCustom: wa.AllowCustom,
+		}
 	case "escalate":
 		id := wa.EscalateTo
 		if id == "" {
@@ -327,6 +336,9 @@ func (s *TaskService) ApplyManagerDecision(
 	if wErr := s.writeInvocationOutcome(ctx, inv, outcome); wErr != nil {
 		slog.Warn("write manager invocation outcome failed", "invocation_id", util.UUIDToString(inv.ID), "error", wErr)
 	}
+	if err := s.createManagerDecisionHumanInteraction(ctx, room, inv, assignment, record, decision); err != nil {
+		slog.Warn("create manager human interaction failed", "error", err)
+	}
 	s.RefreshRoomSnapshot(ctx, room.ID)
 	return nil
 }
@@ -432,7 +444,7 @@ func (s *TaskService) maybeEscalateFailedAssignmentToManager(
 		FailureReason:      truncateAssignmentReason(reason),
 	})
 
-	_, inv, err := s.createAssignmentWithInvocation(ctx, createAssignmentParams{
+	escAsgn, inv, err := s.createAssignmentWithInvocation(ctx, createAssignmentParams{
 		Room:           room,
 		SourceMessage:  sourceMsg,
 		AssigneeType:   "agent",
@@ -453,6 +465,11 @@ func (s *TaskService) maybeEscalateFailedAssignmentToManager(
 			"assignment_id", failedID,
 			"error", err,
 		)
+		// Assignment may already be persisted before enqueue/CAS fails — close it
+		// so the flow UI does not stick on assignment_created forever.
+		if escAsgn.ID.Valid {
+			_ = s.FailAssignment(ctx, room, escAsgn, err.Error())
+		}
 		return err
 	}
 	s.DrainQueuedRoomInvocations(ctx, inv.AgentID)

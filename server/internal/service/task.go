@@ -1196,10 +1196,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 
 	if task.RoomID.Valid && task.InvocationID.Valid {
 		if s.maybeRequestRoomApprovalFromResult(ctx, task, result) {
-			_, _ = s.Queries.UpdateRoomInvocationStatus(ctx, db.UpdateRoomInvocationStatusParams{
-				ID: task.InvocationID, Status: "pending",
-			})
-			s.RefreshRoomSnapshot(ctx, task.RoomID)
+			s.ParkRoomAssignmentForApproval(ctx, task)
 		} else {
 			var output string
 			var payload protocol.TaskCompletedPayload

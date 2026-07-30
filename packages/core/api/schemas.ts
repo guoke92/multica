@@ -1019,6 +1019,59 @@ const RoomManagerDecisionSchema = z.object({
   created_at: z.string().optional(),
 }).loose();
 
+export const RoomHumanInteractionOptionSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+}).loose();
+
+export const RoomHumanInteractionSchema = z.object({
+  id: z.string(),
+  room_id: z.string(),
+  kind: z.enum(["notify", "ask", "confirm", "approve"]),
+  status: z.enum(["pending", "responded", "dismissed", "expired"]),
+  title: z.string().optional(),
+  body: z.string(),
+  options: z.array(RoomHumanInteractionOptionSchema).optional(),
+  allow_custom_response: z.boolean().optional(),
+  invocation_id: z.string().optional(),
+  assignment_id: z.string().optional(),
+  decision_id: z.string().optional(),
+  approval_request_id: z.string().optional(),
+  created_by_type: z.string(),
+  created_by_id: z.string().optional(),
+  response_text: z.string().optional(),
+  response_option_id: z.string().optional(),
+  responded_by: z.string().optional(),
+  responded_at: z.string().optional(),
+  dismissed_at: z.string().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose();
+
+export const DismissRoomHumanInteractionResponseSchema = z.object({
+  interaction: RoomHumanInteractionSchema,
+}).loose();
+
+export const RespondRoomHumanInteractionResponseSchema = z.object({
+  interaction: RoomHumanInteractionSchema,
+  message: RoomMessageSchema.optional(),
+  assignments: z.array(RoomAssignmentSchema).optional(),
+  invocations: z.array(RoomInvocationSchema).optional(),
+}).loose();
+
+export const EMPTY_RESPOND_ROOM_HUMAN_INTERACTION_RESPONSE: import("../types/room").RespondRoomHumanInteractionResponse = {
+  interaction: {
+    id: "",
+    room_id: "",
+    kind: "notify",
+    status: "responded",
+    body: "",
+    created_by_type: "system",
+    created_at: "",
+    updated_at: "",
+  },
+};
+
 export const RoomGraphSnapshotSchema = z.object({
   mentions: z.array(RoomMessageMentionSchema).default([]),
   assignments: z.array(RoomAssignmentSchema).default([]),
@@ -1026,6 +1079,7 @@ export const RoomGraphSnapshotSchema = z.object({
   invocations: z.array(RoomInvocationSchema).default([]),
   decisions: z.array(RoomManagerDecisionSchema).default([]),
   invocation_events: z.array(RoomInvocationEventSchema).default([]),
+  human_interactions: z.array(RoomHumanInteractionSchema).default([]),
 }).loose();
 
 export const SendRoomMessageResponseSchema = z.object({
@@ -1077,5 +1131,6 @@ export const EMPTY_ROOM_GRAPH_SNAPSHOT: import("../types/room").RoomGraphSnapsho
   invocations: [],
   decisions: [],
   invocation_events: [],
+  human_interactions: [],
 };
 

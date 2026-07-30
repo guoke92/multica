@@ -12,7 +12,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
-// RequestRoomApprovalParams creates a pending approval_request with a system room message.
+// RequestRoomApprovalParams creates a pending approval_request surfaced in the interaction dock.
 type RequestRoomApprovalParams struct {
 	Room             db.Room
 	RoomInvocationID pgtype.UUID
@@ -21,46 +21,34 @@ type RequestRoomApprovalParams struct {
 	Payload          map[string]any
 }
 
-// RequestRoomApproval inserts a system message and approval_request for inline UI.
-func (s *TaskService) RequestRoomApproval(ctx context.Context, p RequestRoomApprovalParams) (db.ApprovalRequest, db.RoomMessage, error) {
+// RequestRoomApproval inserts an approval_request and a dock interaction (no chat row).
+func (s *TaskService) RequestRoomApproval(ctx context.Context, p RequestRoomApprovalParams) (db.ApprovalRequest, error) {
 	payload, _ := json.Marshal(p.Payload)
 	if payload == nil {
 		payload = []byte("{}")
 	}
-	summary := fmt.Sprintf("Approval required: **%s**", p.ActionType)
-	msg, err := s.Queries.CreateRoomMessage(ctx, db.CreateRoomMessageParams{
-		ID: util.MustNewUUIDv7(), RoomID: p.Room.ID,
-		SenderType: "system", Content: summary, Metadata: []byte("{}"),
-	})
+	inv, err := s.Queries.GetRoomInvocation(ctx, p.RoomInvocationID)
 	if err != nil {
-		return db.ApprovalRequest{}, db.RoomMessage{}, fmt.Errorf("create approval message: %w", err)
+		return db.ApprovalRequest{}, fmt.Errorf("load invocation: %w", err)
 	}
-
-	inv, invErr := s.Queries.GetRoomInvocation(ctx, p.RoomInvocationID)
-	var messageID pgtype.UUID
-	if invErr == nil {
-		messageID = inv.SourceMessageID
-	} else {
-		messageID = msg.ID
+	assignment, err := s.Queries.GetRoomAssignment(ctx, inv.AssignmentID)
+	if err != nil {
+		return db.ApprovalRequest{}, fmt.Errorf("load assignment: %w", err)
 	}
 
 	req, err := s.Queries.CreateApprovalRequest(ctx, db.CreateApprovalRequestParams{
-		RoomID: p.Room.ID, MessageID: messageID,
+		RoomID: p.Room.ID, MessageID: inv.SourceMessageID,
 		RoomInvocationID: p.RoomInvocationID,
 		RequesterType:    "agent", RequesterID: p.RequesterID,
 		ActionType:       p.ActionType, Payload: payload,
 	})
 	if err != nil {
-		return db.ApprovalRequest{}, db.RoomMessage{}, fmt.Errorf("create approval request: %w", err)
+		return db.ApprovalRequest{}, fmt.Errorf("create approval request: %w", err)
 	}
 
-	meta, _ := json.Marshal(map[string]string{
-		"approval_request_id": util.UUIDToString(req.ID),
-		"action_type":         p.ActionType,
-	})
-	_ = s.Queries.UpdateRoomMessageMetadata(ctx, db.UpdateRoomMessageMetadataParams{
-		ID: msg.ID, Metadata: meta,
-	})
+	if err := s.createApprovalHumanInteraction(ctx, p.Room, inv, assignment, req, p.ActionType); err != nil {
+		return db.ApprovalRequest{}, fmt.Errorf("create approval interaction: %w", err)
+	}
 
 	if s.Bus != nil {
 		s.Bus.Publish(events.Event{
@@ -74,5 +62,5 @@ func (s *TaskService) RequestRoomApproval(ctx context.Context, p RequestRoomAppr
 		})
 	}
 	s.RefreshRoomSnapshot(ctx, p.Room.ID)
-	return req, msg, nil
+	return req, nil
 }

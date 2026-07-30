@@ -1707,11 +1707,7 @@ func (h *Handler) RegenerateRoomAgentMessage(w http.ResponseWriter, r *http.Requ
 		RoomID: room.ID,
 	})
 
-	_, _ = h.Queries.UpdateRoomAssignmentStatus(r.Context(), db.UpdateRoomAssignmentStatusParams{
-		ID:     inv.AssignmentID,
-		Status: "failed",
-	})
-	inv, err = h.TaskService.RetryRoomAssignment(r.Context(), room, inv.AssignmentID, parseUUID(userID))
+	inv, err = h.TaskService.RegenerateRoomAssignment(r.Context(), room, inv.AssignmentID, parseUUID(userID))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invocation cannot be regenerated")
 		return
@@ -2023,7 +2019,7 @@ func (h *Handler) DecideApproval(w http.ResponseWriter, r *http.Request) {
 		if decision == "approved" {
 			if inv, invErr := h.Queries.GetRoomInvocation(r.Context(), approval.RoomInvocationID); invErr == nil {
 				if room, roomErr := h.Queries.GetRoom(r.Context(), approval.RoomID); roomErr == nil {
-					_, _ = h.TaskService.RetryRoomAssignment(r.Context(), room, inv.AssignmentID, parseUUID(userID))
+					_, _ = h.TaskService.ApproveRoomAssignment(r.Context(), room, inv.AssignmentID, parseUUID(userID))
 				}
 			}
 		} else if decision == "rejected" {
@@ -2053,6 +2049,7 @@ func roomGraphSnapshotResponse(snap service.RoomGraphSnapshot) map[string]any {
 		"invocations":             roomInvocationsToGraphResponse(snap.Invocations),
 		"decisions":               roomManagerDecisionsToGraphResponse(snap.Decisions),
 		"invocation_events":       roomInvocationEventsToGraphResponse(snap.InvocationEvents),
+		"human_interactions":      roomHumanInteractionsToGraphResponse(snap.HumanInteractions),
 	}
 }
 

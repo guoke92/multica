@@ -193,6 +193,22 @@ func (s *TaskService) BuildRoomPromptContext(
 		addHigh(userRoot, "user_root")
 	}
 
+	if assignment.Kind == "auto_review" && (intent == "review" || resolveManagerScene(assignment, intent) == "review") {
+		if userRoot.ID.Valid {
+			if ask := strings.TrimSpace(messageSummary(userRoot)); ask != "" {
+				triggerSummary := strings.TrimSpace(messageSummary(triggerMsg))
+				brief := fmt.Sprintf("【审阅】用户原始诉求：%s", ask)
+				if triggerSummary != "" && triggerSummary != ask {
+					brief += fmt.Sprintf("\nAgent 最新回复（trigger）：%s", truncateForSummary(triggerSummary, roomMessageSummaryMaxLen))
+				}
+				if pack.ManagerBrief != "" {
+					brief += "\n" + pack.ManagerBrief
+				}
+				pack.ManagerBrief = brief
+			}
+		}
+	}
+
 	sortHighRelevance(high, triggerID)
 
 	var recent []RoomContextEntry

@@ -86,6 +86,33 @@ export function extractRoomAgentCopyText(message: RoomMessage): string {
   return message.content;
 }
 
+/** Attribution label for a role-agent turn from its assignment + mention graph. */
+export function resolveAssignmentAttribution(
+  assignment: Pick<RoomAssignment, "id" | "kind">,
+  mentions: RoomMessageMention[],
+  agentId: string,
+): string | undefined {
+  switch (assignment.kind) {
+    case "manager_route":
+    case "manager_relay":
+    case "reassign":
+      return "由群管分配指定";
+    case "mention": {
+      const mention = mentions.find(
+        (mn) =>
+          mn.assignment_id === assignment.id &&
+          mn.target_id === agentId,
+      );
+      if (mention?.source_type === "agent_mention") {
+        return "由角色 Agent 指定";
+      }
+      return "用户 @ 指定";
+    }
+    default:
+      return undefined;
+  }
+}
+
 /** Attribution for an agent reply message using the authoritative assignment + mention data. */
 export function resolveAgentMessageAttribution(
   message: RoomMessage,
@@ -98,23 +125,5 @@ export function resolveAgentMessageAttribution(
   const assignment = assignments.find((a) => a.output_message_id === message.id);
   if (!assignment) return undefined;
 
-  switch (assignment.kind) {
-    case "manager_route":
-    case "manager_relay":
-    case "reassign":
-      return "由群管分配指定";
-    case "mention": {
-      const mention = mentions.find(
-        (mn) =>
-          mn.assignment_id === assignment.id &&
-          mn.target_id === message.sender_id,
-      );
-      if (mention?.source_type === "agent_mention") {
-        return "由角色 Agent 指定";
-      }
-      return "用户 @ 指定";
-    }
-    default:
-      return undefined;
-  }
+  return resolveAssignmentAttribution(assignment, mentions, message.sender_id ?? "");
 }

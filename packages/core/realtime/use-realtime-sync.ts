@@ -32,16 +32,10 @@ import { onInboxNew, onInboxInvalidate, onInboxIssueStatusChanged, onInboxIssueD
 import { inboxKeys } from "../inbox/queries";
 import { roomKeys } from "../room/queries";
 import {
-  appendGraphInvocationEvent,
   appendRoomMessage,
-  patchGraphAssignment,
-  patchGraphInvocation,
-  patchRoomGraph,
-  refreshRoomGraphNow,
   roomMessagesInfiniteKey,
   scheduleRoomGraphRefresh,
 } from "../room/room-cache";
-import type { RoomInvocationEvent } from "../types/room";
 import { notificationPreferenceOptions } from "../notification-preferences/queries";
 import { workspaceKeys, workspaceListOptions } from "../workspace/queries";
 import type { Workspace } from "../types/workspace";
@@ -739,12 +733,6 @@ export function useRealtimeSync(
       scheduleRoomGraphRefresh(qc, wsId, roomId);
     };
 
-    const refreshRoomGraphImmediate = (roomId: string) => {
-      const wsId = getCurrentWsId();
-      if (!wsId) return;
-      refreshRoomGraphNow(qc, wsId, roomId);
-    };
-
     type RoomMessageWsPayload = {
       room_id?: string;
       message_id?: string;
@@ -821,78 +809,47 @@ export function useRealtimeSync(
       }
     });
 
+    // Room graph is a single derived truth. Every graph-mutation event
+    // (assignment / invocation / dependency / decision / event / approval)
+    // collapses to one debounced graph refetch — no client-side stub patching.
+    // Thin WS payloads used to be reconstructed into partial graph entities,
+    // which drifted from the server whenever a field was added or a state
+    // machine changed; refetch keeps the client's graph byte-identical to the
+    // server projection. Backend event types are left intact so older desktop
+    // clients keep receiving updates.
     const unsubRoomInvocationEventCreated = ws.on("room:invocation_event_created", (p) => {
-      const wsId = getCurrentWsId();
-      const payload = p as {
-        room_id?: string;
-        event_id?: string;
-        assignment_id?: string;
-        type?: string;
-      };
-      if (!wsId || !payload.room_id || !payload.event_id) return;
-      const next: RoomInvocationEvent = {
-        id: payload.event_id,
-        room_id: payload.room_id,
-        assignment_id: payload.assignment_id ?? "",
-        type: payload.type ?? "unknown",
-        actor_type: "system",
-        payload: {},
-        created_at: new Date().toISOString(),
-      };
-      patchRoomGraph(qc, wsId, payload.room_id, (graph) =>
-        appendGraphInvocationEvent(graph, next),
-      );
+      const payload = p as { room_id?: string };
+      if (payload.room_id) refreshRoomGraphDebounced(payload.room_id);
     });
 
     const unsubRoomAssignmentUpdated = ws.on("room:assignment_updated", (p) => {
-      const wsId = getCurrentWsId();
-      const payload = p as {
-        room_id?: string;
-        assignment_id?: string;
-        status?: string;
-        kind?: string;
-      };
-      if (!wsId || !payload.room_id || !payload.assignment_id) return;
-      const assignmentId = payload.assignment_id;
-      const roomId = payload.room_id;
-      patchRoomGraph(qc, wsId, roomId, (graph) => {
-        const idx = graph.assignments.findIndex((a) => a.id === assignmentId);
-        if (idx < 0) {
-          refreshRoomGraphNow(qc, wsId, roomId);
-          return graph;
-        }
-        return patchGraphAssignment(graph, assignmentId, {
-          ...(payload.status ? { status: payload.status } : {}),
-          ...(payload.kind ? { kind: payload.kind } : {}),
-        });
-      });
+      const payload = p as { room_id?: string };
+      if (payload.room_id) refreshRoomGraphDebounced(payload.room_id);
     });
 
     const unsubRoomAssignmentDependencyUpdated = ws.on(
       "room:assignment_dependency_updated",
       (p) => {
-        const wsId = getCurrentWsId();
-        const payload = p as {
-          room_id?: string;
-          assignment_id?: string;
-          depends_on_assignment_id?: string;
-        };
-        if (!wsId || !payload.room_id) return;
-        refreshRoomGraphDebounced(payload.room_id);
+        const payload = p as { room_id?: string };
+        if (payload.room_id) refreshRoomGraphDebounced(payload.room_id);
       },
     );
 
     const unsubRoomManagerDecisionCreated = ws.on("room:manager_decision_created", (p) => {
-      const wsId = getCurrentWsId();
       const payload = p as { room_id?: string };
-      if (!wsId || !payload.room_id) return;
-      refreshRoomGraphImmediate(payload.room_id);
+      if (payload.room_id) refreshRoomGraphDebounced(payload.room_id);
+    });
+
+    const unsubRoomHumanInteractionUpdated = ws.on("room:human_interaction_updated", (p) => {
+      const payload = p as { room_id?: string };
+      if (payload.room_id) {
+        refreshRoomGraphDebounced(payload.room_id);
+      }
     });
 
     const unsubRoomHumanActionUpdated = ws.on("room:human_action_updated", (p) => {
       const payload = p as { room_id?: string };
       if (payload.room_id) {
-        invalidateRoomMessages(payload.room_id);
         refreshRoomGraphDebounced(payload.room_id);
       }
     });
@@ -900,16 +857,13 @@ export function useRealtimeSync(
     const unsubRoomApproval = ws.on("room:approval_requested", (p) => {
       const payload = p as { room_id?: string };
       if (payload.room_id) {
-        invalidateRoomMessages(payload.room_id);
         refreshRoomGraphDebounced(payload.room_id);
       }
     });
 
     const unsubRoomInvocation = ws.on("room:invocation_updated", (p) => {
       const payload = p as { room_id?: string };
-      if (payload.room_id) {
-        refreshRoomGraphImmediate(payload.room_id);
-      }
+      if (payload.room_id) refreshRoomGraphDebounced(payload.room_id);
     });
 
     const unsubRoomUpdated = ws.on("room:updated", (p) => {
@@ -1064,15 +1018,7 @@ export function useRealtimeSync(
       if (payload.room_id) {
         const wsId = getCurrentWsId();
         if (!wsId) return;
-        if (payload.invocation_id) {
-          patchRoomGraph(qc, wsId, payload.room_id, (graph) =>
-            patchGraphInvocation(graph, payload.invocation_id!, {
-              status: "cancelled",
-            }),
-          );
-        } else {
-          refreshRoomGraphNow(qc, wsId, payload.room_id);
-        }
+        refreshRoomGraphDebounced(payload.room_id);
         void qc.invalidateQueries({ queryKey: roomKeys.list(wsId) });
         void qc.invalidateQueries({
           queryKey: roomKeys.detail(wsId, payload.room_id),
@@ -1217,6 +1163,7 @@ export function useRealtimeSync(
       unsubRoomAssignmentUpdated();
       unsubRoomAssignmentDependencyUpdated();
       unsubRoomManagerDecisionCreated();
+      unsubRoomHumanInteractionUpdated();
       unsubRoomHumanActionUpdated();
       unsubRoomApproval();
       unsubRoomInvocation();

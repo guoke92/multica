@@ -1,46 +1,42 @@
 "use client";
 
-import { useMemo, useRef, memo, type ReactNode, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMemo, useRef, memo, useEffect } from "react";
 import { toast } from "sonner";
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import { useAutoScroll } from "@multica/ui/hooks/use-auto-scroll";
 import { Button } from "@multica/ui/components/ui/button";
 import { cn } from "@multica/ui/lib/utils";
-import {
-  Tooltip,
-  TooltipTrigger,
-  TooltipContent,
-} from "@multica/ui/components/ui/tooltip";
-import { isTaskMessageTaskId, taskMessagesOptions } from "@multica/core/chat/queries";
 import { RoomParticipantAvatar } from "./room-participant-avatar";
-import { buildTimeline, ProcessTimelineView } from "../common/task-transcript";
-import { splitTimeline } from "../chat/lib/copy-text";
 import { copyMarkdown } from "../editor";
 import { Markdown } from "../common/markdown";
-import { shouldHideRoomMessage } from "./room-message-visibility";
+import { shouldHideRoomMessage, isRoleAgentTurnOutputMessage } from "./room-message-visibility";
 import type { RoomMessage, RoomInvocation, RoomAssignment, RoomMessageMention, RoomManagerDecision } from "@multica/core/types/room";
 import { useAuthStore } from "@multica/core/auth";
 import { Copy, Pencil, RefreshCw, Reply } from "lucide-react";
 import {
   extractRoomAgentCopyText,
   resolveAgentMessageAttribution,
-  resolveRoomAgentChatSummary,
-  roomAgentHasExpandableProcess,
   truncatePreview,
 } from "./room-utils";
 import { RoomAttributionPill } from "./room-attribution-pill";
+import { RoomQuoteBlock } from "./room-quote-block";
 import { RoomActivityFooter } from "./room-activity-footer";
+import { AgentTurnEntry } from "./agent-turn-entry";
+import { AgentMessageBody } from "./agent-message-body";
 import { ManagerStatusLeading } from "./manager-invocation-skin";
+import { ManagerHistoryBelowBar } from "./room-invocation-thread";
 import {
-  ManagerHistoryBelowBar,
-  RoleAgentTimelineEntry,
-} from "./room-invocation-thread";
+  ActionIconButton,
+  MessageActionBar,
+  MessageBubbleAnchor,
+} from "./room-message-chrome";
 import {
   buildChatTimeline,
   buildInvocationChatItems,
+  indexEscalationsByFailedAssignment,
   indexInvocationItemsBySourceMessage,
   pickLeadingManagerItem,
+  resolveTurnFollowUpManagerItems,
   selectFooterAttentionFailures,
   type InvocationChatItem,
 } from "./room-flow-utils";
@@ -49,7 +45,7 @@ function invocationItemsFingerprint(items: InvocationChatItem[]): string {
   return items
     .map(
       (item) =>
-        `${item.invocation.id}:${item.phase}:${item.presentation}:${item.assignment.status}`,
+        `${item.invocation.id}:${item.phase}:${item.presentation}:${item.assignment.status}:${item.anchorAssignmentId ?? ""}:${item.outputMessage?.id ?? ""}:${item.outputMessage?.content.length ?? 0}`,
     )
     .join("|");
 }
@@ -146,9 +142,18 @@ export function RoomMessageList({
     [messages],
   );
 
-  const visibleMessages = useMemo(
+  const chatMessages = useMemo(
     () => messages.filter((m) => !shouldHideRoomMessage(m, managerAgentId)),
     [messages, managerAgentId],
+  );
+
+  /** Message rows in the timeline — turn outputs render inside AgentTurnEntry. */
+  const visibleMessages = useMemo(
+    () =>
+      chatMessages.filter(
+        (m) => !isRoleAgentTurnOutputMessage(m, assignments),
+      ),
+    [chatMessages, assignments],
   );
 
   const invocationChatItems = useMemo(
@@ -156,15 +161,20 @@ export function RoomMessageList({
       buildInvocationChatItems(
         invocations,
         assignments,
-        visibleMessages,
+        chatMessages,
         agentNameById,
         managerAgentId,
       ),
-    [invocations, assignments, visibleMessages, agentNameById, managerAgentId],
+    [invocations, assignments, chatMessages, agentNameById, managerAgentId],
   );
 
   const invocationItemsByMessageId = useMemo(
     () => indexInvocationItemsBySourceMessage(invocationChatItems),
+    [invocationChatItems],
+  );
+
+  const escalationsByFailedAssignmentId = useMemo(
+    () => indexEscalationsByFailedAssignment(invocationChatItems),
     [invocationChatItems],
   );
 
@@ -259,14 +269,30 @@ export function RoomMessageList({
           {chatTimeline.map((entry) => {
             if (entry.kind === "invocation") {
               return (
-                <RoleAgentTimelineEntry
-                  key={`inv:${entry.item.invocation.id}`}
+                <AgentTurnEntry
+                  key={`turn:${entry.item.invocation.id}`}
                   item={entry.item}
+                  escalations={
+                    escalationsByFailedAssignmentId.get(entry.item.assignment.id) ??
+                    []
+                  }
+                  followUpManagerItems={resolveTurnFollowUpManagerItems(
+                    entry.item,
+                    invocationItemsByMessageId,
+                  )}
                   agentNameById={agentNameById}
+                  memberNameById={memberNameById}
+                  mentions={mentions}
+                  messagesById={messagesById}
+                  decisions={decisions}
                   onRetryAssignment={onRetryAssignment}
                   onCancelAssignment={onCancelAssignment}
                   retryingAssignmentId={retryingAssignmentId}
                   cancellingAssignmentId={cancellingAssignmentId}
+                  onReplyToMessage={onReplyToMessage}
+                  onRegenerateAgentMessage={onRegenerateAgentMessage}
+                  regeneratingMessageId={regeneratingMessageId}
+                  onNavigateToQuote={onNavigateToQuote}
                 />
               );
             }
@@ -353,114 +379,14 @@ function QuoteBlock({
   quotedMessageId?: string;
   onNavigateToQuote?: (messageId: string) => void;
 }) {
-  const isClickable = Boolean(quotedMessageId && onNavigateToQuote);
-  const className = cn(
-    "border-border/80 text-muted-foreground max-w-[80%] border-l-2 pl-2 text-[11px] leading-snug",
-    align === "end" ? "ml-auto text-right" : "",
-    isClickable && "hover:bg-muted/40 cursor-pointer rounded-sm transition-colors",
-  );
-  const content = (
-    <p className="line-clamp-2">
-      回复 {senderName}：{preview}
-    </p>
-  );
-
-  if (isClickable) {
-    return (
-      <button
-        type="button"
-        className={cn(className, align === "end" ? "text-right" : "text-left")}
-        onClick={() => onNavigateToQuote!(quotedMessageId!)}
-      >
-        {content}
-      </button>
-    );
-  }
-
-  return <div className={className}>{content}</div>;
-}
-
-/** Bubble + action bar share one column; track width = max(bubble, bar content). */
-function MessageBubbleAnchor({
-  align,
-  children,
-}: {
-  align: "start" | "end";
-  children: ReactNode;
-}) {
   return (
-    <div
-      className={cn(
-        "grid max-w-[80%] grid-cols-1 gap-0.5",
-        align === "end" ? "ml-auto justify-items-end" : "justify-items-start",
-      )}
-      data-message-anchor
-    >
-      {children}
-    </div>
-  );
-}
-
-function MessageActionBar({
-  children,
-  leading,
-}: {
-  children: ReactNode;
-  leading?: ReactNode;
-}) {
-  if (!leading && !children) return null;
-
-  return (
-    <div className="flex w-full min-w-0 min-h-5 items-center justify-between gap-1.5">
-      {leading ? (
-        <div className="min-w-0 shrink">{leading}</div>
-      ) : (
-        <span className="sr-only" aria-hidden />
-      )}
-      {children ? (
-        <div
-          className={cn(
-            "flex shrink-0 gap-0.5",
-            !leading && "opacity-0 transition group-hover:opacity-100",
-          )}
-        >
-          {children}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function ActionIconButton({
-  label,
-  onClick,
-  disabled,
-  icon: Icon,
-}: {
-  label: string;
-  onClick: () => void;
-  disabled?: boolean;
-  icon: typeof Copy;
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-xs"
-            className="text-muted-foreground/70 hover:text-foreground h-6 w-6"
-            onClick={onClick}
-            disabled={disabled}
-            aria-label={label}
-          />
-        }
-      >
-        <Icon className="size-3.5" />
-      </TooltipTrigger>
-      <TooltipContent side="top">{label}</TooltipContent>
-    </Tooltip>
+    <RoomQuoteBlock
+      senderName={senderName}
+      preview={preview}
+      align={align}
+      quotedMessageId={quotedMessageId}
+      onNavigateToQuote={onNavigateToQuote}
+    />
   );
 }
 
@@ -738,38 +664,5 @@ function AgentCopyButton({ message }: { message: RoomMessage }) {
   };
   return (
     <ActionIconButton label="复制" onClick={handleCopy} icon={Copy} />
-  );
-}
-
-function AgentMessageBody({ message }: { message: RoomMessage }) {
-  const meta = parseMessageMetadata(message.metadata);
-  const taskId = meta.task_id ?? null;
-
-  const { data: taskMessages = [] } = useQuery({
-    ...taskMessagesOptions(taskId ?? ""),
-    enabled: !!taskId && isTaskMessageTaskId(taskId),
-  });
-  const timeline = buildTimeline(taskMessages);
-  const { middle } = splitTimeline(timeline);
-  const transcriptText = timeline
-    .filter((i) => i.type === "text" || i.type === "thinking")
-    .map((i) => i.content ?? "")
-    .join("");
-
-  const summary = resolveRoomAgentChatSummary(message, transcriptText);
-  const expandable = roomAgentHasExpandableProcess(message, {
-    transcriptText,
-    processStepCount: middle.length,
-  });
-
-  return (
-    <div className="space-y-1.5">
-      <div className="text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
-        <Markdown>{summary || "已完成"}</Markdown>
-      </div>
-      {expandable && middle.length > 0 ? (
-        <ProcessTimelineView items={timeline} processOnly />
-      ) : null}
-    </div>
   );
 }

@@ -1,41 +1,7 @@
 "use client";
 
-import { RoleAgentInvocationSkin } from "./role-agent-invocation-skin";
 import { ManagerHistoryFold } from "./manager-invocation-skin";
 import type { InvocationChatItem } from "./room-flow-utils";
-
-/** Role-agent processing row in the chat timeline (same slot as the final agent reply). */
-export function RoleAgentTimelineEntry({
-  item,
-  agentNameById,
-  onRetryAssignment,
-  onCancelAssignment,
-  retryingAssignmentId,
-  cancellingAssignmentId,
-}: {
-  item: InvocationChatItem;
-  agentNameById: Map<string, string>;
-  onRetryAssignment?: (assignmentId: string) => void;
-  onCancelAssignment?: (assignmentId: string) => void;
-  retryingAssignmentId?: string | null;
-  cancellingAssignmentId?: string | null;
-}) {
-  return (
-    <div
-      className="group flex w-full flex-col gap-1"
-      data-room-invocation-id={item.invocation.id}
-    >
-      <RoleAgentInvocationSkin
-        item={item}
-        agentNameById={agentNameById}
-        onRetryAssignment={onRetryAssignment}
-        onCancelAssignment={onCancelAssignment}
-        retryingAssignmentId={retryingAssignmentId}
-        cancellingAssignmentId={cancellingAssignmentId}
-      />
-    </div>
-  );
-}
 
 export function ManagerHistoryBelowBar({
   items,

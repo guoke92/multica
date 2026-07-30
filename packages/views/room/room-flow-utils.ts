@@ -88,6 +88,7 @@ const invocationStatusFromRow: Record<string, string> = {
 const assignmentStatusFromRow: Record<string, string> = {
   pending: "待处理",
   blocked: "等待汇合",
+  awaiting_approval: "待审批",
   running: "执行中",
   completed: "完成",
   failed: "失败",
@@ -282,7 +283,15 @@ export type InvocationChatItem = {
   assignment: RoomAssignment;
   agentId: string;
   agentName: string;
+  /** Trigger message used for recovery / decision lookup. */
   sourceMessageId: string;
+  /**
+   * When set, this manager run hangs under the failed role-agent turn
+   * (escalation), not under the original user trigger message.
+   */
+  anchorAssignmentId?: string;
+  /** Succeeded turn payload — same slot, body swaps from progress to content. */
+  outputMessage?: RoomMessage;
   presentation: InvocationChatPresentation;
   phase: UserVisiblePhase;
   failureReason?: string;
@@ -313,17 +322,26 @@ function resolveInvocationPresentation(
   return "agent_bubble";
 }
 
-/** Role-agent slot is redundant once its final room_message is in the timeline. */
-export function isRoleAgentOutputInTimeline(
+/** Role-agent kinds whose output is owned by the invocation turn slot. */
+const roleAgentAssignmentKinds = new Set([
+  "manager_route",
+  "manager_relay",
+  "mention",
+  "reassign",
+]);
+
+export function isRoleAgentAssignmentKind(kind: string): boolean {
+  return roleAgentAssignmentKinds.has(kind);
+}
+
+function resolveTurnOutputMessage(
   inv: RoomInvocation,
   assignment: RoomAssignment,
-  messageIds: Set<string>,
-): boolean {
-  if (inv.output_message_id && messageIds.has(inv.output_message_id)) return true;
-  if (assignment.output_message_id && messageIds.has(assignment.output_message_id)) {
-    return true;
-  }
-  return false;
+  messagesById: Map<string, RoomMessage>,
+): RoomMessage | undefined {
+  const outputId = inv.output_message_id ?? assignment.output_message_id;
+  if (!outputId) return undefined;
+  return messagesById.get(outputId);
 }
 
 /** Derive the single user-visible phase for an invocation. */
@@ -356,7 +374,7 @@ export function buildInvocationChatItems(
   agentNameById: Map<string, string>,
   managerAgentId?: string,
 ): InvocationChatItem[] {
-  const messageIds = new Set(messages.map((m) => m.id));
+  const messagesById = new Map(messages.map((m) => [m.id, m]));
   const byAssignment = assignmentMap(assignments);
   const latestByAssignment = new Map<string, RoomInvocation>();
 
@@ -373,16 +391,8 @@ export function buildInvocationChatItems(
     if (!assignment) continue;
 
     const presentation = resolveInvocationPresentation(assignment, managerAgentId);
-    if (
-      presentation === "agent_bubble" &&
-      isRoleAgentOutputInTimeline(inv, assignment, messageIds)
-    ) {
-      continue;
-    }
-
     const phase = deriveUserVisiblePhase(inv, assignment);
     if (!phase) continue;
-    if (presentation === "agent_bubble" && phase === "succeeded") continue;
 
     const agentId =
       assignment.assignee_type === "agent" ? assignment.assignee_id : inv.agent_id;
@@ -395,6 +405,8 @@ export function buildInvocationChatItems(
         agentNameById.get(inv.agent_id) ??
         "Agent",
       sourceMessageId: assignment.source_message_id || inv.source_message_id,
+      anchorAssignmentId: escalationAnchorAssignmentId(assignment),
+      outputMessage: resolveTurnOutputMessage(inv, assignment, messagesById),
       presentation: presentation,
       phase,
       failureReason: inv.failure_reason ?? assignment.reason,
@@ -405,13 +417,17 @@ export function buildInvocationChatItems(
   return items.sort((a, b) => compareMonotonicId(a.invocation.id, b.invocation.id));
 }
 
-/** Index invocation chat items by trigger message id (newest first per message). */
+/**
+ * Index manager status items that hang directly under a trigger message.
+ * Role-agent turns use the chat timeline; escalations nest under the failed turn.
+ */
 export function indexInvocationItemsBySourceMessage(
   items: InvocationChatItem[],
 ): Map<string, InvocationChatItem[]> {
   const bySource = new Map<string, InvocationChatItem[]>();
   for (const item of items) {
-    if (!item.sourceMessageId) continue;
+    if (item.presentation !== "manager_status") continue;
+    if (!item.sourceMessageId || item.anchorAssignmentId) continue;
     const list = bySource.get(item.sourceMessageId) ?? [];
     list.push(item);
     bySource.set(item.sourceMessageId, list);
@@ -423,6 +439,36 @@ export function indexInvocationItemsBySourceMessage(
     );
   }
   return bySource;
+}
+
+/** Manager follow-up runs anchored on this turn's output (post-output review, etc.). */
+export function resolveTurnFollowUpManagerItems(
+  item: InvocationChatItem,
+  bySourceMessage: Map<string, InvocationChatItem[]>,
+): InvocationChatItem[] {
+  const anchorId = item.outputMessage?.id;
+  if (!anchorId) return [];
+  return bySourceMessage.get(anchorId) ?? [];
+}
+
+/** Escalation manager runs keyed by the failed role assignment they recover. */
+export function indexEscalationsByFailedAssignment(
+  items: InvocationChatItem[],
+): Map<string, InvocationChatItem[]> {
+  const byFailed = new Map<string, InvocationChatItem[]>();
+  for (const item of items) {
+    if (!item.anchorAssignmentId) continue;
+    const list = byFailed.get(item.anchorAssignmentId) ?? [];
+    list.push(item);
+    byFailed.set(item.anchorAssignmentId, list);
+  }
+  for (const [assignmentId, list] of byFailed) {
+    byFailed.set(
+      assignmentId,
+      [...list].sort((a, b) => -compareMonotonicId(a.invocation.id, b.invocation.id)),
+    );
+  }
+  return byFailed;
 }
 
 export function hasInlineFailurePresentation(
@@ -863,6 +909,15 @@ function parseAssignmentEscalationReason(
   return null;
 }
 
+/** Failed role assignment this manager run is recovering, if any. */
+export function escalationAnchorAssignmentId(
+  assignment: RoomAssignment,
+): string | undefined {
+  const failedId = parseAssignmentEscalationReason(assignment.reason)
+    ?.failed_assignment_id?.trim();
+  return failedId || undefined;
+}
+
 function payloadString(
   payload: Record<string, unknown> | undefined,
   key: string,
@@ -1086,41 +1141,41 @@ export function resolveFlowTrackDisplayStep(
     managerAgentId?: string;
   },
 ): FlowStep | undefined {
-  const last = flowTrackLatestStep(track);
-  if (last) return last;
-
   const assignment = assignmentById(graph, track.assignmentId);
-  if (!assignment) return undefined;
-
   const inv = invocationForAssignment(graph, track.assignmentId);
   const liveToken =
     (inv && invocationStatusFromRow[inv.status]) ||
-    assignmentStatusFromRow[assignment.status];
-  if (!liveToken) return undefined;
+    (assignment && assignmentStatusFromRow[assignment.status]);
 
-  const fallbackEvent: RoomInvocationEvent = {
-    id: `live:${track.assignmentId}`,
-    room_id: assignment.room_id,
-    assignment_id: track.assignmentId,
-    invocation_id: inv?.id,
-    type: inv ? `invocation_${inv.status}` : `assignment_${assignment.status}`,
-    created_at: assignment.updated_at ?? assignment.created_at ?? "",
-    actor_type: "agent",
-    payload: {},
-  };
-  const actorId = resolveAssignmentAgentId(track.assignmentId, graph) ?? "system";
-  return {
-    token: liveToken,
-    createdAt: fallbackEvent.created_at,
-    event: { ...fallbackEvent, actor_id: actorId },
-    actorId,
-    actorName: resolveFlowActorName(
-      fallbackEvent,
+  // Graph row status is the source of truth; events are an audit trail.
+  // Prefer live status so incomplete event streams don't pin UI on "已创建".
+  if (liveToken && assignment) {
+    const fallbackEvent: RoomInvocationEvent = {
+      id: `live:${track.assignmentId}`,
+      room_id: assignment.room_id,
+      assignment_id: track.assignmentId,
+      invocation_id: inv?.id,
+      type: inv ? `invocation_${inv.status}` : `assignment_${assignment.status}`,
+      created_at: assignment.updated_at ?? assignment.created_at ?? "",
+      actor_type: "agent",
+      payload: {},
+    };
+    const actorId = resolveAssignmentAgentId(track.assignmentId, graph) ?? "system";
+    return {
+      token: liveToken,
+      createdAt: fallbackEvent.created_at,
+      event: { ...fallbackEvent, actor_id: actorId },
       actorId,
-      opts?.agentNameById ?? new Map(),
-      opts?.managerAgentId,
-    ),
-  };
+      actorName: resolveFlowActorName(
+        fallbackEvent,
+        actorId,
+        opts?.agentNameById ?? new Map(),
+        opts?.managerAgentId,
+      ),
+    };
+  }
+
+  return flowTrackLatestStep(track);
 }
 
 export function formatFlowTrackLine(
@@ -1150,7 +1205,7 @@ export function isActiveFlowTrack(
   const assignment = assignmentById(graph, track.assignmentId);
   if (
     assignment &&
-    ["pending", "blocked", "running"].includes(assignment.status)
+    ["pending", "blocked", "awaiting_approval", "running"].includes(assignment.status)
   ) {
     return true;
   }

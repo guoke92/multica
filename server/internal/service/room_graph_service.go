@@ -28,6 +28,7 @@ type RoomGraphSnapshot struct {
 	Invocations            []db.RoomInvocation
 	Decisions              []db.RoomManagerDecision
 	InvocationEvents       []db.RoomInvocationEvent
+	HumanInteractions      []db.RoomHumanInteraction
 }
 
 const roomGraphContextType = "room_graph"
@@ -411,9 +412,15 @@ func (s *TaskService) createInvocationForAssignment(
 		return db.RoomInvocation{}, err
 	}
 
-	_, _ = s.Queries.UpdateRoomAssignmentStatus(ctx, db.UpdateRoomAssignmentStatusParams{
-		ID: assignment.ID, Status: "running",
-	})
+	if _, applied, tErr := s.transitionAssignment(ctx, assignment.ID, []string{"pending"}, "running", pgtype.UUID{}, pgtype.Text{}); tErr != nil || !applied {
+		// Assignment left 'pending' concurrently (cancelled/superseded). Abandon
+		// the invocation we just created so it does not hold the active slot.
+		_, _ = s.Queries.CancelRoomInvocation(ctx, db.CancelRoomInvocationParams{ID: inv.ID})
+		if tErr != nil {
+			return db.RoomInvocation{}, tErr
+		}
+		return db.RoomInvocation{}, fmt.Errorf("assignment no longer pending")
+	}
 
 	s.appendInvocationEvent(ctx, room, assignment, inv, "invocation_created", "system", pgtype.UUID{}, map[string]any{
 		"intent": intent,
@@ -435,6 +442,9 @@ func (s *TaskService) createInvocationForAssignment(
 		_, _ = s.Queries.UpdateRoomInvocationStatus(ctx, db.UpdateRoomInvocationStatusParams{
 			ID: inv.ID, Status: "failed",
 			FailureReason: pgtype.Text{String: err.Error(), Valid: true},
+		})
+		s.appendInvocationEvent(ctx, room, assignment, inv, "invocation_failed", "system", pgtype.UUID{}, map[string]any{
+			"reason": err.Error(),
 		})
 		return db.RoomInvocation{}, err
 	}
@@ -516,6 +526,7 @@ func (s *TaskService) BuildRoomGraphSnapshot(ctx context.Context, roomID pgtype.
 	snap.InvocationEvents, _ = s.Queries.ListRoomInvocationEventsByRoom(ctx, db.ListRoomInvocationEventsByRoomParams{
 		RoomID: roomID, Limit: 200,
 	})
+	snap.HumanInteractions, _ = s.Queries.ListPendingRoomHumanInteractionsByRoom(ctx, roomID)
 	return snap, nil
 }
 

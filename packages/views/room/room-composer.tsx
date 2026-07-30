@@ -71,7 +71,7 @@ export function RoomComposer({
   };
 
   return (
-    <div className="bg-background shrink-0 px-5 pb-3 pt-3">
+    <div className="bg-background shrink-0 border-border border-t px-5 pb-3 pt-3">
       <div className="mx-auto w-full max-w-3xl space-y-2">
         {editingMessageId ? (
           <div className="text-muted-foreground flex items-center justify-between gap-2 text-xs">

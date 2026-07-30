@@ -735,6 +735,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/flow-events", h.ListRoomFlowEvents)
 					r.Get("/topics/{topicId}/flow-events", h.ListRoomFlowEvents)
 					r.Post("/human-actions/{actionId}/decide", h.DecideRoomHumanAction)
+					r.Post("/human-interactions/{interactionId}/respond", h.RespondRoomHumanInteraction)
+					r.Post("/human-interactions/{interactionId}/dismiss", h.DismissRoomHumanInteraction)
 					r.Post("/invocations/{invocationId}/cancel", h.CancelRoomInvocation)
 					r.Post("/assignments", h.CreateRoomAssignment)
 					r.Post("/assignments/{assignmentId}/retry", h.RetryRoomAssignment)

@@ -376,6 +376,8 @@ type Issue struct {
 	FirstExecutedAt    pgtype.Timestamptz `json:"first_executed_at"`
 	StartDate          pgtype.Timestamptz `json:"start_date"`
 	Metadata           []byte             `json:"metadata"`
+	SourceRoomID       pgtype.UUID        `json:"source_room_id"`
+	SourceMessageID    pgtype.UUID        `json:"source_message_id"`
 }
 
 type IssueDependency struct {
@@ -515,13 +517,13 @@ type RoomAssignment struct {
 	Status                   string             `json:"status"`
 	Reason                   pgtype.Text        `json:"reason"`
 	OutputMessageID          pgtype.UUID        `json:"output_message_id"`
+	FailureAcknowledgedAt    pgtype.Timestamptz `json:"failure_acknowledged_at"`
+	FailureAcknowledgedBy    pgtype.UUID        `json:"failure_acknowledged_by"`
+	SupersededByAssignmentID pgtype.UUID        `json:"superseded_by_assignment_id"`
 	CreatedByType            string             `json:"created_by_type"`
 	CreatedByID              pgtype.UUID        `json:"created_by_id"`
 	CreatedAt                pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
-	FailureAcknowledgedAt    pgtype.Timestamptz `json:"failure_acknowledged_at"`
-	FailureAcknowledgedBy    pgtype.UUID        `json:"failure_acknowledged_by"`
-	SupersededByAssignmentID pgtype.UUID        `json:"superseded_by_assignment_id"`
 }
 
 type RoomAssignmentDependency struct {
@@ -567,6 +569,30 @@ type RoomInvocationEvent struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 }
 
+type RoomHumanInteraction struct {
+	ID                   pgtype.UUID        `json:"id"`
+	RoomID               pgtype.UUID        `json:"room_id"`
+	Kind                 string             `json:"kind"`
+	Status               string             `json:"status"`
+	Title                pgtype.Text        `json:"title"`
+	Body                 string             `json:"body"`
+	Options              []byte             `json:"options"`
+	AllowCustomResponse  bool               `json:"allow_custom_response"`
+	InvocationID         pgtype.UUID        `json:"invocation_id"`
+	AssignmentID         pgtype.UUID        `json:"assignment_id"`
+	DecisionID           pgtype.UUID        `json:"decision_id"`
+	ApprovalRequestID    pgtype.UUID        `json:"approval_request_id"`
+	CreatedByType        string             `json:"created_by_type"`
+	CreatedByID          pgtype.UUID        `json:"created_by_id"`
+	ResponseText         pgtype.Text        `json:"response_text"`
+	ResponseOptionID     pgtype.Text        `json:"response_option_id"`
+	RespondedBy          pgtype.UUID        `json:"responded_by"`
+	RespondedAt          pgtype.Timestamptz `json:"responded_at"`
+	DismissedAt          pgtype.Timestamptz `json:"dismissed_at"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+}
+
 type RoomManagerDecision struct {
 	ID                   pgtype.UUID        `json:"id"`
 	RoomID               pgtype.UUID        `json:"room_id"`
@@ -597,6 +623,7 @@ type RoomMessage struct {
 	SenderID       pgtype.UUID        `json:"sender_id"`
 	Content        string             `json:"content"`
 	QuoteMessageID pgtype.UUID        `json:"quote_message_id"`
+	LinkedIssueID  pgtype.UUID        `json:"linked_issue_id"`
 	Metadata       []byte             `json:"metadata"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	EditedAt       pgtype.Timestamptz `json:"edited_at"`

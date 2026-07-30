@@ -148,6 +148,53 @@ export function useAckRoomAssignmentFailure(wsId: string, roomId: string) {
   });
 }
 
+export function useRespondRoomHumanInteraction(wsId: string, roomId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      interactionId: string;
+      option_id?: string;
+      response_text?: string;
+      approved?: boolean;
+      reject_reason?: string;
+    }) =>
+      api.respondRoomHumanInteraction(roomId, data.interactionId, {
+        option_id: data.option_id,
+        response_text: data.response_text,
+        approved: data.approved,
+        reject_reason: data.reject_reason,
+      }),
+    onSuccess: (resp) => {
+      refreshRoomGraphNow(qc, wsId, roomId);
+      if (resp.message) {
+        reconcileOptimisticRoomMessage(qc, wsId, roomId, resp.message);
+        void qc.invalidateQueries({
+          queryKey: roomMessagesInfiniteKey(wsId, roomId),
+        });
+      }
+      if (resp.assignments?.length || resp.invocations?.length) {
+        patchRoomGraph(qc, wsId, roomId, (graph) =>
+          patchSendGraphResponse(graph, {
+            assignments: resp.assignments,
+            invocations: resp.invocations,
+          }),
+        );
+      }
+    },
+  });
+}
+
+export function useDismissRoomHumanInteraction(wsId: string, roomId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (interactionId: string) =>
+      api.dismissRoomHumanInteraction(roomId, interactionId),
+    onSuccess: () => {
+      refreshRoomGraphNow(qc, wsId, roomId);
+    },
+  });
+}
+
 export function useUpdateRoom(wsId: string, roomId: string) {
   const qc = useQueryClient();
   return useMutation({

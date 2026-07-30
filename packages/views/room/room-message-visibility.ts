@@ -1,9 +1,8 @@
-import type { RoomMessage } from "@multica/core/types/room";
+import type { RoomAssignment, RoomMessage } from "@multica/core/types/room";
 
-/** notify_user posts from the manager agent but must appear as a user-facing chat row. */
+/** Legacy rows only — new manager notify_user surfaces in RoomInteractionDock. */
 export function isManagerNotifyUserMessage(message: RoomMessage): boolean {
   if (message.metadata?.manager_notify_user === true) return true;
-  // Server only persists manager-agent rows for notify_user; older rows lack metadata.
   return message.content.includes("mention://member/");
 }
 
@@ -39,6 +38,23 @@ export function shouldHideRoomMessage(
   }
 
   return false;
+}
+
+/** Role-agent output messages render inside their invocation turn — not as standalone rows. */
+export function isRoleAgentTurnOutputMessage(
+  message: RoomMessage,
+  assignments: RoomAssignment[],
+): boolean {
+  if (message.sender_type !== "agent") return false;
+  if (isManagerNotifyUserMessage(message)) return false;
+  return assignments.some(
+    (a) =>
+      a.output_message_id === message.id &&
+      (a.kind === "manager_route" ||
+        a.kind === "manager_relay" ||
+        a.kind === "mention" ||
+        a.kind === "reassign"),
+  );
 }
 
 export function isManagerInvocation(

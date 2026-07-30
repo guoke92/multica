@@ -34,7 +34,7 @@ func (s *TaskService) maybeRequestRoomApprovalFromResult(ctx context.Context, ta
 	if err != nil {
 		return false
 	}
-	_, _, err = s.RequestRoomApproval(ctx, RequestRoomApprovalParams{
+	_, err = s.RequestRoomApproval(ctx, RequestRoomApprovalParams{
 		Room:             room,
 		RoomInvocationID: task.InvocationID,
 		RequesterID:      task.AgentID,
@@ -102,6 +102,9 @@ func (s *TaskService) finalizeRoomInvocation(ctx context.Context, task db.AgentT
 				FailureReason: pgtype.Text{String: "empty agent response", Valid: true},
 				CompletedAt:     pgtype.Timestamptz{Time: now, Valid: true},
 			})
+			s.appendInvocationEvent(ctx, room, assignment, inv, "invocation_failed", "agent", task.AgentID, map[string]any{
+				"reason": "empty agent response",
+			})
 			_ = s.FailAssignment(ctx, room, assignment, "empty agent response")
 		} else if err := s.CompleteInvocationWithOutput(ctx, task, inv, room, body); err != nil {
 			slog.Warn("complete invocation with output failed", "error", err)
@@ -109,6 +112,9 @@ func (s *TaskService) finalizeRoomInvocation(ctx context.Context, task db.AgentT
 				ID: inv.ID, Status: "failed",
 				FailureReason: pgtype.Text{String: err.Error(), Valid: true},
 				CompletedAt:     pgtype.Timestamptz{Time: now, Valid: true},
+			})
+			s.appendInvocationEvent(ctx, room, assignment, inv, "invocation_failed", "agent", task.AgentID, map[string]any{
+				"reason": err.Error(),
 			})
 			_ = s.FailAssignment(ctx, room, assignment, err.Error())
 		}

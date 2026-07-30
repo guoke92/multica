@@ -3,9 +3,7 @@ export { RoomView } from "./room-view";
 export { CreateRoomDialog } from "./create-room-dialog";
 export { RoomActivityFooter } from "./room-activity-footer";
 export { RoomAttributionPill } from "./room-attribution-pill";
-export {
-  RoleAgentTimelineEntry,
-  ManagerHistoryBelowBar,
-} from "./room-invocation-thread";
+export { AgentTurnEntry } from "./agent-turn-entry";
+export { AgentMessageBody } from "./agent-message-body";
+export { ManagerHistoryBelowBar } from "./room-invocation-thread";
 export { ManagerStatusLeading } from "./manager-invocation-skin";
-export { RoleAgentInvocationSkin } from "./role-agent-invocation-skin";

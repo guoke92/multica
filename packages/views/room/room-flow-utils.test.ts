@@ -18,9 +18,12 @@ import {
   formatFlowStepLine,
   formatFlowTrackLine,
   groupFlowTracks,
+  indexEscalationsByFailedAssignment,
+  indexInvocationItemsBySourceMessage,
   needsAttentionFailure,
   pickLeadingManagerItem,
   projectFlowEvents,
+  resolveTurnFollowUpManagerItems,
   resolveFlowScrollMessageId,
   resolveFlowTrackElapsedSeconds,
   resolveFlowTrackTimerAnchor,
@@ -53,6 +56,24 @@ function assignment(
   };
 }
 
+describe("resolveTurnFollowUpManagerItems", () => {
+  it("returns post-output review items anchored on turn output message", () => {
+    const roleTurn = {
+      invocation: { id: "inv-fe" },
+      outputMessage: { id: "msg-agent-out" },
+    } as InvocationChatItem;
+    const reviewItem = {
+      invocation: { id: "inv-review" },
+      presentation: "manager_status",
+      sourceMessageId: "msg-agent-out",
+    } as InvocationChatItem;
+    const bySource = new Map([["msg-agent-out", [reviewItem]]]);
+
+    expect(resolveTurnFollowUpManagerItems(roleTurn, bySource)).toEqual([reviewItem]);
+    expect(resolveTurnFollowUpManagerItems({ ...roleTurn, outputMessage: undefined }, bySource)).toEqual([]);
+  });
+});
+
 describe("groupFlowTracks", () => {
   const agents = new Map([
     ["mgr", "群管"],
@@ -62,7 +83,7 @@ describe("groupFlowTracks", () => {
 
   const graph = {
     assignments: [
-      assignment({ id: "asgn-req", kind: "mention", status: "running", assignee_id: "req" }),
+      assignment({ id: "asgn-req", kind: "mention", status: "completed", assignee_id: "req" }),
       assignment({ id: "asgn-arch", kind: "mention", status: "pending", assignee_id: "arch" }),
       assignment({ id: "asgn-join", kind: "join", status: "blocked", assignee_id: "mgr" }),
     ],
@@ -84,7 +105,7 @@ describe("groupFlowTracks", () => {
         assignment_id: "asgn-req",
         source_message_id: "msg-1",
         agent_id: "req",
-        status: "running",
+        status: "succeeded",
       },
       {
         id: "inv-arch",
@@ -190,7 +211,7 @@ describe("groupFlowTracks", () => {
       "需求分析师 · 完成",
     );
     expect(formatFlowTrackLine(tracks[1]!, { agentNameById: agents, graph })).toBe(
-      "系统架构师 · 已创建",
+      "系统架构师 · 待调度",
     );
   });
 
@@ -230,7 +251,58 @@ describe("groupFlowTracks", () => {
         managerAgentId: "mgr",
         graph: joinGraph,
       }),
-    ).toBe("汇合 1/2 · 已创建");
+    ).toBe("汇合 1/2 · 等待汇合");
+  });
+
+  it("prefers live graph status over stale created-only event stream", () => {
+    const stuckCreatedGraph = {
+      assignments: [
+        assignment({
+          id: "asgn-esc",
+          kind: "auto_review",
+          status: "running",
+          assignee_id: "mgr",
+          reason: JSON.stringify({
+            escalation: "role_failure",
+            failed_assignment_id: "asgn-fe",
+          }),
+        }),
+      ],
+      assignment_dependencies: [] as RoomAssignmentDependency[],
+      invocations: [
+        {
+          id: "inv-esc",
+          assignment_id: "asgn-esc",
+          source_message_id: "msg-1",
+          agent_id: "mgr",
+          intent: "escalate",
+          status: "running",
+        },
+      ] as RoomInvocation[],
+    };
+    const tracks = groupFlowTracks(
+      [
+        ev({
+          id: "1",
+          type: "assignment_created",
+          created_at: "2026-06-17T10:00:00Z",
+          assignment_id: "asgn-esc",
+          actor_id: "mgr",
+        }),
+      ],
+      {
+        agentNameById: agents,
+        managerAgentId: "mgr",
+        graph: stuckCreatedGraph,
+      },
+    );
+    expect(
+      formatFlowTrackLine(tracks[0]!, {
+        agentNameById: agents,
+        managerAgentId: "mgr",
+        graph: stuckCreatedGraph,
+      }),
+    ).toBe("升级 · 思考中");
   });
 
   it("preserves retry in the same assignment track", () => {
@@ -495,6 +567,108 @@ describe("graph helpers", () => {
 
     const timeline = buildChatTimeline(messages, items);
     expect(timeline.map((e) => e.kind)).toEqual(["message", "invocation"]);
+  });
+
+  it("nests escalation under failed role assignment via failed_assignment_id", () => {
+    const agents = new Map([
+      ["mgr", "群管"],
+      ["fe", "前端工程师"],
+    ]);
+    const assignments: RoomAssignment[] = [
+      assignment({
+        id: "a-dispatch",
+        kind: "auto_review",
+        status: "completed",
+        assignee_id: "mgr",
+        source_message_id: "msg-user",
+      }),
+      assignment({
+        id: "a-fe",
+        kind: "manager_route",
+        status: "failed",
+        assignee_id: "fe",
+        source_message_id: "msg-user",
+        reason: "empty agent response",
+      }),
+      assignment({
+        id: "a-esc",
+        kind: "auto_review",
+        status: "running",
+        assignee_id: "mgr",
+        source_message_id: "msg-user",
+        reason: JSON.stringify({
+          escalation: "role_failure",
+          failed_assignment_id: "a-fe",
+          failed_agent_id: "fe",
+        }),
+      }),
+    ];
+    const invocations: RoomInvocation[] = [
+      {
+        id: "inv-dispatch",
+        assignment_id: "a-dispatch",
+        source_message_id: "msg-user",
+        agent_id: "mgr",
+        intent: "route",
+        status: "succeeded",
+        outcome: { type: "dispatch", target_agent_id: "fe" },
+      },
+      {
+        id: "inv-fe",
+        assignment_id: "a-fe",
+        source_message_id: "msg-user",
+        agent_id: "fe",
+        status: "failed",
+        failure_reason: "empty agent response",
+      },
+      {
+        id: "inv-esc",
+        assignment_id: "a-esc",
+        source_message_id: "msg-user",
+        agent_id: "mgr",
+        intent: "escalate",
+        status: "running",
+      },
+    ];
+    const messages: RoomMessage[] = [
+      {
+        id: "msg-user",
+        sender_type: "user",
+        sender_id: "user-1",
+        content: "build snake",
+        created_at: "2026-06-18T10:00:00Z",
+      },
+    ];
+
+    const items = buildInvocationChatItems(
+      invocations,
+      assignments,
+      messages,
+      agents,
+      "mgr",
+    );
+    expect(items.find((i) => i.assignment.id === "a-esc")).toMatchObject({
+      presentation: "manager_status",
+      anchorAssignmentId: "a-fe",
+      sourceMessageId: "msg-user",
+      phase: "running",
+    });
+    expect(items.find((i) => i.assignment.id === "a-dispatch")).toMatchObject({
+      presentation: "manager_status",
+      anchorAssignmentId: undefined,
+      sourceMessageId: "msg-user",
+    });
+
+    const byMessage = indexInvocationItemsBySourceMessage(items);
+    expect(byMessage.get("msg-user")?.map((i) => i.assignment.id)).toEqual([
+      "a-dispatch",
+    ]);
+
+    const byFailed = indexEscalationsByFailedAssignment(items);
+    expect(byFailed.get("a-fe")?.map((i) => i.assignment.id)).toEqual(["a-esc"]);
+
+    const leadingOnUser = pickLeadingManagerItem(byMessage.get("msg-user") ?? []);
+    expect(leadingOnUser?.assignment.id).toBe("a-dispatch");
   });
 
   it("resolveManagerDecision picks newest decision by monotonic id", () => {
@@ -1013,12 +1187,12 @@ describe("invocation inline anchoring", () => {
     ["fe", "前端工程师"],
   ]);
 
-  it("hides role-agent slot once output message is in the timeline", () => {
+  it("keeps the turn slot and attaches output message when succeeded", () => {
     const assignments: RoomAssignment[] = [
       assignment({
         id: "a-route",
         kind: "manager_route",
-        status: "running",
+        status: "completed",
         assignee_id: "fe",
         source_message_id: "msg-user",
         output_message_id: "msg-agent-out",
@@ -1030,7 +1204,7 @@ describe("invocation inline anchoring", () => {
         assignment_id: "a-route",
         source_message_id: "msg-user",
         agent_id: "fe",
-        status: "running",
+        status: "succeeded",
         output_message_id: "msg-agent-out",
       },
     ];
@@ -1042,7 +1216,48 @@ describe("invocation inline anchoring", () => {
       agents,
       "mgr",
     );
-    expect(items).toHaveLength(0);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      presentation: "agent_bubble",
+      phase: "succeeded",
+      outputMessage: agentMsg,
+    });
+
+    const timeline = buildChatTimeline([userMsg], items);
+    expect(timeline.map((e) => e.kind)).toEqual(["message", "invocation"]);
+  });
+
+  it("resolves output message even when it is excluded from timeline message rows", () => {
+    const assignments: RoomAssignment[] = [
+      assignment({
+        id: "a-route",
+        kind: "manager_route",
+        status: "completed",
+        assignee_id: "fe",
+        source_message_id: "msg-user",
+        output_message_id: "msg-agent-out",
+      }),
+    ];
+    const invocations: RoomInvocation[] = [
+      {
+        id: "inv-route",
+        assignment_id: "a-route",
+        source_message_id: "msg-user",
+        agent_id: "fe",
+        status: "succeeded",
+        output_message_id: "msg-agent-out",
+      },
+    ];
+
+    const items = buildInvocationChatItems(
+      invocations,
+      assignments,
+      [userMsg, agentMsg],
+      agents,
+      "mgr",
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]?.outputMessage?.id).toBe("msg-agent-out");
   });
 
   it("shows post-output manager review on agent trigger message", () => {

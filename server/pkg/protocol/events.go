@@ -79,6 +79,7 @@ const (
 	EventRoomInvocationEventCreated = "room:invocation_event_created"
 	EventRoomManagerDecisionCreated = "room:manager_decision_created"
 	EventRoomApprovalRequested = "room:approval_requested"
+	EventRoomHumanInteractionUpdated = "room:human_interaction_updated"
 	EventRoomArchived          = "room:archived"
 	EventRoomUpdated           = "room:updated"
 	EventRoomMembersUpdated    = "room:members_updated"

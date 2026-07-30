@@ -52,13 +52,17 @@ SELECT * FROM room_assignment WHERE id = $1;
 -- name: GetRoomAssignmentInRoom :one
 SELECT * FROM room_assignment WHERE id = $1 AND room_id = $2;
 
--- name: UpdateRoomAssignmentStatus :one
+-- name: TransitionRoomAssignmentStatus :one
+-- CAS status write: only applies when the current status is one of from_status.
+-- Returns no rows (pgx.ErrNoRows) when the assignment was already moved by a
+-- concurrent path — callers must treat that as an idempotent no-op, never an error.
 UPDATE room_assignment
-SET status = $2,
+SET status = sqlc.arg('to_status'),
     output_message_id = COALESCE(sqlc.narg('output_message_id'), output_message_id),
     reason = COALESCE(sqlc.narg('reason'), reason),
     updated_at = now()
-WHERE id = $1
+WHERE id = sqlc.arg('id')
+  AND status = ANY(sqlc.arg('from_status')::text[])
 RETURNING *;
 
 -- name: UnblockRoomAssignmentIfBlocked :one
@@ -251,6 +255,19 @@ SET status = 'cancelled',
     cancelled_at = now(),
     updated_at = now()
 WHERE id = $1 AND status NOT IN ('succeeded', 'cancelled')
+RETURNING *;
+
+-- name: ClaimRoomInvocationTask :one
+-- Atomically attaches a task to a queued invocation. Only one concurrent drain
+-- can win the claim (task_id IS NULL guard); losers get no rows and must cancel
+-- the task they speculatively created.
+UPDATE room_invocation
+SET task_id = sqlc.arg('task_id'),
+    status = 'queued',
+    updated_at = now()
+WHERE id = sqlc.arg('id')
+  AND task_id IS NULL
+  AND status = 'queued'
 RETURNING *;
 
 -- name: ListRoomInvocationsByRoom :many

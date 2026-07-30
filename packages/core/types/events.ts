@@ -60,6 +60,7 @@ export type WSEventType =
   | "room:invocation_event_created"
   | "room:manager_decision_created"
   | "room:human_action_updated"
+  | "room:human_interaction_updated"
   | "room:invocation_updated"
   | "room:snapshot_updated"
   | "room:approval_requested"

@@ -16,6 +16,8 @@ import {
   useRetryRoomAssignment,
   useCancelRoomAssignment,
   useAckRoomAssignmentFailure,
+  useRespondRoomHumanInteraction,
+  useDismissRoomHumanInteraction,
 } from "@multica/core/room/mutations";
 import { useWorkspaceId } from "@multica/core/hooks";
 import {
@@ -33,6 +35,7 @@ import { toast } from "sonner";
 import { RoomMessageList } from "./room-message-list";
 import { RoomMembersPanel } from "./room-members-panel";
 import { RoomComposer } from "./room-composer";
+import { RoomInteractionDock } from "./room-interaction-dock";
 import { RoomSettingsSheet } from "./room-settings-sheet";
 import {
   buildQuoteMentionPrefix,
@@ -87,6 +90,9 @@ export function RoomView({ roomId, onArchived }: Props) {
   const retryAssignment = useRetryRoomAssignment(wsId, roomId);
   const cancelAssignment = useCancelRoomAssignment(wsId, roomId);
   const ackAssignmentFailure = useAckRoomAssignmentFailure(wsId, roomId);
+  const respondInteraction = useRespondRoomHumanInteraction(wsId, roomId);
+  const dismissInteraction = useDismissRoomHumanInteraction(wsId, roomId);
+  const humanInteractions = graph?.human_interactions ?? [];
   const selfMember = useMemo(
     () =>
       members.find(
@@ -105,6 +111,28 @@ export function RoomView({ roomId, onArchived }: Props) {
     () => new Map(workspaceMembers.map((m) => [m.user_id, m.name || m.email])),
     [workspaceMembers],
   );
+
+  const managerAgentName = room?.manager_agent_id
+    ? agentNameById.get(room.manager_agent_id)
+    : undefined;
+
+  const handleRespondInteraction = (data: {
+    interactionId: string;
+    option_id?: string;
+    response_text?: string;
+    approved?: boolean;
+    reject_reason?: string;
+  }) => {
+    respondInteraction.mutate(data, {
+      onError: () => toast.error("操作失败，请重试"),
+    });
+  };
+
+  const handleDismissInteraction = (interactionId: string) => {
+    dismissInteraction.mutate(interactionId, {
+      onError: () => toast.error("操作失败，请重试"),
+    });
+  };
 
   const clearComposerContext = () => {
     setEditingMessage(null);
@@ -265,41 +293,55 @@ export function RoomView({ roomId, onArchived }: Props) {
             ) : null}
           </div>
         </header>
-        <RoomMessageList
-          messages={messages}
-          roomId={roomId}
-          managerAgentId={room?.manager_agent_id}
-          assignments={assignments}
-          mentions={graph?.mentions ?? []}
-          decisions={decisions}
-          invocations={invocations}
-          scrollToMessageId={scrollToMessageId}
-          onScrollToMessageDone={() => setScrollToMessageId(null)}
-          onNavigateToQuote={handleNavigateToMessage}
-          onRetryAssignment={handleRetryAssignment}
-          onCancelAssignment={handleCancelAssignment}
-          retryingAssignmentId={
-            retryAssignment.isPending ? (retryAssignment.variables ?? null) : null
-          }
-          cancellingAssignmentId={
-            cancelAssignment.isPending ? (cancelAssignment.variables ?? null) : null
-          }
-          onEditMessage={handleEditMessage}
-          onReplyToMessage={handleReplyToMessage}
-          onRegenerateAgentMessage={handleRegenerateAgentMessage}
-          regeneratingMessageId={
-            regenerateAgent.isPending
-              ? (regenerateAgent.variables ?? null)
-              : null
-          }
-          agentNameById={agentNameById}
-          memberNameById={memberNameById}
-          hasOlderMessages={hasNextPage === true}
-          isLoadingOlderMessages={isFetchingNextPage}
-          onLoadOlderMessages={() => {
-            void fetchNextPage();
-          }}
-        />
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <RoomMessageList
+            messages={messages}
+            roomId={roomId}
+            managerAgentId={room?.manager_agent_id}
+            assignments={assignments}
+            mentions={graph?.mentions ?? []}
+            decisions={decisions}
+            invocations={invocations}
+            scrollToMessageId={scrollToMessageId}
+            onScrollToMessageDone={() => setScrollToMessageId(null)}
+            onNavigateToQuote={handleNavigateToMessage}
+            onRetryAssignment={handleRetryAssignment}
+            onCancelAssignment={handleCancelAssignment}
+            retryingAssignmentId={
+              retryAssignment.isPending ? (retryAssignment.variables ?? null) : null
+            }
+            cancellingAssignmentId={
+              cancelAssignment.isPending ? (cancelAssignment.variables ?? null) : null
+            }
+            onEditMessage={handleEditMessage}
+            onReplyToMessage={handleReplyToMessage}
+            onRegenerateAgentMessage={handleRegenerateAgentMessage}
+            regeneratingMessageId={
+              regenerateAgent.isPending
+                ? (regenerateAgent.variables ?? null)
+                : null
+            }
+            agentNameById={agentNameById}
+            memberNameById={memberNameById}
+            hasOlderMessages={hasNextPage === true}
+            isLoadingOlderMessages={isFetchingNextPage}
+            onLoadOlderMessages={() => {
+              void fetchNextPage();
+            }}
+          />
+          <RoomInteractionDock
+            interactions={humanInteractions}
+            managerAgentName={managerAgentName}
+            onDismiss={handleDismissInteraction}
+            onRespond={handleRespondInteraction}
+            isResponding={respondInteraction.isPending}
+            dismissingId={
+              dismissInteraction.isPending
+                ? (dismissInteraction.variables ?? null)
+                : null
+            }
+          />
+        </div>
         <RoomComposer
           roomId={roomId}
           wsId={wsId}

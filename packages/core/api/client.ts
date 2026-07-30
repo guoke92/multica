@@ -185,11 +185,14 @@ import {
   EMPTY_ROOM_LIST,
   EMPTY_ROOM_MESSAGE_LIST,
   EMPTY_SEND_ROOM_MESSAGE_RESPONSE,
+  EMPTY_RESPOND_ROOM_HUMAN_INTERACTION_RESPONSE,
   EMPTY_ROOM,
   CreateRoomAssignmentResponseSchema,
   RoomGraphSnapshotSchema,
   SendRoomMessageResponseSchema,
   UpdateRoomMessageResponseSchema,
+  RespondRoomHumanInteractionResponseSchema,
+  DismissRoomHumanInteractionResponseSchema,
   RoomListSchema,
   RoomMessageListSchema,
   RoomSchema,
@@ -1814,6 +1817,44 @@ export class ApiClient {
       RoomAssignmentSchema,
       { id: "", room_id: "", source_message_id: "", assignee_type: "agent", assignee_id: "", kind: "", status: "failed" },
       { endpoint: "POST /api/rooms/:id/assignments/:id/ack-failure" },
+    );
+  }
+
+  async respondRoomHumanInteraction(
+    roomId: string,
+    interactionId: string,
+    data: {
+      option_id?: string;
+      response_text?: string;
+      approved?: boolean;
+      reject_reason?: string;
+    },
+  ): Promise<import("../types/room").RespondRoomHumanInteractionResponse> {
+    const raw = await this.fetch(
+      `/api/rooms/${roomId}/human-interactions/${interactionId}/respond`,
+      { method: "POST", body: JSON.stringify(data) },
+    );
+    return parseWithFallback(
+      raw,
+      RespondRoomHumanInteractionResponseSchema,
+      EMPTY_RESPOND_ROOM_HUMAN_INTERACTION_RESPONSE,
+      { endpoint: "POST /api/rooms/:id/human-interactions/:id/respond" },
+    );
+  }
+
+  async dismissRoomHumanInteraction(
+    roomId: string,
+    interactionId: string,
+  ): Promise<{ interaction: import("../types/room").RoomHumanInteraction }> {
+    const raw = await this.fetch(
+      `/api/rooms/${roomId}/human-interactions/${interactionId}/dismiss`,
+      { method: "POST" },
+    );
+    return parseWithFallback(
+      raw,
+      DismissRoomHumanInteractionResponseSchema,
+      { interaction: { id: "", room_id: "", kind: "notify", status: "dismissed", body: "", created_by_type: "system", created_at: "", updated_at: "" } },
+      { endpoint: "POST /api/rooms/:id/human-interactions/:id/dismiss" },
     );
   }
 

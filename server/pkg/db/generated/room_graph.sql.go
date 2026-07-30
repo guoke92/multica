@@ -20,7 +20,7 @@ WHERE id = $2
   AND room_id = $3
   AND status = 'failed'
   AND failure_acknowledged_at IS NULL
-RETURNING id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, created_by_type, created_by_id, created_at, updated_at, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id
+RETURNING id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id, created_by_type, created_by_id, created_at, updated_at
 `
 
 type AcknowledgeRoomAssignmentFailureParams struct {
@@ -42,13 +42,13 @@ func (q *Queries) AcknowledgeRoomAssignmentFailure(ctx context.Context, arg Ackn
 		&i.Status,
 		&i.Reason,
 		&i.OutputMessageID,
+		&i.FailureAcknowledgedAt,
+		&i.FailureAcknowledgedBy,
+		&i.SupersededByAssignmentID,
 		&i.CreatedByType,
 		&i.CreatedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.FailureAcknowledgedAt,
-		&i.FailureAcknowledgedBy,
-		&i.SupersededByAssignmentID,
 	)
 	return i, err
 }
@@ -119,6 +119,54 @@ type CancelRoomInvocationParams struct {
 
 func (q *Queries) CancelRoomInvocation(ctx context.Context, arg CancelRoomInvocationParams) (RoomInvocation, error) {
 	row := q.db.QueryRow(ctx, cancelRoomInvocation, arg.ID, arg.CancelledBy)
+	var i RoomInvocation
+	err := row.Scan(
+		&i.ID,
+		&i.RoomID,
+		&i.AssignmentID,
+		&i.SourceMessageID,
+		&i.AgentID,
+		&i.Intent,
+		&i.Status,
+		&i.Priority,
+		&i.RetryCount,
+		&i.MaxRetries,
+		&i.TaskID,
+		&i.OutputMessageID,
+		&i.Outcome,
+		&i.FailureReason,
+		&i.TimeoutAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CancelledBy,
+		&i.CancelledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const claimRoomInvocationTask = `-- name: ClaimRoomInvocationTask :one
+UPDATE room_invocation
+SET task_id = $1,
+    status = 'queued',
+    updated_at = now()
+WHERE id = $2
+  AND task_id IS NULL
+  AND status = 'queued'
+RETURNING id, room_id, assignment_id, source_message_id, agent_id, intent, status, priority, retry_count, max_retries, task_id, output_message_id, outcome, failure_reason, timeout_at, started_at, completed_at, cancelled_by, cancelled_at, created_at, updated_at
+`
+
+type ClaimRoomInvocationTaskParams struct {
+	TaskID pgtype.UUID `json:"task_id"`
+	ID     pgtype.UUID `json:"id"`
+}
+
+// Atomically attaches a task to a queued invocation. Only one concurrent drain
+// can win the claim (task_id IS NULL guard); losers get no rows and must cancel
+// the task they speculatively created.
+func (q *Queries) ClaimRoomInvocationTask(ctx context.Context, arg ClaimRoomInvocationTaskParams) (RoomInvocation, error) {
+	row := q.db.QueryRow(ctx, claimRoomInvocationTask, arg.TaskID, arg.ID)
 	var i RoomInvocation
 	err := row.Scan(
 		&i.ID,
@@ -259,7 +307,7 @@ VALUES (
     $4, $5, $6, $7,
     $8, $9, $10
 )
-RETURNING id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, created_by_type, created_by_id, created_at, updated_at, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id
+RETURNING id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id, created_by_type, created_by_id, created_at, updated_at
 `
 
 type CreateRoomAssignmentParams struct {
@@ -299,13 +347,13 @@ func (q *Queries) CreateRoomAssignment(ctx context.Context, arg CreateRoomAssign
 		&i.Status,
 		&i.Reason,
 		&i.OutputMessageID,
+		&i.FailureAcknowledgedAt,
+		&i.FailureAcknowledgedBy,
+		&i.SupersededByAssignmentID,
 		&i.CreatedByType,
 		&i.CreatedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.FailureAcknowledgedAt,
-		&i.FailureAcknowledgedBy,
-		&i.SupersededByAssignmentID,
 	)
 	return i, err
 }
@@ -623,7 +671,7 @@ func (q *Queries) GetActiveRoomInvocationForAssignment(ctx context.Context, assi
 }
 
 const getRoomAssignment = `-- name: GetRoomAssignment :one
-SELECT id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, created_by_type, created_by_id, created_at, updated_at, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id FROM room_assignment WHERE id = $1
+SELECT id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id, created_by_type, created_by_id, created_at, updated_at FROM room_assignment WHERE id = $1
 `
 
 func (q *Queries) GetRoomAssignment(ctx context.Context, id pgtype.UUID) (RoomAssignment, error) {
@@ -639,19 +687,19 @@ func (q *Queries) GetRoomAssignment(ctx context.Context, id pgtype.UUID) (RoomAs
 		&i.Status,
 		&i.Reason,
 		&i.OutputMessageID,
+		&i.FailureAcknowledgedAt,
+		&i.FailureAcknowledgedBy,
+		&i.SupersededByAssignmentID,
 		&i.CreatedByType,
 		&i.CreatedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.FailureAcknowledgedAt,
-		&i.FailureAcknowledgedBy,
-		&i.SupersededByAssignmentID,
 	)
 	return i, err
 }
 
 const getRoomAssignmentInRoom = `-- name: GetRoomAssignmentInRoom :one
-SELECT id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, created_by_type, created_by_id, created_at, updated_at, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id FROM room_assignment WHERE id = $1 AND room_id = $2
+SELECT id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id, created_by_type, created_by_id, created_at, updated_at FROM room_assignment WHERE id = $1 AND room_id = $2
 `
 
 type GetRoomAssignmentInRoomParams struct {
@@ -672,13 +720,13 @@ func (q *Queries) GetRoomAssignmentInRoom(ctx context.Context, arg GetRoomAssign
 		&i.Status,
 		&i.Reason,
 		&i.OutputMessageID,
+		&i.FailureAcknowledgedAt,
+		&i.FailureAcknowledgedBy,
+		&i.SupersededByAssignmentID,
 		&i.CreatedByType,
 		&i.CreatedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.FailureAcknowledgedAt,
-		&i.FailureAcknowledgedBy,
-		&i.SupersededByAssignmentID,
 	)
 	return i, err
 }
@@ -832,7 +880,7 @@ func (q *Queries) GetRoomInvocationInRoom(ctx context.Context, arg GetRoomInvoca
 }
 
 const listActiveRoomAssignmentsByRoom = `-- name: ListActiveRoomAssignmentsByRoom :many
-SELECT id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, created_by_type, created_by_id, created_at, updated_at, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id FROM room_assignment
+SELECT id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id, created_by_type, created_by_id, created_at, updated_at FROM room_assignment
 WHERE room_id = $1
   AND status NOT IN ('completed', 'cancelled', 'skipped')
 ORDER BY id ASC
@@ -857,13 +905,13 @@ func (q *Queries) ListActiveRoomAssignmentsByRoom(ctx context.Context, roomID pg
 			&i.Status,
 			&i.Reason,
 			&i.OutputMessageID,
+			&i.FailureAcknowledgedAt,
+			&i.FailureAcknowledgedBy,
+			&i.SupersededByAssignmentID,
 			&i.CreatedByType,
 			&i.CreatedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.FailureAcknowledgedAt,
-			&i.FailureAcknowledgedBy,
-			&i.SupersededByAssignmentID,
 		); err != nil {
 			return nil, err
 		}
@@ -1077,7 +1125,7 @@ func (q *Queries) ListRoomAssignmentDependenciesByRoom(ctx context.Context, room
 }
 
 const listRoomAssignmentsByRoom = `-- name: ListRoomAssignmentsByRoom :many
-SELECT id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, created_by_type, created_by_id, created_at, updated_at, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id FROM room_assignment
+SELECT id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id, created_by_type, created_by_id, created_at, updated_at FROM room_assignment
 WHERE room_id = $1
 ORDER BY id ASC
 `
@@ -1101,13 +1149,13 @@ func (q *Queries) ListRoomAssignmentsByRoom(ctx context.Context, roomID pgtype.U
 			&i.Status,
 			&i.Reason,
 			&i.OutputMessageID,
+			&i.FailureAcknowledgedAt,
+			&i.FailureAcknowledgedBy,
+			&i.SupersededByAssignmentID,
 			&i.CreatedByType,
 			&i.CreatedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.FailureAcknowledgedAt,
-			&i.FailureAcknowledgedBy,
-			&i.SupersededByAssignmentID,
 		); err != nil {
 			return nil, err
 		}
@@ -1120,7 +1168,7 @@ func (q *Queries) ListRoomAssignmentsByRoom(ctx context.Context, roomID pgtype.U
 }
 
 const listRoomAssignmentsBySourceMessage = `-- name: ListRoomAssignmentsBySourceMessage :many
-SELECT id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, created_by_type, created_by_id, created_at, updated_at, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id FROM room_assignment
+SELECT id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id, created_by_type, created_by_id, created_at, updated_at FROM room_assignment
 WHERE source_message_id = $1
 ORDER BY id ASC
 `
@@ -1144,13 +1192,13 @@ func (q *Queries) ListRoomAssignmentsBySourceMessage(ctx context.Context, source
 			&i.Status,
 			&i.Reason,
 			&i.OutputMessageID,
+			&i.FailureAcknowledgedAt,
+			&i.FailureAcknowledgedBy,
+			&i.SupersededByAssignmentID,
 			&i.CreatedByType,
 			&i.CreatedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.FailureAcknowledgedAt,
-			&i.FailureAcknowledgedBy,
-			&i.SupersededByAssignmentID,
 		); err != nil {
 			return nil, err
 		}
@@ -1590,7 +1638,7 @@ func (q *Queries) ListTimedOutRunningRoomInvocations(ctx context.Context, limit 
 }
 
 const lockBlockedAssignmentsDependingOn = `-- name: LockBlockedAssignmentsDependingOn :many
-SELECT a.id, a.room_id, a.source_message_id, a.assignee_type, a.assignee_id, a.kind, a.status, a.reason, a.output_message_id, a.created_by_type, a.created_by_id, a.created_at, a.updated_at, a.failure_acknowledged_at, a.failure_acknowledged_by, a.superseded_by_assignment_id
+SELECT a.id, a.room_id, a.source_message_id, a.assignee_type, a.assignee_id, a.kind, a.status, a.reason, a.output_message_id, a.failure_acknowledged_at, a.failure_acknowledged_by, a.superseded_by_assignment_id, a.created_by_type, a.created_by_id, a.created_at, a.updated_at
 FROM room_assignment a
 JOIN room_assignment_dependency d ON d.assignment_id = a.id
 WHERE d.depends_on_assignment_id = $1
@@ -1617,13 +1665,13 @@ func (q *Queries) LockBlockedAssignmentsDependingOn(ctx context.Context, depends
 			&i.Status,
 			&i.Reason,
 			&i.OutputMessageID,
+			&i.FailureAcknowledgedAt,
+			&i.FailureAcknowledgedBy,
+			&i.SupersededByAssignmentID,
 			&i.CreatedByType,
 			&i.CreatedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.FailureAcknowledgedAt,
-			&i.FailureAcknowledgedBy,
-			&i.SupersededByAssignmentID,
 		); err != nil {
 			return nil, err
 		}
@@ -1644,7 +1692,7 @@ WHERE id = $2
   AND room_id = $3
   AND status = 'failed'
   AND superseded_by_assignment_id IS NULL
-RETURNING id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, created_by_type, created_by_id, created_at, updated_at, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id
+RETURNING id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id, created_by_type, created_by_id, created_at, updated_at
 `
 
 type MarkRoomAssignmentSupersededParams struct {
@@ -1666,13 +1714,13 @@ func (q *Queries) MarkRoomAssignmentSuperseded(ctx context.Context, arg MarkRoom
 		&i.Status,
 		&i.Reason,
 		&i.OutputMessageID,
+		&i.FailureAcknowledgedAt,
+		&i.FailureAcknowledgedBy,
+		&i.SupersededByAssignmentID,
 		&i.CreatedByType,
 		&i.CreatedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.FailureAcknowledgedAt,
-		&i.FailureAcknowledgedBy,
-		&i.SupersededByAssignmentID,
 	)
 	return i, err
 }
@@ -1711,13 +1759,65 @@ func (q *Queries) SupersedeEarlierFailedAssignmentsOnTrack(ctx context.Context, 
 	return result.RowsAffected(), nil
 }
 
+const transitionRoomAssignmentStatus = `-- name: TransitionRoomAssignmentStatus :one
+UPDATE room_assignment
+SET status = $1,
+    output_message_id = COALESCE($2, output_message_id),
+    reason = COALESCE($3, reason),
+    updated_at = now()
+WHERE id = $4
+  AND status = ANY($5::text[])
+RETURNING id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id, created_by_type, created_by_id, created_at, updated_at
+`
+
+type TransitionRoomAssignmentStatusParams struct {
+	ToStatus        string      `json:"to_status"`
+	OutputMessageID pgtype.UUID `json:"output_message_id"`
+	Reason          pgtype.Text `json:"reason"`
+	ID              pgtype.UUID `json:"id"`
+	FromStatus      []string    `json:"from_status"`
+}
+
+// CAS status write: only applies when the current status is one of from_status.
+// Returns no rows (pgx.ErrNoRows) when the assignment was already moved by a
+// concurrent path — callers must treat that as an idempotent no-op, never an error.
+func (q *Queries) TransitionRoomAssignmentStatus(ctx context.Context, arg TransitionRoomAssignmentStatusParams) (RoomAssignment, error) {
+	row := q.db.QueryRow(ctx, transitionRoomAssignmentStatus,
+		arg.ToStatus,
+		arg.OutputMessageID,
+		arg.Reason,
+		arg.ID,
+		arg.FromStatus,
+	)
+	var i RoomAssignment
+	err := row.Scan(
+		&i.ID,
+		&i.RoomID,
+		&i.SourceMessageID,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.Kind,
+		&i.Status,
+		&i.Reason,
+		&i.OutputMessageID,
+		&i.FailureAcknowledgedAt,
+		&i.FailureAcknowledgedBy,
+		&i.SupersededByAssignmentID,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const unblockRoomAssignmentIfBlocked = `-- name: UnblockRoomAssignmentIfBlocked :one
 UPDATE room_assignment
 SET status = 'pending',
     updated_at = now()
 WHERE id = $1
   AND status = 'blocked'
-RETURNING id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, created_by_type, created_by_id, created_at, updated_at, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id
+RETURNING id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id, created_by_type, created_by_id, created_at, updated_at
 `
 
 func (q *Queries) UnblockRoomAssignmentIfBlocked(ctx context.Context, id pgtype.UUID) (RoomAssignment, error) {
@@ -1733,59 +1833,13 @@ func (q *Queries) UnblockRoomAssignmentIfBlocked(ctx context.Context, id pgtype.
 		&i.Status,
 		&i.Reason,
 		&i.OutputMessageID,
+		&i.FailureAcknowledgedAt,
+		&i.FailureAcknowledgedBy,
+		&i.SupersededByAssignmentID,
 		&i.CreatedByType,
 		&i.CreatedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.FailureAcknowledgedAt,
-		&i.FailureAcknowledgedBy,
-		&i.SupersededByAssignmentID,
-	)
-	return i, err
-}
-
-const updateRoomAssignmentStatus = `-- name: UpdateRoomAssignmentStatus :one
-UPDATE room_assignment
-SET status = $2,
-    output_message_id = COALESCE($3, output_message_id),
-    reason = COALESCE($4, reason),
-    updated_at = now()
-WHERE id = $1
-RETURNING id, room_id, source_message_id, assignee_type, assignee_id, kind, status, reason, output_message_id, created_by_type, created_by_id, created_at, updated_at, failure_acknowledged_at, failure_acknowledged_by, superseded_by_assignment_id
-`
-
-type UpdateRoomAssignmentStatusParams struct {
-	ID              pgtype.UUID `json:"id"`
-	Status          string      `json:"status"`
-	OutputMessageID pgtype.UUID `json:"output_message_id"`
-	Reason          pgtype.Text `json:"reason"`
-}
-
-func (q *Queries) UpdateRoomAssignmentStatus(ctx context.Context, arg UpdateRoomAssignmentStatusParams) (RoomAssignment, error) {
-	row := q.db.QueryRow(ctx, updateRoomAssignmentStatus,
-		arg.ID,
-		arg.Status,
-		arg.OutputMessageID,
-		arg.Reason,
-	)
-	var i RoomAssignment
-	err := row.Scan(
-		&i.ID,
-		&i.RoomID,
-		&i.SourceMessageID,
-		&i.AssigneeType,
-		&i.AssigneeID,
-		&i.Kind,
-		&i.Status,
-		&i.Reason,
-		&i.OutputMessageID,
-		&i.CreatedByType,
-		&i.CreatedByID,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.FailureAcknowledgedAt,
-		&i.FailureAcknowledgedBy,
-		&i.SupersededByAssignmentID,
 	)
 	return i, err
 }

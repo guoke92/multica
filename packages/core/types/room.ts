@@ -165,6 +165,35 @@ export type RoomManagerDecision = {
   created_at?: string;
 };
 
+export type RoomHumanInteractionOption = {
+  id: string;
+  label: string;
+};
+
+export type RoomHumanInteraction = {
+  id: string;
+  room_id: string;
+  kind: "notify" | "ask" | "confirm" | "approve";
+  status: "pending" | "responded" | "dismissed" | "expired";
+  title?: string;
+  body: string;
+  options?: RoomHumanInteractionOption[];
+  allow_custom_response?: boolean;
+  invocation_id?: string;
+  assignment_id?: string;
+  decision_id?: string;
+  approval_request_id?: string;
+  created_by_type: string;
+  created_by_id?: string;
+  response_text?: string;
+  response_option_id?: string;
+  responded_by?: string;
+  responded_at?: string;
+  dismissed_at?: string;
+  created_at: string;
+  updated_at: string;
+};
+
 /** Orchestration snapshot — messages live in the messages infinite query. */
 export type RoomGraphSnapshot = {
   mentions: RoomMessageMention[];
@@ -173,6 +202,7 @@ export type RoomGraphSnapshot = {
   invocations: RoomInvocation[];
   decisions: RoomManagerDecision[];
   invocation_events: RoomInvocationEvent[];
+  human_interactions?: RoomHumanInteraction[];
 };
 
 export type RoomMember = {
@@ -190,6 +220,13 @@ export type SendRoomMessageResponse = {
 
 export type UpdateRoomMessageResponse = {
   message: RoomMessage;
+  assignments?: RoomAssignment[];
+  invocations?: RoomInvocation[];
+};
+
+export type RespondRoomHumanInteractionResponse = {
+  interaction: RoomHumanInteraction;
+  message?: RoomMessage;
   assignments?: RoomAssignment[];
   invocations?: RoomInvocation[];
 };
